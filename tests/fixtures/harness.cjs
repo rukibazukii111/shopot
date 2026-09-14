@@ -17,12 +17,18 @@ nativeModule.createNativeBackend = () => {
   }
   return native;
 };
-globalShortcut.register = (key, callback) => { if (key === 'CommandOrControl+Shift+Space') globalThis.__test.toggle = callback; return true; };
+globalShortcut.register = (key, callback) => {
+  if (key === 'CommandOrControl+Shift+Space') globalThis.__test.toggle = callback;
+  if (key === 'Escape') globalThis.__test.cancel = callback;
+  return true;
+};
 Worker.prototype.start = function () { this.status = status; setImmediate(() => this.emit('ready', status)); };
 Worker.prototype.request = function (command, payload) {
   globalThis.__test.requests.push({command, payload});
   return new Promise((resolve, reject) => {
     globalThis.__test.finish = () => resolve({text: 'Видосы для GitHub готовы.', rawText: 'Видосы для GitHub готовы.', duration: 2, elapsed: .1, model: 'turbo', words: []});
+    globalThis.__test.fail = () => reject(new Error('Тестовая ошибка распознавания'));
+    globalThis.__test.progress = () => this.emit('progress', {stage: 'transcribe', fraction: .5, message: 'Тестовый прогресс'});
     this.testReject = reject;
   });
 };

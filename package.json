@@ -1,12 +1,15 @@
 {
   "name": "shopot",
   "productName": "Shopot",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Локальная диктовка для Windows и macOS",
   "private": true,
   "license": "MIT",
   "author": "Shopot contributors",
-  "repository": {"type": "git", "url": "https://github.com/rukibazukii111/shopot.git"},
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rukibazukii111/shopot.git"
+  },
   "main": "electron/main.cjs",
   "scripts": {
     "start": "node scripts/launch.cjs",
@@ -27,7 +30,9 @@
     "appId": "local.shopot.desktop",
     "productName": "Shopot",
     "artifactName": "Shopot-${version}-${os}-${arch}.${ext}",
-    "asarUnpack": ["node_modules/koffi/**/*.node"],
+    "asarUnpack": [
+      "node_modules/koffi/**/*.node"
+    ],
     "directories": {
       "output": "release"
     },

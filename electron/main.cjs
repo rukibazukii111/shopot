@@ -18,7 +18,7 @@ const shortcut = 'CommandOrControl+Shift+Space';
 let window, widget, tray, worker, store, paste, capture, busy = false, blocker, quitting = false, engineError = null;
 let hotkeyRegistered = false;
 let nativeAvailable = false;
-let widgetTimer, job = 0;
+let widgetTimer, activeTranscription, job = 0;
 let widgetState = {phase: 'requesting', shortcut: process.platform === 'darwin' ? '⌘⇧Space' : 'Ctrl⇧Space'};
 
 function send(channel, value) { if (window && !window.isDestroyed()) window.webContents.send(channel, value); }
@@ -35,12 +35,22 @@ function audioFor(entry) {
   if (!entry.audioFile || !/^[a-f0-9-]+\.(wav|webm|mp3|m4a|ogg|flac|mp4)$/i.test(entry.audioFile)) return null;
   return path.join(audioDir, entry.audioFile);
 }
+function pendingFor(id) {
+  const entry = store.data.pendingRecordings.find(e => e.id === id);
+  if (!entry) throw new Error('Незавершённая запись не найдена');
+  return entry;
+}
+function forgetRecording(audioFile) {
+  store.data.pendingRecordings = store.data.pendingRecordings.filter(e => e.audioFile !== audioFile);
+  store.save();
+}
 function setBusy(value) {
   busy = value;
   if (value && blocker === undefined) blocker = powerSaveBlocker.start('prevent-app-suspension');
   else if (!value && blocker !== undefined && !capture) { powerSaveBlocker.stop(blocker); blocker = undefined; }
 }
 function updateTray(label = 'Шёпот') { if (tray) tray.setToolTip(label); }
+function hideWidget() { clearTimeout(widgetTimer); widget?.hide(); }
 function showWidget(value, show = true) {
   clearTimeout(widgetTimer);
   widgetState = {...widgetState, ...value};
@@ -51,13 +61,14 @@ function showWidget(value, show = true) {
     widget.setPosition(Math.round(area.x + (area.width - 384) / 2), area.y + area.height - 138);
     widget.showInactive();
   }
-  if (['success', 'error', 'canceled'].includes(value.phase)) widgetTimer = setTimeout(() => widget?.hide(), value.phase === 'error' ? 10000 : 4500);
+  if (show && ['success', 'error', 'canceled'].includes(value.phase)) widgetTimer = setTimeout(hideWidget, 3000);
 }
 function finishCapture(value) {
   const previous = capture; capture = null;
   if (previous?.target) paste.release(previous.target);
   globalShortcut.unregister('Escape'); setBusy(busy); updateTray();
-  if (previous?.global) showWidget(value);
+  hideWidget();
+  if (previous?.global) showWidget(value, value.phase === 'error');
 }
 function beginCapture(global = false) {
   if (busy || capture) throw new Error('Дождись завершения текущей операции');
@@ -66,13 +77,15 @@ function beginCapture(global = false) {
   capture = {id: crypto.randomUUID(), global, target: global ? paste.capture() : null, phase: 'requesting',
     settings: structuredClone(store.data.settings), dictionary: structuredClone(store.data.dictionary)};
   if (blocker === undefined) blocker = powerSaveBlocker.start('prevent-app-suspension');
-  globalShortcut.register('Escape', () => send('cancel-recording'));
+  globalShortcut.register('Escape', () => { hideWidget(); send('cancel-recording'); });
   if (global) showWidget({phase: 'requesting', elapsed: 0, level: 0, message: '', hint: ''});
   return {id: capture.id, settings: capture.settings};
 }
 function toggleGlobalRecording() {
   if (capture) {
-    if (['requesting', 'recording'].includes(capture.phase)) send('toggle-recording');
+    if (['requesting', 'recording'].includes(capture.phase)) {
+      capture.phase = 'stopping'; hideWidget(); send('toggle-recording');
+    }
     return;
   }
   try { send('toggle-recording', beginCapture(true)); }
@@ -92,8 +105,8 @@ function createWidget() {
   ipcMain.handle('widget-boot', event => { if (!trustedWidget(event)) throw new Error('Недопустимый источник'); return widgetState; });
   ipcMain.on('widget-action', (event, action) => {
     if (!trustedWidget(event)) return;
-    if (action === 'stop' && capture?.phase === 'recording') send('toggle-recording');
-    if (action === 'cancel' && capture) send('cancel-recording');
+    if (action === 'stop' && capture?.phase === 'recording') toggleGlobalRecording();
+    if (action === 'cancel' && capture) { hideWidget(); send('cancel-recording'); }
     if (action === 'hide' && !capture) widget.hide();
     if (action === 'open') { window.show(); window.focus(); widget.hide(); }
   });
@@ -115,37 +128,51 @@ function createWindow() {
   window.loadURL(uiUrl);
 }
 
-async function runTranscription(filePath, source, recordingSession = null) {
+async function runTranscription(filePath, source, recordingSession = null, retry = false) {
   const currentJob = ++job;
+  const audioFile = path.basename(filePath);
+  const task = {canceled: false}; activeTranscription = task;
+  let completed = false, canceled = false;
   setBusy(true);
   const settings = recordingSession?.settings || structuredClone(store.data.settings);
   const dictionary = recordingSession?.dictionary || structuredClone(store.data.dictionary);
   if (recordingSession) {
     recordingSession.phase = 'transcribing';
-    if (recordingSession.global) showWidget({phase: 'transcribing', message: '', level: 0});
+    if (recordingSession.global) { hideWidget(); showWidget({phase: 'transcribing', message: '', level: 0}, false); }
   }
   try {
-    const result = await worker.request('transcribe', {path: filePath, ...settings, dictionary});
-    if (currentJob !== job) return {canceled: true};
+    // Journal before inference: a worker/app crash must leave audio available for retry.
+    if (!store.data.pendingRecordings.some(e => e.audioFile === audioFile)) {
+      store.data.pendingRecordings.push({id: crypto.randomUUID(), audioFile, source, createdAt: new Date().toISOString()});
+      store.save();
+    }
+    const result = await worker.request('transcribe', {audioFile, ...settings, dictionary});
+    if (currentJob !== job) { canceled = task.canceled; return {canceled: true}; }
     if (result.noSpeech) {
+      completed = true;
       if (recordingSession) finishCapture({phase: 'error', message: 'Речь не обнаружена', hint: 'Попробуй говорить ближе к микрофону'});
       return {noSpeech: true};
     }
     const entry = {id: crypto.randomUUID(), createdAt: new Date().toISOString(), source,
       mode: settings.mode, ...result, audioFile: settings.keepAudio ? path.basename(filePath) : null};
     store.addHistory(entry);
+    completed = true;
     const delivery = await paste.deliver(entry.text, {autoCopy: settings.autoCopy,
       autoPaste: Boolean(recordingSession?.global && settings.autoPaste), target: recordingSession?.target}, () => currentJob === job);
     send('snapshot', snapshot());
     if (recordingSession && currentJob === job) finishCapture({phase: delivery.pasted || ['saved', 'copied'].includes(delivery.code) ? 'success' : 'error', message: delivery.message, hint: delivery.pasted ? 'Можно продолжать писать' : 'Текст доступен в истории'});
     return {entry, ...delivery};
   } catch (error) {
-    if (recordingSession && currentJob === job) finishCapture({phase: 'error', message: 'Не удалось распознать запись', hint: error.message});
+    if (currentJob !== job) { canceled = task.canceled; return {canceled: true}; }
+    if (recordingSession) finishCapture({phase: 'error', message: 'Не удалось распознать запись', hint: 'Аудио сохранено. Повтори распознавание в Шёпоте.'});
     throw error;
   } finally {
-    const retained = store.data.history.some(e => e.audioFile === path.basename(filePath));
+    if (activeTranscription === task) activeTranscription = null;
+    if (completed || (canceled && !retry)) forgetRecording(audioFile);
+    const retained = [...store.data.history, ...store.data.pendingRecordings].some(e => e.audioFile === audioFile);
     if (!retained && fs.existsSync(filePath)) fs.unlinkSync(filePath);
     if (currentJob === job) setBusy(false);
+    send('snapshot', snapshot());
   }
 }
 
@@ -156,11 +183,20 @@ else {
     fs.mkdirSync(audioDir, {recursive: true});
     try { store = new Store(dataDir); }
     catch (error) { dialog.showErrorBox('Шёпот', error.message); app.quit(); return; }
-    // Remove orphaned captures left by a crash, preserving explicitly saved audio.
+    // Recover interrupted captures, including files saved just before a crash.
     const retained = new Set(store.data.history.map(e => e.audioFile).filter(Boolean));
+    const previousPending = JSON.stringify(store.data.pendingRecordings);
+    store.data.pendingRecordings = store.data.pendingRecordings.filter(e => {
+      const file = audioFor(e); return file && fs.existsSync(file) && !retained.has(e.audioFile);
+    });
+    const pending = new Set(store.data.pendingRecordings.map(e => e.audioFile));
     for (const name of fs.readdirSync(audioDir)) {
-      if (/^[a-f0-9-]+\.(webm|wav|mp3|m4a|ogg|flac|mp4)$/i.test(name) && !retained.has(name)) fs.unlinkSync(path.join(audioDir, name));
+      if (/^[a-f0-9-]+\.(webm|wav|mp3|m4a|ogg|flac|mp4)$/i.test(name) && !retained.has(name) && !pending.has(name)) {
+        const stat = fs.statSync(path.join(audioDir, name));
+        if (stat.isFile()) store.data.pendingRecordings.push({id: crypto.randomUUID(), audioFile: name, source: 'Незавершённая запись', createdAt: stat.mtime.toISOString()});
+      }
     }
+    if (JSON.stringify(store.data.pendingRecordings) !== previousPending) store.save();
     session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
       callback(contents === window?.webContents && contents.getURL() === uiUrl && permission === 'media' &&
         !details.mediaTypes?.includes('video'));
@@ -176,7 +212,7 @@ else {
     worker.on('ready', status => { engineError = null; send('engine', {status}); });
     worker.on('progress', event => {
       send('progress', event);
-      if (capture?.global && capture.phase === 'transcribing') showWidget({phase: 'transcribing', message: event.message || 'Распознаю на устройстве'});
+      if (capture?.global && capture.phase === 'transcribing') showWidget({phase: 'transcribing', message: event.message || 'Распознаю на устройстве'}, false);
     });
     worker.on('offline', error => { engineError = error; send('engine', {error}); });
     try { worker.start(); } catch (error) { engineError = error.message; }
@@ -200,10 +236,12 @@ else {
       if (!capture || value?.id !== capture.id) return;
       if (['error', 'canceled'].includes(value.phase)) {
         finishCapture({phase: value.phase, message: value.phase === 'canceled' ? 'Запись отменена' : 'Микрофон недоступен', hint: String(value.message || '').slice(0, 240)});
-      } else if (['recording', 'stopping'].includes(value.phase) && ['requesting', 'recording', 'stopping'].includes(capture.phase)) {
+      } else if ((value.phase === 'recording' && ['requesting', 'recording'].includes(capture.phase)) ||
+                 (value.phase === 'stopping' && ['recording', 'stopping'].includes(capture.phase))) {
         capture.phase = value.phase;
-        if (capture.global) showWidget({phase: value.phase, message: '', elapsed: Math.max(0, Math.min(900, Number(value.elapsed) || 0)), level: Math.max(0, Math.min(1, Number(value.level) || 0))});
-        updateTray('Шёпот — идёт запись. Escape: отмена');
+        if (value.phase === 'stopping') hideWidget();
+        if (capture.global) showWidget({phase: value.phase, message: '', elapsed: Math.max(0, Math.min(900, Number(value.elapsed) || 0)), level: Math.max(0, Math.min(1, Number(value.level) || 0))}, value.phase === 'recording');
+        updateTray(value.phase === 'recording' ? 'Шёпот — идёт запись. Escape: отмена' : 'Шёпот — распознаю запись. Escape: отмена');
       }
     });
 
@@ -224,6 +262,7 @@ else {
       } finally { if (currentJob === job) setBusy(false); }
     });
     ipc('cancel', () => {
+      if (activeTranscription) activeTranscription.canceled = true;
       ++job;
       if (busy) { worker.restart(); send('engine', {status: null}); }
       busy = false; finishCapture({phase: 'canceled', message: 'Операция отменена', hint: 'Микрофон выключен'});
@@ -255,6 +294,22 @@ else {
         importJob = job + 1;
         return await runTranscription(local, path.basename(original));
       } finally { if (importJob === job) setBusy(false); }
+    });
+    ipc('retry-recording', id => {
+      if (busy || capture) throw new Error('Дождись завершения текущей операции');
+      const entry = pendingFor(id), file = audioFor(entry);
+      if (!file || !fs.existsSync(file)) throw new Error('Аудиозапись не найдена');
+      return runTranscription(file, entry.source, null, true);
+    });
+    ipc('delete-recording', async id => {
+      if (busy || capture) throw new Error('Дождись завершения текущей операции');
+      const entry = pendingFor(id);
+      const answer = await dialog.showMessageBox(window, {type: 'question', message: 'Удалить незавершённую запись?',
+        detail: 'Аудио будет удалено с этого компьютера.', buttons: ['Оставить', 'Удалить'], defaultId: 0, cancelId: 0});
+      if (answer.response !== 1) return false;
+      if (busy || capture) throw new Error('Дождись завершения текущей операции');
+      const file = audioFor(entry); if (file && fs.existsSync(file)) fs.unlinkSync(file);
+      forgetRecording(entry.audioFile); send('snapshot', snapshot()); return true;
     });
     ipc('copy', async value => { await clipboard.writeText(textValue(value)); return true; });
     ipc('save-text', async value => {

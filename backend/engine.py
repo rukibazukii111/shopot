@@ -11,6 +11,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import sys
 import threading
 import time
@@ -48,8 +49,23 @@ class Engine:
         self.data_dir = Path(data_dir).resolve()
         self.models_dir = self.data_dir / "models"
         self.models_dir.mkdir(parents=True, exist_ok=True)
+        audio_dir = self.data_dir / "audio"
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        # Windows can redirect this child independently of the parent (MSIX).
+        self.audio_dir = audio_dir.resolve()
         self.model = None
         self.loaded_key = None
+
+    def audio_path(self, filename):
+        if not isinstance(filename, str) or not re.fullmatch(
+                r"[a-fA-F0-9-]+\.(?:wav|webm|mp3|m4a|ogg|flac|mp4)", filename):
+            raise ValueError("Недопустимое имя аудиозаписи.")
+        candidate = (self.audio_dir / filename).resolve()
+        if not candidate.is_relative_to(self.audio_dir):
+            raise ValueError("Аудиофайл должен находиться в папке записей приложения.")
+        if not candidate.is_file():
+            raise ValueError("Аудиофайл не найден.")
+        return candidate
 
     def model_path(self, key):
         if key not in MODELS:
@@ -109,11 +125,7 @@ class Engine:
         key = request.get("model", "turbo")
         if not self.is_installed(key):
             raise ValueError("Сначала скачай выбранную модель в разделе «Модели».")
-        audio_path = Path(request["path"]).resolve()
-        if not audio_path.is_relative_to(self.data_dir):
-            raise ValueError("Аудиофайл должен находиться в папке данных приложения.")
-        if not audio_path.is_file():
-            raise ValueError("Аудиофайл не найден.")
+        audio_path = self.audio_path(request.get("audioFile"))
         language = request.get("language", "ru")
         if language not in ("ru", "en", "auto"):
             raise ValueError("Неизвестный язык")

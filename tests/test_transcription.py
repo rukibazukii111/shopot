@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 import sys
 
@@ -6,7 +5,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 from text_processing import format_transcript, vocabulary_prompt
-from engine import Engine, MODELS
+from engine import Engine
 
 
 def test_dictionary_respects_unicode_word_boundaries_and_does_not_chain():
@@ -41,18 +40,55 @@ def test_partial_download_is_not_usable(tmp_path):
     (model / 'model.bin').write_bytes(b'incomplete')
     assert not engine.is_installed('turbo')
     with pytest.raises(ValueError, match='скачай'):
-        engine.transcribe({'model': 'turbo', 'path': str(tmp_path / 'audio.wav')})
+        engine.transcribe({'model': 'turbo', 'audioFile': 'abc.wav'})
 
 
-def test_engine_rejects_audio_outside_its_data_folder(tmp_path):
+@pytest.mark.parametrize('filename', ['../abc.wav', '..\\abc.wav', '/abc.wav', 'C:\\abc.wav',
+                                     'abc.txt', 'abc.wav:secret', '', None])
+def test_engine_rejects_arbitrary_paths_and_formats(tmp_path, filename):
     engine = Engine(tmp_path)
-    model = tmp_path / 'models' / 'turbo'
-    model.mkdir()
-    for name in ('model.bin', 'config.json', 'tokenizer.json'):
-        (model / name).write_text('fixture')
-    (model / 'shopot-ready.json').write_text(json.dumps({'revision': MODELS['turbo']['revision']}))
-    with pytest.raises(ValueError, match='папке данных'):
-        engine.transcribe({'model': 'turbo', 'path': str(tmp_path.parent / 'outside.wav')})
+    with pytest.raises(ValueError, match='имя'):
+        engine.audio_path(filename)
+
+
+def test_missing_recording_is_reported(tmp_path):
+    with pytest.raises(ValueError, match='не найден'):
+        Engine(tmp_path).audio_path('abc.webm')
+
+
+def test_redirected_audio_directory_with_unredirected_parent(tmp_path, monkeypatch):
+    logical = tmp_path / 'Roaming' / 'Shopot'
+    redirected = tmp_path / 'LocalCache' / 'Roaming' / 'Shopot' / 'audio'
+    redirected.mkdir(parents=True)
+    recording = redirected / '123-abc.webm'
+    recording.write_bytes(b'audio fixture')
+    resolve = Path.resolve
+
+    def msix_resolve(p, *args, **kwargs):
+        canonical = resolve(p, *args, **kwargs)
+        logical_audio = resolve(logical / 'audio')
+        if canonical.is_relative_to(logical_audio):
+            return resolve(redirected / canonical.relative_to(logical_audio))
+        return canonical
+
+    monkeypatch.setattr(Path, 'resolve', msix_resolve)
+    engine = Engine(logical)
+    assert engine.data_dir == resolve(logical)
+    assert not engine.audio_dir.is_relative_to(engine.data_dir)
+    assert engine.audio_path(recording.name) == resolve(recording)
+
+
+def test_symlink_cannot_escape_audio_directory_even_with_matching_prefix(tmp_path, monkeypatch):
+    engine = Engine(tmp_path)
+    outside = tmp_path / 'audio-other' / 'abc.wav'
+    outside.parent.mkdir()
+    outside.write_bytes(b'outside')
+    link = engine.audio_dir / 'abc.wav'
+    resolve = Path.resolve
+    # Emulate the canonical target without requiring Windows symlink privileges.
+    monkeypatch.setattr(Path, 'resolve', lambda p, *a, **kw: outside if p == link else resolve(p, *a, **kw))
+    with pytest.raises(ValueError, match='папке записей'):
+        engine.audio_path(link.name)
 
 
 def test_model_name_cannot_traverse_directories(tmp_path):

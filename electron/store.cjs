@@ -55,6 +55,8 @@ class Store {
     this.data.settings = validateSettings(this.data.settings);
     this.data.dictionary = validateDictionary(this.data.dictionary);
     if (!Array.isArray(this.data.history)) throw new Error('Повреждён формат истории');
+    this.data.pendingRecordings ??= [];
+    if (!Array.isArray(this.data.pendingRecordings)) throw new Error('Повреждён список незавершённых записей');
   }
   save() {
     const temp = this.file + '.tmp';

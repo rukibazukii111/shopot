@@ -27,13 +27,13 @@ function escapeHtml(value) { return String(value ?? '').replace(/[&<>"']/g, c =>
 const names = {dictation: 'Диктовка', history: 'История', dictionary: 'Мой словарь', models: 'Модели', settings: 'Настройки'};
 const modes = {natural: 'Естественно', minimal: 'Минимум знаков', raw: 'Исходный результат'};
 const modelNames = {turbo: 'Whisper turbo', small: 'Whisper small', 'large-v3': 'Whisper large-v3'};
-const state = {settings: {}, dictionary: [], history: [], engine: null, page: 'dictation', phase: 'idle', operation: 0, hotkeyRegistered: false};
+const state = {settings: {}, dictionary: [], history: [], pendingRecordings: [], engine: null, page: 'dictation', phase: 'idle', operation: 0, hotkeyRegistered: false};
 let recorder, stream, audioContext, analyser, raf, recordingTimer, startedAt, recordingCanceled = false;
 let editingWord = null, toastTimer, blobUrls = [], contextDirty = false, captureId = null;
 const drafts = new Map();
 
 function toast(message) { $('#toast').textContent = message; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').hidden = true, 4000); }
-function showError(error) { $('#error-text').textContent = error.message || String(error); $('#error-banner').hidden = false; }
+function showError(error) { $('#error-text').textContent = (error.message || String(error)).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, ''); $('#error-banner').hidden = false; }
 async function guard(action) { try { return await action(); } catch (error) { showError(error); } }
 function page(name) {
   if (!(name in names)) return;
@@ -73,6 +73,7 @@ function refreshControls() {
   $('#quick-language').disabled = isBusy(); $('#quick-mode').disabled = isBusy();
   $('#record-progress').hidden = !processing;
   $('#download-panel').hidden = phase !== 'downloading';
+  renderRecovery();
   if (recordingNow) {
     $('#record-status').innerHTML = '<span class="status-dot"></span>Идёт запись';
     $('#record-heading').textContent = 'Слушаю тебя';
@@ -206,8 +207,9 @@ async function startRecording(session) {
 }
 function stopRecording(cancel = false) {
   if (state.phase !== 'recording' || !recorder || recorder.state === 'inactive') return;
-  recordingCanceled = cancel; state.phase = 'stopping'; refreshControls(); recorder.stop();
+  recordingCanceled = cancel; state.phase = 'stopping'; clearInterval(recordingTimer);
   api.captureUpdate({id: captureId, phase: 'stopping', elapsed: (Date.now() - startedAt) / 1000});
+  refreshControls(); recorder.stop();
 }
 function toggleRecording(session) { if (state.phase === 'recording') stopRecording(); else if (state.phase === 'requesting') guard(cancelOperation); else if (state.phase === 'idle') guard(() => startRecording(session)); }
 async function cancelOperation() {
@@ -229,6 +231,23 @@ async function importAudio() {
   state.phase = 'opening'; page('dictation'); refreshControls();
   const operation = ++state.operation;
   try { const result = await api.importAudio(); if (operation === state.operation) acceptResult(result); }
+  catch (error) { if (operation === state.operation) showError(error); }
+  finally { if (operation === state.operation) { state.phase = 'idle'; refreshControls(); } }
+}
+
+function renderRecovery() {
+  const entries = state.pendingRecordings;
+  $('#recovery-banner').hidden = !entries.length || isBusy();
+  if (!entries.length) return;
+  $('#recovery-title').textContent = entries.length === 1 ? 'Запись сохранена — можно повторить распознавание' : `Ожидают распознавания: ${entries.length}`;
+  $('#recovery-detail').textContent = `${dateLabel(entries[0].createdAt)} · ${entries[0].source}. После распознавания текст появится в истории.`;
+  $('#retry-recording').disabled = !state.engine || !installed();
+}
+async function retryRecording() {
+  if (isBusy() || !state.pendingRecordings.length) return;
+  const id = state.pendingRecordings[0].id, operation = ++state.operation;
+  state.phase = 'transcribing'; page('dictation'); refreshControls(); $('#error-banner').hidden = true;
+  try { const result = await api.retryRecording(id); if (operation === state.operation) acceptResult(result); }
   catch (error) { if (operation === state.operation) showError(error); }
   finally { if (operation === state.operation) { state.phase = 'idle'; refreshControls(); } }
 }
@@ -362,7 +381,7 @@ $('#dictionary-form').addEventListener('submit', async event => {
 });
 api.onToggle(toggleRecording); api.onCancel(() => guard(cancelOperation));
 api.onEngine(({status, error}) => { state.engine = status || null; state.engineError = error; updateEngine(); if (error) showError(new Error(error)); });
-api.onSnapshot(snapshot => { state.history = snapshot.history; renderResults(); });
+api.onSnapshot(snapshot => { state.history = snapshot.history; state.pendingRecordings = snapshot.pendingRecordings; renderResults(); renderRecovery(); });
 api.onProgress(progress => {
   if (state.phase === 'opening') { state.phase = 'transcribing'; refreshControls(); }
   if (state.phase === 'transcribing') {
@@ -378,6 +397,10 @@ api.onProgress(progress => {
   }
 });
 window.addEventListener('beforeunload', releaseMicrophone);
+$('#retry-recording').addEventListener('click', () => guard(retryRecording));
+$('#delete-recording').addEventListener('click', () => guard(async () => {
+  if (!isBusy() && state.pendingRecordings.length) await api.deleteRecording(state.pendingRecordings[0].id);
+}));
 paintIcons();
 guard(async () => {
   Object.assign(state, await api.boot());

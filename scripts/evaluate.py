@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import socket
 import sys
+import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 from engine import Engine
@@ -30,15 +31,14 @@ def block_network(*args, **kwargs):
 
 socket.socket.connect = block_network
 engine = Engine(args.data_dir)
-sample = args.data_dir.resolve() / "evaluation" / args.audio.name
-sample.parent.mkdir(parents=True, exist_ok=True)
+sample = engine.audio_dir / (str(uuid.uuid4()) + args.audio.suffix.lower())
 shutil.copyfile(args.audio, sample)
 terms = ["Whisper", "GitHub", "iOS", "iPhone", "Reels", "TikTok", "YouTube", "VPN"]
 results = {}
 try:
     for name, dictionary in (("without_dictionary", []), ("with_dictionary", [{"word": w, "aliases": []} for w in terms])):
         print(f"Running {name}", flush=True)
-        results[name] = engine.transcribe({"path": str(sample), "model": args.model, "language": "ru", "mode": "natural", "dictionary": dictionary})
+        results[name] = engine.transcribe({"audioFile": sample.name, "model": args.model, "language": "ru", "mode": "natural", "dictionary": dictionary})
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(results, ensure_ascii=False, indent=2), "utf-8")
         print(json.dumps({"case": name, "duration": results[name]["duration"], "elapsed": results[name]["elapsed"], "words": len(results[name]["words"])}), flush=True)
