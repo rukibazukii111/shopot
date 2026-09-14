@@ -7,6 +7,7 @@ const nativeModule = require('../../electron/native-input.cjs');
 const createNative = nativeModule.createNativeBackend;
 nativeModule.createNativeBackend = () => {
   const native = createNative();
+  globalThis.__test.foregroundPid = () => { const target = native.capture(); native.release(target); return target?.pid; };
   for (const method of ['capture', 'sameTarget', 'paste']) {
     const original = native[method];
     native[method] = (...args) => {

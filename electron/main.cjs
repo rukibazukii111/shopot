@@ -240,6 +240,7 @@ else {
     });
     ipc('import-audio', async () => {
       if (busy || capture) throw new Error('Дождись завершения записи');
+      let importJob = ++job;
       setBusy(true);
       try {
         const result = await dialog.showOpenDialog(window, {title: 'Распознать аудиофайл', properties: ['openFile'],
@@ -251,8 +252,9 @@ else {
         if (!['.wav', '.mp3', '.m4a', '.webm', '.ogg', '.flac', '.mp4'].includes(extension)) throw new Error('Этот формат пока не поддерживается');
         const local = path.join(audioDir, crypto.randomUUID() + extension);
         fs.copyFileSync(original, local);
+        importJob = job + 1;
         return await runTranscription(local, path.basename(original));
-      } finally { setBusy(false); }
+      } finally { if (importJob === job) setBusy(false); }
     });
     ipc('copy', async value => { await clipboard.writeText(textValue(value)); return true; });
     ipc('save-text', async value => {

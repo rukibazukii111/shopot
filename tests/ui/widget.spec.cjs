@@ -70,17 +70,17 @@ test('Windows: native paste reaches the original external input exactly once wit
       globalThis.__test.clipboardSnapshot = saved;
     });
     target = await electron.launch({args: [path.join(root, 'tests/fixtures/paste-target.cjs')], env});
-    await app.evaluate((_, pid) => { globalThis.__test.targetPid = pid; }, target.process().pid);
+    const targetPid = await target.evaluate(() => globalThis.__fixturePid);
+    await app.evaluate((_, pid) => { globalThis.__test.targetPid = pid; }, targetPid);
+    console.log('Native input test target PID:', targetPid);
     const fieldPage = await target.firstWindow();
     await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith('/index.html')).hide());
     await target.evaluate(({BrowserWindow}) => { BrowserWindow.getAllWindows()[0].show(); BrowserWindow.getAllWindows()[0].focus(); });
     await fieldPage.locator('textarea').click();
     await expect.poll(() => target.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows()[0].isFocused())).toBe(true);
     // Electron's isFocused may be true on an inactive Windows desktop. Verify with the OS.
-    await expect.poll(() => app.evaluate(() => {
-      const native = require(process.cwd() + '/electron/native-input.cjs').createNativeBackend();
-      const focus = native.capture(); native.release(focus); return focus?.pid;
-    }), {timeout: 60000, message: 'The test application must own the OS foreground before input is generated'}).toBe(target.process().pid);
+    await expect.poll(() => app.evaluate(() => globalThis.__test.foregroundPid()),
+      {timeout: 60000, message: 'The test application must own the OS foreground before input is generated'}).toBe(targetPid);
     await app.evaluate(() => globalThis.__test.toggle());
     await expect(page.locator('#record-label')).toHaveText('Закончить запись');
     await expect(page.locator('#record-time')).not.toHaveText('00:00');

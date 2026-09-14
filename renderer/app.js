@@ -63,7 +63,9 @@ function refreshControls() {
   $('#recorder-card').classList.toggle('recording', recordingNow);
   $('#recorder-card').classList.toggle('processing', processing);
   $('#record-button').disabled = !['idle', 'recording'].includes(phase) || (!recordingNow && !state.engine);
-  $('#record-label').textContent = recordingNow ? 'Закончить запись' : phase === 'idle' && !installed() ? 'Скачать модель' : 'Начать диктовку';
+  $('#record-label').textContent = ({recording: 'Закончить запись', requesting: 'Подключаем микрофон',
+    stopping: 'Завершаем запись', transcribing: 'Распознаём', canceling: 'Отменяем',
+    downloading: 'Модель загружается', opening: 'Выбираем файл'})[phase] || (!installed() ? 'Скачать модель' : 'Начать диктовку');
   $('#record-button [data-icon]').innerHTML = icon(recordingNow ? 'stop' : 'mic');
   $('#cancel-button').hidden = !['requesting', 'recording', 'transcribing'].includes(phase);
   $('#import-button').disabled = isBusy() || !state.engine || !installed();

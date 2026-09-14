@@ -70,6 +70,8 @@ npm run test:packaged
 
 UI-тесты используют тестовый микрофон и изолированное поле ввода. Для проверки настоящего распознавания на своей записи:
 
+Проверка Win32-вставки включается отдельно: `SHOPOT_NATIVE_INPUT_TEST=1 npm run test:ui` (в PowerShell сначала `$env:SHOPOT_NATIVE_INPUT_TEST = '1'`). Она требует интерактивного рабочего стола и активного тестового окна; тест проверяет его системный PID перед вводом. В обычном CI этот тест пропускается.
+
 ```sh
 .venv/Scripts/python.exe scripts/evaluate.py sample.wav --data-dir .local --output .private/comparison.json
 node scripts/verify-microphone.cjs sample.wav
