@@ -41,6 +41,7 @@ function page(name) {
   $$('.page').forEach(el => el.hidden = el.id !== `page-${name}`);
   $$('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.page === name));
   $('#breadcrumb').textContent = names[name];
+  window.scrollTo({top: 0, left: 0, behavior: 'instant'});
   if (name === 'history') renderHistory();
   if (name === 'models') renderModels();
 }
