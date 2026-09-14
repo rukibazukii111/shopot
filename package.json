@@ -1,0 +1,75 @@
+{
+  "name": "shopot",
+  "productName": "Shopot",
+  "version": "0.2.0",
+  "description": "Локальная диктовка для Windows и macOS",
+  "private": true,
+  "license": "MIT",
+  "author": "Shopot contributors",
+  "repository": {"type": "git", "url": "https://github.com/rukibazukii111/shopot.git"},
+  "main": "electron/main.cjs",
+  "scripts": {
+    "start": "node scripts/launch.cjs",
+    "test": "node --test tests/*.test.cjs",
+    "test:ui": "playwright test",
+    "test:packaged": "node scripts/smoke-packaged.cjs",
+    "setup": "node scripts/setup.cjs",
+    "build:engine": "node scripts/build-engine.cjs",
+    "pack": "npm run build:engine && electron-builder --dir",
+    "dist": "npm run build:engine && electron-builder"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "electron": "44.3.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "local.shopot.desktop",
+    "productName": "Shopot",
+    "artifactName": "Shopot-${version}-${os}-${arch}.${ext}",
+    "asarUnpack": ["node_modules/koffi/**/*.node"],
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "dist/shopot-engine",
+        "to": "engine"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "signExecutable": false,
+      "icon": "renderer/app-icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.productivity",
+      "icon": "renderer/app-icon.png",
+      "identity": "-",
+      "hardenedRuntime": true,
+      "entitlements": "packaging/entitlements.mac.plist",
+      "entitlementsInherit": "packaging/entitlements.mac.plist",
+      "notarize": false,
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Шёпот использует микрофон только во время диктовки. Распознавание выполняется на вашем компьютере."
+      }
+    }
+  },
+  "dependencies": {
+    "koffi": "3.2.1"
+  }
+}

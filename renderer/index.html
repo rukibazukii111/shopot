@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Шёпот — локальная диктовка</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="#dictation" aria-label="Шёпот, главная"><span class="brand-mark"><i></i><i></i><i></i><i></i></span><span>шёпот<span class="brand-dot">.</span></span></a>
+    <div class="workspace-label">ТВОЁ ПРОСТРАНСТВО</div>
+    <nav aria-label="Основная навигация">
+      <button class="nav-item active" data-page="dictation"><span data-icon="mic"></span>Диктовка</button>
+      <button class="nav-item" data-page="history"><span data-icon="history"></span>История<span id="history-count" class="nav-count">0</span></button>
+      <button class="nav-item" data-page="dictionary"><span data-icon="book"></span>Мой словарь</button>
+      <button class="nav-item" data-page="models"><span data-icon="layers"></span>Модели</button>
+    </nav>
+    <div class="sidebar-bottom">
+      <div class="private-note"><span data-icon="shield"></span><strong>Только на твоём<br>компьютере</strong><p>Голос остаётся с тобой.<br>Без аккаунта и подписки.</p><span class="private-tag">LOCAL FIRST</span></div>
+      <button class="nav-item" data-page="settings"><span data-icon="settings"></span>Настройки</button>
+      <div class="sidebar-version"><span class="version-dot"></span>Шёпот <span>v0.2 · локально</span></div>
+    </div>
+  </aside>
+  <div class="app-shell">
+    <header class="topbar"><div><span class="breadcrumb-muted">Рабочее пространство</span><span class="slash">/</span><span id="breadcrumb">Диктовка</span></div><div class="connection"><span id="engine-dot" class="status-dot starting"></span><span id="engine-label">Запускаем движок</span></div></header>
+    <main>
+      <div id="error-banner" class="error-banner" role="alert" hidden><span id="error-text"></span><button id="dismiss-error" aria-label="Закрыть сообщение">×</button></div>
+      <section id="page-dictation" class="page">
+        <div class="page-heading"><div><div class="eyebrow">МЕНЬШЕ КЛАВИШ. БОЛЬШЕ ТВОЕГО ГОЛОСА.</div><h1>Говори как есть<span class="accent">.</span></h1><p>Твои слова, твой сленг, твой ритм. Просто начни говорить.</p></div><span class="quiet-badge"><span data-icon="sparkle"></span>Без перефразирования</span></div>
+        <div class="dictation-grid">
+          <div class="recorder-card" id="recorder-card">
+            <div class="recorder-top"><span class="small-label" id="record-status"><span class="status-dot"></span>Готов к диктовке</span><span id="record-time">00:00</span></div>
+            <div class="wave-scene" aria-hidden="true"><div class="wave-halo"></div><div class="waveform" id="waveform"></div></div>
+            <div class="recorder-caption"><h2 id="record-heading">Пусть мысли звучат</h2><p id="record-description">Нажми на микрофон или используй горячую клавишу</p></div>
+            <div class="recorder-controls"><button id="record-button" class="primary-button record-button"><span data-icon="mic"></span><span id="record-label">Начать диктовку</span></button><button id="cancel-button" class="text-button" hidden>Отменить</button></div>
+            <div class="shortcut-hint"><kbd class="modifier-key">Ctrl</kbd><span>+</span><kbd>Shift</kbd><span>+</span><kbd>Space</kbd><span class="shortcut-anywhere">из любого приложения</span></div>
+            <div class="record-progress" id="record-progress" hidden><progress id="transcribe-progress" max="1"></progress></div>
+          </div>
+          <aside class="dictation-options">
+            <div class="card option-card"><div class="card-kicker">ТВОЙ РЕЖИМ</div><label for="quick-language">Язык речи</label><select id="quick-language"><option value="ru">Русский</option><option value="auto">Автоопределение</option><option value="en">English</option></select><label for="quick-mode">Как записывать</label><select id="quick-mode"><option value="natural">Естественно</option><option value="minimal">Минимум пунктуации</option><option value="raw">Исходный результат</option></select><p id="mode-description">Пунктуация модели и замены из твоего словаря. Слова сохраняются.</p><div class="option-divider"></div><button id="model-link" class="model-link"><span class="model-icon" data-icon="layers"></span><span><strong id="active-model">Whisper turbo</strong><small id="active-model-state">Проверяем модель…</small></span><span data-icon="chevron"></span></button></div>
+            <button class="import-card" id="import-button"><span data-icon="upload"></span><span><strong>Уже есть запись?</strong><small>Открой аудио или видео · до 100 МБ</small></span><span data-icon="arrow"></span></button>
+          </aside>
+        </div>
+        <section class="result-section"><div class="section-heading"><h2>Последняя диктовка <span id="result-count" class="count-badge" hidden></span></h2><button class="text-button" id="all-history">Вся история <span data-icon="arrow"></span></button></div><div id="latest-result"></div></section>
+        <div class="bottom-note"><span data-icon="shield"></span>Распознавание на устройстве. Интернет нужен только для загрузки моделей.</div>
+      </section>
+      <section id="page-history" class="page" hidden><div class="page-heading"><div><div class="eyebrow">НИ ОДНА МЫСЛЬ НЕ ПОТЕРЯЕТСЯ</div><h1>История диктовок<span class="accent">.</span></h1><p>Найди, поправь или скопируй то, что уже сказал.</p></div></div><div class="search-box"><span data-icon="search"></span><input id="history-search" placeholder="Найти в диктовках…" aria-label="Поиск по истории"></div><div id="history-list" class="history-list"></div></section>
+      <section id="page-dictionary" class="page" hidden><div class="page-heading"><div><div class="eyebrow">СЛОВА, КОТОРЫЕ ЗНАЕШЬ ТЫ</div><h1>Мой словарь<span class="accent">.</span></h1><p>Имена, сленг и рабочие термины — в твоём написании.</p></div><button class="primary-button" id="add-word"><span data-icon="plus"></span>Добавить слово</button></div><div class="dictionary-note"><span data-icon="sparkle"></span><div><strong>Подсказки для распознавания</strong><p>Слова передаются модели как контекст. Для повторяющейся ошибки можно добавить точную замену. Это помогает, но не гарантирует результат.</p></div></div><div class="dictionary-table"><div class="dictionary-table-head"><span>КАК ПИСАТЬ</span><span>ЧТО ЗАМЕНЯТЬ</span><span></span></div><div id="dictionary-list"></div></div><p class="muted table-footnote">До 100 слов. В подсказку модели попадут первые 500 символов словаря.</p></section>
+      <section id="page-models" class="page" hidden><div class="page-heading"><div><div class="eyebrow">РАСПОЗНАВАНИЕ БЕЗ ОБЛАКА</div><h1>Выбери свой голос<span class="accent">.</span></h1><p>Скачай модель один раз. Дальше она работает без интернета.</p></div></div><div id="models-list" class="models-list"></div><div class="card hardware-note"><span data-icon="cpu"></span><div><strong>Работает на процессоре · INT8</strong><p>В этой версии используется CPU на Windows и macOS. Скорость зависит от компьютера, длины записи и модели. Ускорение на NVIDIA и Apple GPU пока не подключено.</p></div></div><div id="download-panel" class="card download-panel" hidden><div><strong id="download-title">Загрузка модели</strong><span id="download-detail"></span></div><progress id="download-progress"></progress><button class="secondary-button" id="cancel-download">Остановить загрузку</button></div></section>
+      <section id="page-settings" class="page" hidden><div class="page-heading"><div><div class="eyebrow">УДОБНО ИМЕННО ТЕБЕ</div><h1>Настройки<span class="accent">.</span></h1><p>Управляй записью, текстом и тем, что остаётся в истории.</p></div></div><div class="settings-card card"><div class="settings-row"><div><strong>Микрофон</strong><p>Список обновится после первого доступа к микрофону.</p></div><select id="microphone-select" aria-label="Микрофон"><option value="default">Системный по умолчанию</option></select></div><div class="settings-row"><div><strong>Горячая клавиша</strong><p id="hotkey-description">Начать и закончить запись из любого приложения.</p></div><div class="key-combo"><kbd class="modifier-key">Ctrl</kbd><kbd>Shift</kbd><kbd>Space</kbd></div></div><div class="settings-row"><div><strong>Вставлять в активное приложение</strong><p>Диктовка по горячей клавише вставляется туда, где стоял курсор. Текст также остаётся в буфере. При смене окна — только копируется.</p></div><label class="switch"><input type="checkbox" id="auto-paste" aria-label="Вставлять в активное приложение"><span></span></label></div><div class="settings-row" id="accessibility-row" hidden><div><strong>Разрешение на автовставку</strong><p id="accessibility-status"></p></div><button id="accessibility-button" class="secondary-button">Разрешить / проверить</button></div><div class="settings-row"><div><strong>Копировать готовый текст</strong><p>Для записи кнопкой и импорта. Вставка через <span class="paste-hint">Ctrl+V</span>.</p></div><label class="switch"><input type="checkbox" id="auto-copy" aria-label="Копировать готовый текст"><span></span></label></div><div class="settings-row"><div><strong>Хранить аудио в истории</strong><p>Можно переслушать сомнительный фрагмент. По умолчанию сохраняется только текст.</p></div><label class="switch"><input type="checkbox" id="keep-audio" aria-label="Хранить аудио в истории"><span></span></label></div><div class="settings-row vertical"><div><strong>О чём ты обычно говоришь</strong><p>Короткая подсказка модели: область работы, названия, тема. До 200 символов.</p></div><textarea id="context-input" rows="3" maxlength="200" placeholder="Например: разработка приложений, монтаж видео, автоматизация" aria-label="Контекст распознавания"></textarea><button id="save-context" class="secondary-button">Сохранить контекст</button></div></div></section>
+    </main>
+    <footer><span>Твои мысли. Твои слова.</span><span><span class="status-dot"></span>Сделано для спокойной работы</span></footer>
+  </div>
+  <dialog id="dictionary-dialog"><form id="dictionary-form"><div class="dialog-heading"><h2 id="word-dialog-title">Новое слово</h2><button type="button" class="icon-button" id="close-word" aria-label="Закрыть">×</button></div><label for="word-input">Правильное написание</label><input id="word-input" required maxlength="80" placeholder="Например, LocalSend"><label for="alias-input">Варианты ошибки <span class="muted">· необязательно</span></label><input id="alias-input" placeholder="локал сенд, local send"><p class="muted">Через запятую. Эти слова и фразы будут заменяться целиком. Не добавляй обычные слова, если они могут означать что-то другое.</p><p id="word-error" class="inline-error" role="alert"></p><div class="dialog-actions"><button type="button" class="secondary-button" id="cancel-word">Отмена</button><button type="submit" class="primary-button">Сохранить слово</button></div></form></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>

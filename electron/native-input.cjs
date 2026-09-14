@@ -1,0 +1,97 @@
+// Only OS window identity and the standard paste shortcut cross this boundary.
+// No text is typed as commands and Enter is never generated.
+function windowsBackend(koffi) {
+  const lib = koffi.load('user32.dll');
+  const foreground = lib.func('uintptr_t __stdcall GetForegroundWindow()');
+  const windowThread = lib.func('uint32_t __stdcall GetWindowThreadProcessId(uintptr_t hwnd, _Out_ uint32_t *pid)');
+  const Rect = koffi.struct({left: 'int32_t', top: 'int32_t', right: 'int32_t', bottom: 'int32_t'});
+  const Gui = koffi.struct({cbSize: 'uint32_t', flags: 'uint32_t', hwndActive: 'uintptr_t', hwndFocus: 'uintptr_t',
+    hwndCapture: 'uintptr_t', hwndMenuOwner: 'uintptr_t', hwndMoveSize: 'uintptr_t', hwndCaret: 'uintptr_t', rcCaret: Rect});
+  const guiInfo = lib.func('__stdcall', 'GetGUIThreadInfo', 'int', ['uint32_t', koffi.inout(koffi.pointer(Gui))]);
+  const keyState = lib.func('int16_t __stdcall GetAsyncKeyState(int key)');
+  const Mouse = koffi.struct({dx: 'int32_t', dy: 'int32_t', mouseData: 'uint32_t', dwFlags: 'uint32_t', time: 'uint32_t', dwExtraInfo: 'uintptr_t'});
+  const Key = koffi.struct({wVk: 'uint16_t', wScan: 'uint16_t', dwFlags: 'uint32_t', time: 'uint32_t', dwExtraInfo: 'uintptr_t'});
+  const Hardware = koffi.struct({uMsg: 'uint32_t', wParamL: 'uint16_t', wParamH: 'uint16_t'});
+  const Input = koffi.struct({type: 'uint32_t', u: koffi.union({mi: Mouse, ki: Key, hi: Hardware})});
+  const sendInput = lib.func('__stdcall', 'SendInput', 'uint32_t', ['uint32_t', koffi.pointer(Input), 'int']);
+  function capture() {
+    const hwnd = foreground();
+    const pid = [0]; const thread = windowThread(hwnd, pid);
+    if (!hwnd || !thread || pid[0] === process.pid) return null;
+    const info = {cbSize: koffi.sizeof(Gui)};
+    return {hwnd, pid: pid[0], focus: guiInfo(thread, info) ? info.hwndFocus : 0};
+  }
+  const key = (wVk, up = false) => ({type: 1, u: {ki: {wVk, wScan: 0, dwFlags: up ? 2 : 0, time: 0, dwExtraInfo: 0}}});
+  return {
+    capture, release() {}, permitted: () => true,
+    sameTarget(target) {
+      const now = capture();
+      return Boolean(now && now.hwnd === target.hwnd && now.pid === target.pid && now.focus === target.focus);
+    },
+    modifiersDown: () => [0x10, 0x11, 0x12, 0x5B, 0x5C].some(vk => (keyState(vk) & 0x8000) !== 0),
+    paste: () => sendInput(4, [key(0x11), key(0x56), key(0x56, true), key(0x11, true)], koffi.sizeof(Input)) === 4,
+  };
+}
+
+function macBackend(koffi) {
+  // AppKit and Accessibility run in the Electron app, so macOS permissions belong to Shopot.
+  const appKit = koffi.load('/System/Library/Frameworks/AppKit.framework/AppKit');
+  const objc = koffi.load('/usr/lib/libobjc.A.dylib');
+  const services = koffi.load('/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices');
+  const cf = koffi.load('/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation');
+  const cls = objc.func('void *objc_getClass(const char *name)');
+  const sel = objc.func('void *sel_registerName(const char *name)');
+  const msg = objc.func('objc_msgSend', 'void *', ['void *', 'void *']);
+  const msgInt = objc.func('objc_msgSend', 'int', ['void *', 'void *']);
+  const trusted = services.func('bool AXIsProcessTrusted()');
+  const axApp = services.func('void *AXUIElementCreateApplication(int pid)');
+  const axValue = services.func('int AXUIElementCopyAttributeValue(void *element, void *attribute, _Out_ void **value)');
+  const string = cf.func('void *CFStringCreateWithCString(void *allocator, const char *text, uint32_t encoding)');
+  const release = cf.func('void CFRelease(void *value)');
+  const equal = cf.func('bool CFEqual(void *a, void *b)');
+  const flags = services.func('uint64_t CGEventSourceFlagsState(int state)');
+  const event = services.func('void *CGEventCreateKeyboardEvent(void *source, uint16_t key, bool down)');
+  const setFlags = services.func('void CGEventSetFlags(void *event, uint64_t flags)');
+  const post = services.func('void CGEventPost(uint32_t tap, void *event)');
+  const focusedAttribute = string(null, 'AXFocusedUIElement', 0x08000100);
+  function frontPid() {
+    const workspace = msg(cls('NSWorkspace'), sel('sharedWorkspace'));
+    return msgInt(msg(workspace, sel('frontmostApplication')), sel('processIdentifier'));
+  }
+  function focused(pid) {
+    const application = axApp(pid); const out = [null];
+    try { return axValue(application, focusedAttribute, out) === 0 ? out[0] : null; }
+    finally { release(application); }
+  }
+  return {
+    // Retain AppKit's library wrapper for the lifetime of this backend.
+    appKit,
+    permitted: trusted,
+    capture() { const pid = frontPid(); return pid && pid !== process.pid ? {pid, focus: trusted() ? focused(pid) : null} : null; },
+    release(target) { if (target?.focus) release(target.focus); },
+    sameTarget(target) {
+      if (frontPid() !== target.pid) return false;
+      if (!target.focus) return false;
+      const now = focused(target.pid);
+      try { return Boolean(now && equal(now, target.focus)); }
+      finally { if (now) release(now); }
+    },
+    modifiersDown: () => (BigInt(flags(0)) & 0x1E0000n) !== 0n,
+    paste() {
+      const down = event(null, 9, true), up = event(null, 9, false);
+      try {
+        if (!down || !up) return false;
+        setFlags(down, 0x100000); setFlags(up, 0x100000);
+        post(0, down); post(0, up); return true;
+      } finally { if (down) release(down); if (up) release(up); }
+    },
+  };
+}
+
+function createNativeBackend() {
+  const koffi = require('koffi');
+  if (process.platform === 'win32') return windowsBackend(koffi);
+  if (process.platform === 'darwin') return macBackend(koffi);
+  throw new Error('Автовставка поддерживается на Windows и macOS');
+}
+module.exports = {createNativeBackend};

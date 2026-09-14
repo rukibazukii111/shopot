@@ -1,0 +1,15 @@
+node_modules/
+.venv/
+.private/
+.local/
+dist/
+build/
+release/
+__pycache__/
+.pytest_cache/
+test-results/
+*.spec
+*.log
+.DS_Store
+.env
+scripts/prepare-local-app.cjs
