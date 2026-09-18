@@ -73,3 +73,24 @@ test('microphone permission failure is recoverable; canceled recording releases 
     expect(fs.readdirSync(path.join(dataDir, 'audio'))).toEqual([]);
   } finally { await app.close(); }
 });
+
+test('smart formatting downloads through the engine and becomes selectable', async () => {
+  const dataDir = path.join(root, '.private', 'ui-test', `formatter-${Date.now()}`);
+  fs.mkdirSync(dataDir, {recursive: true});
+  const env = {...process.env, SHOPOT_DATA_DIR: dataDir}; delete env.ELECTRON_RUN_AS_NODE;
+  const app = await electron.launch({args: [path.join(root, 'tests/fixtures/harness.cjs')], env});
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('#engine-label')).toHaveText('Локальный движок');
+    expect(await page.locator('#formatting-select option[value="llm"]').isDisabled()).toBe(true);
+    await page.locator('[data-page="models"]').click();
+    await page.locator('[data-formatter]').click();
+    await expect.poll(() => app.evaluate(() => globalThis.__test.requests.map(r => r.command))).toEqual(['download-formatter']);
+    await app.evaluate(() => globalThis.__test.resolve({...globalThis.__test.status,
+      formatter: {...globalThis.__test.status.formatter, installed: true}}));
+    await expect(page.locator('[data-formatter]')).toHaveText('Используется');
+    expect((await page.evaluate(() => window.shopot.boot())).settings.formatting).toBe('llm');
+    expect(await page.locator('#formatting-select option[value="llm"]').isDisabled()).toBe(false);
+    await expect(page.locator('#formatting-select')).toHaveValue('llm');
+  } finally { await app.close(); }
+});

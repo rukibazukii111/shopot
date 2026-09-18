@@ -7,22 +7,27 @@ from __future__ import annotations
 
 import argparse
 import gc
+import hashlib
 import json
 import math
 import os
 from pathlib import Path
+import platform
 import queue
 import re
 import sys
 import threading
 import time
 import traceback
+import urllib.request
+import zipfile
 
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
-from text_processing import format_transcript, join_segments, layout_text, pause_sentences, vocabulary_prompt
+import llm
+from text_processing import format_transcript, join_segments, layout_text, pause_sentences, split_sentences, vocabulary_prompt
 
 WHISPER_FILES = ["model.bin", "config.json", "tokenizer.json", "vocabulary.json", "preprocessor_config.json"]
 GIGAAM_FILES = ["config.json", "v3_e2e_rnnt_encoder.int8.onnx", "v3_e2e_rnnt_decoder.int8.onnx",
@@ -49,6 +54,20 @@ GIGAAM_MAX_CHUNK_SECONDS = 20
 VAD_OPTIONS = {"min_silence_duration_ms": 500, "speech_pad_ms": 300}
 # A gap this long between VAD regions (~1.6 s of silence with padding) usually ends a thought: new paragraph.
 PARAGRAPH_PAUSE_SECONDS = 1.0
+# Optional layout model: official llama.cpp build (loaded in-process, no server) plus Qwen3-4B.
+# Both are pinned by hash; the runtime is verified before anything is extracted from it.
+FORMATTER = {
+    "name": "Qwen3-4B", "size": "2,4 ГБ",
+    "model": {"repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF", "revision": "a06e946bb6b655725eafa393f4a9745d460374c9",
+              "file": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf", "bytes": 2497281120,
+              "sha256": "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597"},
+    "runtimes": {
+        ("win32", "amd64"): {"url": f"https://github.com/ggml-org/llama.cpp/releases/download/{llm.LLAMA_BUILD}/"
+                                    f"llama-{llm.LLAMA_BUILD}-bin-win-vulkan-x64.zip",
+                             "sha256": "1f71a94bb3b7f615f110b0db5721618535feccff0b3fb0aba9b98c507e751b62",
+                             "files": r"(?:llama|ggml|ggml-base|ggml-vulkan|ggml-cpu-[a-z0-9]+|libomp)\.dll"},
+    },
+}
 # Measured: above 4 threads Whisper gains <15% but starves the rest of the system (laptops freeze).
 THREADS = max(1, min(4, (os.cpu_count() or 4) // 2))
 IDLE_UNLOAD_SECONDS = 10 * 60
@@ -84,6 +103,9 @@ class Engine:
         # Requests with id <= this value were canceled, including ones still queued.
         self.canceled_through = 0
         self.idle_timer = None
+        self.formatter_dir = self.data_dir / "formatter"
+        self.formatter_runtime = None
+        self.formatter = None
 
     def audio_path(self, filename):
         if not isinstance(filename, str) or not re.fullmatch(
@@ -117,39 +139,133 @@ class Engine:
                             "languages": value["languages"], "installed": self.is_installed(key)}
                            for key, value in MODELS.items()],
                 "device": "cpu", "computeType": "int8", "loadedModel": self.loaded_key,
-                "threads": THREADS}
+                "threads": THREADS, "formatter": self.formatter_status()}
 
     def download(self, key, request_id=None):
         folder = self.model_path(key)
         if self.is_installed(key):
             return self.status()
         from huggingface_hub import snapshot_download
-        from tqdm.auto import tqdm
-
-        class Progress(tqdm):
-            def __init__(self, *args, **kwargs):
-                self.last_report = 0.0
-                super().__init__(*args, **kwargs)
-
-            def update(self, n=1):
-                result = super().update(n)
-                now = time.monotonic()
-                if now - self.last_report > 0.5:
-                    self.last_report = now
-                    emit({"event": "progress", "id": request_id, "stage": "download",
-                          "model": key, "message": "Скачиваем модель…",
-                          "completed": self.n, "total": self.total, "unit": self.unit})
-                return result
-
         emit({"event": "progress", "id": request_id, "stage": "download", "model": key,
               "message": "Подключаемся к Hugging Face…"})
         snapshot_download(MODELS[key]["repo"], revision=MODELS[key]["revision"],
                           local_dir=str(folder), allow_patterns=MODELS[key]["files"], token=False,
-                          tqdm_class=Progress)
+                          tqdm_class=progress_class(request_id, key, "Скачиваем модель…"))
         # The marker is written only after the entire snapshot download succeeds.
         marker = folder / "shopot-ready.json"
         marker.write_text(json.dumps({"revision": MODELS[key]["revision"]}), "utf-8")
         return self.status()
+
+    # --- Optional layout model -------------------------------------------------------------
+
+    def formatter_runtime_spec(self):
+        machine = platform.machine().lower().replace("x86_64", "amd64")
+        return FORMATTER["runtimes"].get((sys.platform, machine))
+
+    def formatter_paths(self):
+        return (self.formatter_dir / f"runtime-{llm.LLAMA_BUILD}", self.formatter_dir / "model" / FORMATTER["model"]["file"],
+                self.formatter_dir / "shopot-ready.json")
+
+    def formatter_installed(self):
+        spec = self.formatter_runtime_spec()
+        runtime, model, marker = self.formatter_paths()
+        try:
+            ready = json.loads(marker.read_text("utf-8"))
+            return bool(spec) and ready == {"runtime": spec["sha256"], "model": FORMATTER["model"]["sha256"]} and \
+                model.stat().st_size == FORMATTER["model"]["bytes"] and all(
+                    (runtime / name).is_file() for name in llm.library_names())
+        except (OSError, ValueError):
+            return False
+
+    def formatter_status(self):
+        return {"name": FORMATTER["name"], "size": FORMATTER["size"], "supported": bool(self.formatter_runtime_spec()),
+                "installed": self.formatter_installed(), "loaded": self.formatter is not None,
+                "gpu": self.formatter.on_gpu if self.formatter else None}
+
+    def download_formatter(self, request_id=None):
+        spec = self.formatter_runtime_spec()
+        if not spec:
+            raise ValueError("Умное оформление пока доступно только на Windows x64.")
+        if self.formatter_installed():
+            return self.status()
+        runtime, model, marker = self.formatter_paths()
+        marker.unlink(missing_ok=True)
+        self.formatter_dir.mkdir(parents=True, exist_ok=True)
+        archive = self.formatter_dir / "runtime.zip.part"
+        emit({"event": "progress", "id": request_id, "stage": "download", "model": "formatter",
+              "message": "Скачиваем движок оформления…"})
+        digest = hashlib.sha256()
+        with urllib.request.urlopen(spec["url"], timeout=60) as response, open(archive, "wb") as out:
+            total, done, last = int(response.headers.get("Content-Length") or 0), 0, 0.0
+            while chunk := response.read(1 << 20):
+                out.write(chunk); digest.update(chunk); done += len(chunk)
+                if time.monotonic() - last > 0.5:
+                    last = time.monotonic()
+                    emit({"event": "progress", "id": request_id, "stage": "download", "model": "formatter",
+                          "message": "Скачиваем движок оформления…", "completed": done, "total": total, "unit": "B"})
+        if digest.hexdigest() != spec["sha256"]:
+            archive.unlink(missing_ok=True)
+            raise ValueError("Архив движка оформления не прошёл проверку. Попробуй скачать ещё раз.")
+        staging = self.formatter_dir / "runtime.part"
+        if staging.exists():
+            import shutil
+            shutil.rmtree(staging)
+        staging.mkdir()
+        with zipfile.ZipFile(archive) as bundle:
+            for info in bundle.infolist():
+                # Only the library's own DLLs from the archive root; tools and nested paths are skipped.
+                if re.fullmatch(spec["files"], info.filename):
+                    (staging / info.filename).write_bytes(bundle.read(info))
+        archive.unlink()
+        if runtime.exists():
+            import shutil
+            shutil.rmtree(runtime)
+        staging.rename(runtime)
+        from huggingface_hub import snapshot_download
+        snapshot_download(FORMATTER["model"]["repo"], revision=FORMATTER["model"]["revision"],
+                          local_dir=str(model.parent), allow_patterns=[FORMATTER["model"]["file"]], token=False,
+                          tqdm_class=progress_class(request_id, "formatter", "Скачиваем модель оформления…"))
+        emit({"event": "progress", "id": request_id, "stage": "download", "model": "formatter",
+              "message": "Проверяем модель оформления…"})
+        if file_sha256(model) != FORMATTER["model"]["sha256"]:
+            model.unlink(missing_ok=True)
+            raise ValueError("Модель оформления не прошла проверку. Попробуй скачать ещё раз.")
+        marker.write_text(json.dumps({"runtime": spec["sha256"], "model": FORMATTER["model"]["sha256"]}), "utf-8")
+        # The GPU driver compiles shaders on first use (~20 s once per executable); do it now, not on a dictation.
+        emit({"event": "progress", "id": request_id, "stage": "download", "model": "formatter",
+              "message": "Готовим видеокарту…"})
+        try:
+            self.load_formatter().tags(["Первое.", "Второе."])
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
+        return self.status()
+
+    def load_formatter(self):
+        with self.model_lock:
+            if self.formatter is None:
+                runtime, model, _ = self.formatter_paths()
+                if self.formatter_runtime is None:
+                    self.formatter_runtime = llm.Runtime(runtime)
+                self.formatter = llm.Formatter(self.formatter_runtime, model, THREADS)
+            return self.formatter
+
+    def unload_formatter(self):
+        with self.model_lock:
+            if self.formatter is not None:
+                self.formatter.close()
+                self.formatter = None
+
+    def layout(self, text, pauses, formatting, request_id):
+        """Returns (text, formatting actually used). The model only chooses tags; any failure falls back to rules."""
+        sentences = split_sentences(text)
+        if formatting == "llm" and len(sentences) >= 2 and self.formatter_installed():
+            try:
+                tags = self.load_formatter().tags(sentences, lambda: self.is_canceled(request_id))
+                return layout_text(text, pauses, tags), "llm"
+            except Exception:
+                self.check_canceled(request_id)
+                traceback.print_exc(file=sys.stderr)
+        return layout_text(text, pauses), "rules"
 
     def transcribe(self, request):
         key = request.get("model", "turbo")
@@ -166,7 +282,7 @@ class Engine:
         mode = request.get("mode", "natural")
         if mode not in ("natural", "minimal", "raw"):
             raise ValueError("Неизвестный режим текста")
-        if request.get("formatting", "rules") not in ("rules", "off"):
+        if request.get("formatting", "rules") not in ("rules", "off", "llm"):
             raise ValueError("Неизвестный режим оформления")
         request_id = request.get("id")
         with self.model_lock:
@@ -208,12 +324,14 @@ class Engine:
             self.loaded_key = None
             gc.collect()
 
-    def preload(self, key):
-        """Warm the model while the user is still speaking."""
+    def preload(self, key, formatting=None):
+        """Warm the models while the user is still speaking."""
         with self.model_lock:
             self.cancel_idle_unload()
             try:
                 self.load(key)
+                if formatting == "llm" and self.formatter_installed():
+                    self.load_formatter()
             finally:
                 self.schedule_idle_unload()
 
@@ -236,9 +354,13 @@ class Engine:
             if self.idle_timer is timer:
                 self.idle_timer = None
                 self.unload()
+                self.unload_formatter()
+
+    def is_canceled(self, request_id):
+        return isinstance(request_id, int) and request_id <= self.canceled_through
 
     def check_canceled(self, request_id):
-        if isinstance(request_id, int) and request_id <= self.canceled_through:
+        if self.is_canceled(request_id):
             raise Canceled("Операция отменена.")
 
     def _transcribe(self, request, key, audio_path, language, entries, mode, request_id):
@@ -271,10 +393,13 @@ class Engine:
             parsed, words, detected = self._whisper_segments(audio, duration, language, entries, request, request_id)
             raw = " ".join(s["text"] for s in parsed).strip()
         text, replacements = format_transcript(raw, entries, mode)
-        if mode == "natural" and request.get("formatting", "rules") == "rules":
+        formatting, format_started = request.get("formatting", "rules"), time.monotonic()
+        if mode == "natural" and formatting != "off":
             gaps = [i > 0 and parsed[i]["start"] - parsed[i - 1]["end"] >= PARAGRAPH_PAUSE_SECONDS for i in range(len(parsed))]
-            text = layout_text(text, pause_sentences([s["text"] for s in parsed], gaps, names))
-        return {"text": text, "rawText": raw, "words": words, "segments": parsed,
+            text, formatting = self.layout(text, pause_sentences([s["text"] for s in parsed], gaps, names), formatting, request_id)
+        else:
+            formatting = "off"
+        return {"formatting": formatting, "formatElapsed": finite(time.monotonic() - format_started),"text": text, "rawText": raw, "words": words, "segments": parsed,
                 "replacements": replacements, "duration": finite(duration),
                 "elapsed": finite(time.monotonic() - started), "language": detected,
                 "model": key, "noSpeech": not bool(raw), "device": "cpu",
@@ -318,6 +443,34 @@ class Engine:
                           "probability": finite(w.probability)} for w in segment.words or [])
             self._progress(request_id, segment.end / max(duration, 0.1))
         return parsed, words, info.language
+
+
+def progress_class(request_id, model, message):
+    """tqdm subclass that reports download progress over the JSON protocol."""
+    from tqdm.auto import tqdm
+
+    class Progress(tqdm):
+        def __init__(self, *args, **kwargs):
+            self.last_report = 0.0
+            super().__init__(*args, **kwargs)
+
+        def update(self, n=1):
+            result = super().update(n)
+            now = time.monotonic()
+            if now - self.last_report > 0.5:
+                self.last_report = now
+                emit({"event": "progress", "id": request_id, "stage": "download", "model": model,
+                      "message": message, "completed": self.n, "total": self.total, "unit": self.unit})
+            return result
+    return Progress
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        while chunk := source.read(8 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def speech_windows(speech, max_samples, split_gap=None):
@@ -399,12 +552,14 @@ def main():
             command = request.get("command")
             if command == "preload":
                 if request.get("model") in MODELS:
-                    engine.preload(request["model"])
+                    engine.preload(request["model"], request.get("formatting"))
                 continue
             if command == "status":
                 result = engine.status()
             elif command == "download":
                 result = engine.download(request["model"], request.get("id"))
+            elif command == "download-formatter":
+                result = engine.download_formatter(request.get("id"))
             elif command == "transcribe":
                 result = engine.transcribe(request)
             else:

@@ -26,7 +26,7 @@ function paintIcons(parent = document) { parent.querySelectorAll('[data-icon]').
 function escapeHtml(value) { return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 const names = {dictation: 'Диктовка', history: 'История', dictionary: 'Мой словарь', models: 'Модели', settings: 'Настройки'};
 const modes = {natural: 'Естественно', minimal: 'Минимум знаков', raw: 'Исходный результат'};
-const modelNames = {gigaam: 'GigaAM', turbo: 'Whisper turbo', small: 'Whisper small', 'large-v3': 'Whisper large-v3'};
+const modelNames = {formatter: 'модель оформления', gigaam: 'GigaAM', turbo: 'Whisper turbo', small: 'Whisper small', 'large-v3': 'Whisper large-v3'};
 const state = {settings: {}, dictionary: [], history: [], pendingRecordings: [], engine: null, page: 'dictation', phase: 'idle', operation: 0, hotkeyRegistered: false};
 let recorder, stream, audioContext, analyser, raf, recordingTimer, startedAt, recordingCanceled = false;
 let editingWord = null, toastTimer, blobUrls = [], contextDirty = false, captureId = null;
@@ -51,7 +51,7 @@ function duration(seconds) { const s = Math.max(0, Math.round(seconds || 0)); re
 function dateLabel(iso) { return new Intl.DateTimeFormat('ru', {day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'}).format(new Date(iso)); }
 function pluralWords(number) { return number % 10 === 1 && number % 100 !== 11 ? 'слово' : [2, 3, 4].includes(number % 10) && ![12,13,14].includes(number % 100) ? 'слова' : 'слов'; }
 function updateEngine() {
-  syncLanguages();
+  syncLanguages(); syncFormatting();
   $('#engine-dot').className = 'status-dot' + (state.engine ? '' : state.engineError ? ' error' : ' starting');
   $('#engine-label').textContent = state.engine ? 'Локальный движок' : state.engineError ? 'Движок недоступен' : 'Запускаем движок';
   $('#active-model').textContent = modelNames[state.settings.model] || 'Whisper turbo';
@@ -101,6 +101,10 @@ async function saveSettings(changes) {
   state.settings = await api.settings({...state.settings, ...changes});
   if ('context' in changes) contextDirty = false;
   syncSettings(); updateEngine();
+}
+function syncFormatting() {
+  const formatter = state.engine?.formatter;
+  $('#formatting-select').querySelector('[value="llm"]').disabled = !formatter?.installed;
 }
 function syncLanguages() {
   // Russian-only models (GigaAM) cannot take English or auto-detection. The list arrives with the engine status.
@@ -304,6 +308,21 @@ function renderModels() {
     const desc = descriptions[id]; const model = state.engine?.models?.find(m => m.id === id); const selected = state.settings.model === id;
     return `<article class="card model-card ${selected ? 'selected' : ''}"><div class="model-topline"><span class="model-symbol">${icon(id === 'small' ? 'sparkle' : 'layers')}</span><span class="model-tag">${selected ? 'ВЫБРАНА' : desc.tag}</span></div><h2>${desc.title}</h2><p class="model-subtitle">${desc.subtitle}</p><p class="model-summary">${desc.text}</p><div class="model-size">${model?.installed ? '✓ Уже на компьютере' : `${model?.size || (id === 'turbo' ? '1,6 ГБ' : desc.tag)} · загрузка с Hugging Face`}</div><button class="${selected && model?.installed ? 'secondary' : 'primary'}-button" data-model="${id}" ${isBusy() || !state.engine || (selected && model?.installed) ? 'disabled' : ''}>${model?.installed ? (selected ? 'Используется' : 'Выбрать модель') : `${icon('download')}Скачать`}</button></article>`;
   }).join('');
+  const formatter = state.engine?.formatter, active = state.settings.formatting === 'llm' && formatter?.installed;
+  $('#formatter-list').innerHTML = `<article class="card model-card ${active ? 'selected' : ''}"><div class="model-topline"><span class="model-symbol">${icon('sparkle')}</span><span class="model-tag">${active ? 'ВКЛЮЧЕНО' : formatter?.size || '2,4 ГБ'}</span></div><h2>Умное оформление</h2><p class="model-subtitle">QWEN3-4B · ЛОКАЛЬНАЯ НЕЙРОСЕТЬ</p><p class="model-summary">Абзацы и списки расставляет нейросеть на видеокарте, около секунды на диктовку. Слова не меняются. Без видеокарты работает медленно.</p><div class="model-size">${formatter?.installed ? '✓ Уже на компьютере' : formatter?.supported === false ? 'Пока только для Windows' : `${formatter?.size || '2,4 ГБ'} · llama.cpp и Hugging Face`}</div><button class="${active ? 'secondary' : 'primary'}-button" data-formatter ${isBusy() || !state.engine || active || formatter?.supported === false ? 'disabled' : ''}>${active ? 'Используется' : formatter?.installed ? 'Включить' : `${icon('download')}Скачать`}</button></article>`;
+}
+async function selectFormatter() {
+  if (isBusy()) return;
+  if (state.engine.formatter?.installed) { await saveSettings({formatting: 'llm'}); renderModels(); toast('Умное оформление включено'); return; }
+  const operation = ++state.operation;
+  state.phase = 'downloading'; refreshControls(); renderModels();
+  $('#download-title').textContent = 'Скачиваем ' + modelNames.formatter;
+  $('#download-detail').textContent = 'Подключаемся…'; $('#download-progress').removeAttribute('value');
+  try {
+    const engine = await api.download('formatter');
+    if (operation === state.operation) { state.engine = engine; await saveSettings({formatting: 'llm'}); toast('Умное оформление готово и включено'); }
+  } catch (error) { if (operation === state.operation) showError(error); }
+  finally { if (operation === state.operation) { state.phase = 'idle'; updateEngine(); renderModels(); } }
 }
 async function selectModel(id) {
   if (isBusy()) return;
@@ -325,6 +344,7 @@ async function selectModel(id) {
 document.addEventListener('click', event => {
   const nav = event.target.closest('[data-page]'); if (nav) page(nav.dataset.page);
   const modelButton = event.target.closest('[data-model]'); if (modelButton) guard(() => selectModel(modelButton.dataset.model));
+  if (event.target.closest('[data-formatter]')) guard(selectFormatter);
   const wordButton = event.target.closest('[data-word-action]');
   if (wordButton) {
     const id = wordButton.closest('[data-word-id]').dataset.wordId;

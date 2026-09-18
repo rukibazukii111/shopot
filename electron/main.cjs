@@ -79,7 +79,7 @@ function beginCapture(global = false) {
   capture = {id: crypto.randomUUID(), global, target: global ? paste.capture() : null, phase: 'requesting',
     settings: structuredClone(store.data.settings), dictionary: structuredClone(store.data.dictionary)};
   // Load the model while the user speaks instead of after they stop.
-  worker.notify('preload', {model: capture.settings.model});
+  worker.notify('preload', {model: capture.settings.model, formatting: capture.settings.formatting});
   if (blocker === undefined) blocker = powerSaveBlocker.start('prevent-app-suspension');
   globalShortcut.register('Escape', () => { hideWidget(); send('cancel-recording'); });
   if (global) showWidget({phase: 'requesting', elapsed: 0, level: 0, message: '', hint: ''});
@@ -263,7 +263,9 @@ else {
       const currentJob = ++job;
       setBusy(true); downloading = true;
       try {
-        const status = await worker.request('download', {model: modelId(id)});
+        // 'formatter' is the optional layout model (llama.cpp runtime + Qwen), downloaded and verified by the engine.
+        const status = id === 'formatter' ? await worker.request('download-formatter')
+          : await worker.request('download', {model: modelId(id)});
         worker.status = status; send('engine', {status}); return status;
       } finally { downloading = false; if (currentJob === job) setBusy(false); }
     });

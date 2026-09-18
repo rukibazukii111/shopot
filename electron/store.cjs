@@ -8,7 +8,7 @@ const DEFAULT_SETTINGS = {
 };
 const MODEL_IDS = ['gigaam', 'small', 'turbo', 'large-v3'];
 const RUSSIAN_ONLY = ['gigaam'];
-const FORMATTING = ['rules', 'off'];
+const FORMATTING = ['rules', 'off', 'llm'];
 const INITIAL_DICTIONARY = ['Whisper', 'GitHub', 'iOS', 'iPhone', 'Reels', 'TikTok', 'YouTube', 'VPN']
   .map(word => ({id: crypto.randomUUID(), word, aliases: []}));
 

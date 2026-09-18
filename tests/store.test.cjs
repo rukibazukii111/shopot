@@ -33,6 +33,7 @@ test('model ids and modes cannot be arbitrary strings', () => {
   assert.throws(() => validateSettings({autoPaste: 'false'}));
   assert.throws(() => validateSettings({formatting: 'rewrite'}));
   assert.equal(validateSettings({}).formatting, 'rules');
+  assert.equal(validateSettings({formatting: 'llm'}).formatting, 'llm');
   assert.equal(validateSettings({model: 'large-v3', autoCopy: false}).autoPaste, true);
 });
 test('Russian-only GigaAM is the default and cannot be combined with other languages', () => {

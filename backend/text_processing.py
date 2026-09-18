@@ -208,6 +208,9 @@ def layout_text(text, pauses=(), tags=None):
         return text
     if tags is None or len(tags) != len(sentences) or any(t not in LAYOUT_TAGS for t in tags):
         tags = rule_tags(sentences, set(pauses))
+    else:
+        # «Вот.», «Понял?» stay with the previous paragraph whoever decided the layout.
+        tags = [("same" if i and t == "new" and _is_filler(s) else t) for i, (t, s) in enumerate(zip(tags, sentences))]
     return render_layout(sentences, tags)
 
 

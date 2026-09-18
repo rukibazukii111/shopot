@@ -1,8 +1,9 @@
 // Isolated UI harness: production IPC/controller, fake ASR, actual OS input backend.
 const {globalShortcut} = require('electron');
 const {Worker} = require('../../electron/worker.cjs');
-const status = {models: [{id: 'gigaam', installed: true, languages: ['ru']}, {id: 'turbo', installed: true, languages: ['ru', 'en', 'auto']}], device: 'cpu', computeType: 'int8'};
+const status = {formatter: {name: 'Qwen3-4B', size: '2,4 ГБ', supported: true, installed: false}, models: [{id: 'gigaam', installed: true, languages: ['ru']}, {id: 'turbo', installed: true, languages: ['ru', 'en', 'auto']}], device: 'cpu', computeType: 'int8'};
 globalThis.__test = {requests: [], notifications: [], nativeCalls: []};
+globalThis.__test.status = status;
 const nativeModule = require('../../electron/native-input.cjs');
 const createNative = nativeModule.createNativeBackend;
 nativeModule.createNativeBackend = () => {
@@ -27,6 +28,7 @@ Worker.prototype.start = function () { this.status = status; setImmediate(() => 
 Worker.prototype.request = function (command, payload) {
   globalThis.__test.requests.push({command, payload});
   return new Promise((resolve, reject) => {
+    globalThis.__test.resolve = value => resolve(value);
     globalThis.__test.finish = () => resolve({text: 'Видосы для GitHub готовы.', rawText: 'Видосы для GitHub готовы.', duration: 2, elapsed: .1, model: 'turbo', words: []});
     globalThis.__test.fail = () => reject(new Error('Тестовая ошибка распознавания'));
     globalThis.__test.progress = () => this.emit('progress', {stage: 'transcribe', fraction: .5, message: 'Тестовый прогресс'});

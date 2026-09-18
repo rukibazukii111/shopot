@@ -205,7 +205,8 @@ def test_invalid_model_tags_fall_back_to_rules():
     expected = layout_text(LIST_TEXT)
     assert layout_text(LIST_TEXT, tags=['new', 'bogus']) == expected
     tags = ['new'] * len(split_sentences(LIST_TEXT))
-    assert layout_text(LIST_TEXT, tags=tags).count('\n\n') == len(tags) - 1
+    # Valid model tags are used as given, except that «Это важно.» (a filler) stays attached.
+    assert layout_text(LIST_TEXT, tags=tags).count('\n\n') == len(tags) - 2
 
 
 def test_pause_sentences_only_counts_pauses_after_a_finished_sentence():
@@ -219,3 +220,57 @@ def test_long_pauses_start_a_new_speech_window():
     speech = [{'start': 0, 'end': 50}, {'start': 60, 'end': 90}, {'start': 150, 'end': 180}]
     assert speech_windows(speech, 1000) == [(0, 180)]
     assert speech_windows(speech, 1000, split_gap=40) == [(0, 90), (150, 180)]
+
+
+def test_model_answer_is_fixed_json_around_the_tags():
+    import json
+    import llm
+    parts = llm.answer_parts(3)
+    answer = parts[0] + 'new' + parts[1] + 'num' + parts[2] + 'num' + parts[3]
+    assert json.loads(answer) == {'tags': [{'n': 1, 't': 'new'}, {'n': 2, 't': 'num'}, {'n': 3, 't': 'num'}]}
+
+
+def test_model_tags_keep_fillers_attached():
+    from text_processing import layout_text
+    text = 'Первая мысль здесь. Вот. Вторая мысль тут.'
+    assert layout_text(text, tags=['new', 'new', 'new']) == 'Первая мысль здесь. Вот.\n\nВторая мысль тут.'
+
+
+def test_llm_failure_falls_back_to_rules(tmp_path, monkeypatch):
+    from text_processing import layout_text
+    engine = Engine(tmp_path)
+    monkeypatch.setattr(engine, 'formatter_installed', lambda: True)
+
+    def broken():
+        raise RuntimeError('no GPU')
+    monkeypatch.setattr(engine, 'load_formatter', broken)
+    assert engine.layout(LIST_TEXT, set(), 'llm', 1) == (layout_text(LIST_TEXT), 'rules')
+    monkeypatch.setattr(engine, 'formatter_installed', lambda: False)
+    assert engine.layout(LIST_TEXT, set(), 'llm', 1)[1] == 'rules'
+
+
+def test_formatter_is_not_installed_without_verified_marker(tmp_path):
+    import json
+    engine = Engine(tmp_path)
+    runtime, model, marker = engine.formatter_paths()
+    runtime.mkdir(parents=True); model.parent.mkdir(parents=True)
+    for name in __import__('llm').library_names():
+        (runtime / name).write_bytes(b'x')
+    model.write_bytes(b'x')
+    assert not engine.formatter_installed()
+    marker.write_text(json.dumps({'runtime': 'other', 'model': 'other'}), 'utf-8')
+    assert not engine.formatter_installed()
+
+
+@pytest.mark.skipif(not __import__('os').environ.get('SHOPOT_LLM_TEST'), reason='needs llama.cpp runtime and Qwen model')
+def test_real_model_tags_an_ordinal_list():
+    import os
+    import llm
+    runtime, model = os.environ['SHOPOT_LLM_TEST'].split(os.pathsep)
+    formatter = llm.Formatter(llm.Runtime(runtime), model, 4)
+    try:
+        tags = formatter.tags(['Давай обсудим план.', 'Во-первых, нужно ускорить распознавание.',
+                               'Во-вторых, надо поработать со вставкой.', 'Теперь про дизайн.'])
+        assert tags[1:3] == ['num', 'num'] and tags[0] == 'new'
+    finally:
+        formatter.close()
