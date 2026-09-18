@@ -1,7 +1,7 @@
 // Isolated UI harness: production IPC/controller, fake ASR, actual OS input backend.
 const {globalShortcut} = require('electron');
 const {Worker} = require('../../electron/worker.cjs');
-const status = {models: [{id: 'turbo', installed: true}], device: 'cpu', computeType: 'int8'};
+const status = {models: [{id: 'gigaam', installed: true, languages: ['ru']}, {id: 'turbo', installed: true, languages: ['ru', 'en', 'auto']}], device: 'cpu', computeType: 'int8'};
 globalThis.__test = {requests: [], notifications: [], nativeCalls: []};
 const nativeModule = require('../../electron/native-input.cjs');
 const createNative = nativeModule.createNativeBackend;

@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const {pathToFileURL} = require('node:url');
 const crypto = require('node:crypto');
-const {Store} = require('./store.cjs');
+const {Store, MODEL_IDS} = require('./store.cjs');
 const {Worker} = require('./worker.cjs');
 const {PasteService} = require('./paste.cjs');
 const {createNativeBackend} = require('./native-input.cjs');
@@ -28,7 +28,7 @@ function trusted(event) {
 function ipc(name, handler) { ipcMain.handle(name, (event, value) => { trusted(event); return handler(value); }); }
 function pastePermission() { return process.platform !== 'darwin' || systemPreferences.isTrustedAccessibilityClient(false); }
 function snapshot() { return {...store.data, engine: worker.status, engineError, busy, hotkeyRegistered, nativeAvailable, pastePermission: pastePermission(), platform: process.platform}; }
-function modelId(id) { if (!['small', 'turbo', 'large-v3'].includes(id)) throw new Error('Неизвестная модель'); return id; }
+function modelId(id) { if (!MODEL_IDS.includes(id)) throw new Error('Неизвестная модель'); return id; }
 function textValue(value) { if (typeof value !== 'string' || value.length > 200000) throw new Error('Недопустимый текст'); return value; }
 function entryFor(id) { const entry = store.data.history.find(e => e.id === id); if (!entry) throw new Error('Запись не найдена'); return entry; }
 function audioFor(entry) {

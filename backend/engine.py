@@ -22,9 +22,16 @@ os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
-from text_processing import format_transcript, vocabulary_prompt
+from text_processing import format_transcript, join_segments, vocabulary_prompt
 
+WHISPER_FILES = ["model.bin", "config.json", "tokenizer.json", "vocabulary.json", "preprocessor_config.json"]
+GIGAAM_FILES = ["config.json", "v3_e2e_rnnt_encoder.int8.onnx", "v3_e2e_rnnt_decoder.int8.onnx",
+                "v3_e2e_rnnt_joint.int8.onnx", "v3_e2e_rnnt_vocab.txt"]
 MODELS = {
+    # GigaAM (Sber, MIT): Russian only, no 30 s padding, so short phrases take a fraction of a second.
+    "gigaam": {"name": "GigaAM v3", "repo": "istupakov/gigaam-v3-onnx", "engine": "gigaam",
+               "revision": "322c3b29492673eb7d0b434bfa9dfb8653e34d02", "size": "216 МБ",
+               "languages": ["ru"], "files": GIGAAM_FILES, "required": GIGAAM_FILES},
     "turbo": {"name": "Whisper large-v3 turbo", "repo": "dropbox-dash/faster-whisper-large-v3-turbo",
               "revision": "0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf", "size": "1,6 ГБ"},
     "small": {"name": "Whisper small", "repo": "Systran/faster-whisper-small",
@@ -32,7 +39,14 @@ MODELS = {
     "large-v3": {"name": "Whisper large-v3", "repo": "Systran/faster-whisper-large-v3",
                  "revision": "edaa852ec7e145841d8ffdb056a99866b5f0a478", "size": "3,1 ГБ"},
 }
-MODEL_FILES = ["model.bin", "config.json", "tokenizer.json", "vocabulary.json", "preprocessor_config.json"]
+for _model in MODELS.values():
+    _model.setdefault("engine", "whisper")
+    _model.setdefault("languages", ["ru", "en", "auto"])
+    _model.setdefault("files", WHISPER_FILES)
+    _model.setdefault("required", ["model.bin", "config.json", "tokenizer.json"])
+# GigaAM is trained on utterances up to ~25 s; longer speech is split at VAD pauses.
+GIGAAM_MAX_CHUNK_SECONDS = 20
+VAD_OPTIONS = {"min_silence_duration_ms": 500, "speech_pad_ms": 300}
 # Measured: above 4 threads Whisper gains <15% but starves the rest of the system (laptops freeze).
 THREADS = max(1, min(4, (os.cpu_count() or 4) // 2))
 IDLE_UNLOAD_SECONDS = 10 * 60
@@ -91,13 +105,14 @@ class Engine:
             marker = json.loads((folder / "shopot-ready.json").read_text("utf-8"))
             return marker.get("revision") == MODELS[key]["revision"] and all(
                 (folder / f).is_file() and (folder / f).stat().st_size > 0
-                for f in ("model.bin", "config.json", "tokenizer.json")
+                for f in MODELS[key]["required"]
             )
         except (OSError, ValueError):
             return False
 
     def status(self):
-        return {"models": [{"id": key, **value, "installed": self.is_installed(key)}
+        return {"models": [{"id": key, "name": value["name"], "size": value["size"], "engine": value["engine"],
+                            "languages": value["languages"], "installed": self.is_installed(key)}
                            for key, value in MODELS.items()],
                 "device": "cpu", "computeType": "int8", "loadedModel": self.loaded_key,
                 "threads": THREADS}
@@ -127,7 +142,7 @@ class Engine:
         emit({"event": "progress", "id": request_id, "stage": "download", "model": key,
               "message": "Подключаемся к Hugging Face…"})
         snapshot_download(MODELS[key]["repo"], revision=MODELS[key]["revision"],
-                          local_dir=str(folder), allow_patterns=MODEL_FILES, token=False,
+                          local_dir=str(folder), allow_patterns=MODELS[key]["files"], token=False,
                           tqdm_class=Progress)
         # The marker is written only after the entire snapshot download succeeds.
         marker = folder / "shopot-ready.json"
@@ -142,6 +157,9 @@ class Engine:
         language = request.get("language", "ru")
         if language not in ("ru", "en", "auto"):
             raise ValueError("Неизвестный язык")
+        if language not in MODELS[key]["languages"]:
+            raise ValueError(f"{MODELS[key]['name']} распознаёт только русский. "
+                             "Для других языков выбери Whisper в разделе «Модели».")
         entries = request.get("dictionary", [])
         mode = request.get("mode", "natural")
         if mode not in ("natural", "minimal", "raw"):
@@ -165,9 +183,18 @@ class Engine:
             emit({"event": "progress", "id": request_id, "stage": "loading",
                   "message": "Загружаем модель в память…"})
             self.unload()
-            from faster_whisper import WhisperModel
-            self.model = WhisperModel(str(self.model_path(key)), device="cpu", compute_type="int8",
-                                      cpu_threads=THREADS, local_files_only=True)
+            if MODELS[key]["engine"] == "gigaam":
+                import onnx_asr
+                import onnxruntime
+                options = onnxruntime.SessionOptions()
+                options.intra_op_num_threads = THREADS
+                options.inter_op_num_threads = 1
+                self.model = onnx_asr.load_model("gigaam-v3-e2e-rnnt", self.model_path(key),
+                                                 quantization="int8", sess_options=options)
+            else:
+                from faster_whisper import WhisperModel
+                self.model = WhisperModel(str(self.model_path(key)), device="cpu", compute_type="int8",
+                                          cpu_threads=THREADS, local_files_only=True)
             self.loaded_key = key
             return time.monotonic() - started
 
@@ -231,13 +258,46 @@ class Engine:
             return {"text": "", "rawText": "", "words": [], "segments": [], "replacements": [],
                     "duration": duration, "elapsed": finite(time.monotonic() - started),
                     "language": language, "model": key, "noSpeech": True}
+        if MODELS[key]["engine"] == "gigaam":
+            parsed = self._gigaam_segments(audio, duration, request_id)
+            raw = join_segments([s["text"] for s in parsed], [e["word"] for e in entries])
+            words, detected = [], "ru"
+        else:
+            parsed, words, detected = self._whisper_segments(audio, duration, language, entries, request, request_id)
+            raw = " ".join(s["text"] for s in parsed).strip()
+        text, replacements = format_transcript(raw, entries, mode)
+        return {"text": text, "rawText": raw, "words": words, "segments": parsed,
+                "replacements": replacements, "duration": finite(duration),
+                "elapsed": finite(time.monotonic() - started), "language": detected,
+                "model": key, "noSpeech": not bool(raw), "device": "cpu",
+                "loadElapsed": finite(load_elapsed)}
+
+    def _progress(self, request_id, fraction):
+        emit({"event": "progress", "id": request_id, "stage": "transcribe",
+              "message": "Распознаём речь на компьютере…", "fraction": min(1, fraction)})
+
+    def _gigaam_segments(self, audio, duration, request_id):
+        from faster_whisper.vad import VadOptions, get_speech_timestamps
+        speech = get_speech_timestamps(audio, VadOptions(**VAD_OPTIONS, max_speech_duration_s=GIGAAM_MAX_CHUNK_SECONDS))
+        parsed = []
+        for start, end in speech_windows(speech, GIGAAM_MAX_CHUNK_SECONDS * 16000):
+            self.check_canceled(request_id)
+            # Pauses inside a window are kept: they help the model place punctuation.
+            text = self.model.recognize(audio[start:end], sample_rate=16000).strip()
+            if text:
+                parsed.append({"start": finite(start / 16000), "end": finite(end / 16000),
+                               "text": text, "noSpeechProbability": 0.0})
+            self._progress(request_id, end / 16000 / max(duration, 0.1))
+        return parsed
+
+    def _whisper_segments(self, audio, duration, language, entries, request, request_id):
         prompt = vocabulary_prompt(entries, request.get("context", ""))
         segments, info = self.model.transcribe(
             audio, language=None if language == "auto" else language, task="transcribe",
             beam_size=5, temperature=0.0,
             initial_prompt=prompt or None, hotwords=", ".join(e["word"] for e in entries)[:500] or None,
             condition_on_previous_text=False, word_timestamps=True,
-            vad_filter=True, vad_parameters={"min_silence_duration_ms": 500, "speech_pad_ms": 300},
+            vad_filter=True, vad_parameters=VAD_OPTIONS,
             hallucination_silence_threshold=2.0,
         )
         parsed = []
@@ -248,16 +308,19 @@ class Engine:
                            "text": segment.text.strip(), "noSpeechProbability": finite(segment.no_speech_prob)})
             words.extend({"start": finite(w.start), "end": finite(w.end), "word": w.word,
                           "probability": finite(w.probability)} for w in segment.words or [])
-            emit({"event": "progress", "id": request_id, "stage": "transcribe",
-                  "message": "Распознаём речь на компьютере…",
-                  "fraction": min(1, segment.end / max(duration, 0.1))})
-        raw = " ".join(s["text"] for s in parsed).strip()
-        text, replacements = format_transcript(raw, entries, mode)
-        return {"text": text, "rawText": raw, "words": words, "segments": parsed,
-                "replacements": replacements, "duration": finite(duration),
-                "elapsed": finite(time.monotonic() - started), "language": info.language,
-                "model": key, "noSpeech": not bool(raw), "device": "cpu",
-                "loadElapsed": finite(load_elapsed)}
+            self._progress(request_id, segment.end / max(duration, 0.1))
+        return parsed, words, info.language
+
+
+def speech_windows(speech, max_samples):
+    """Group VAD speech regions into contiguous windows no longer than max_samples."""
+    windows = []
+    for region in speech:
+        if windows and region["end"] - windows[-1][0] <= max_samples:
+            windows[-1][1] = region["end"]
+        else:
+            windows.append([region["start"], region["end"]])
+    return [tuple(w) for w in windows]
 
 
 def main():
@@ -276,6 +339,7 @@ def main():
         import av
         import onnxruntime
         import tokenizers
+        import onnx_asr
         # Loading VAD verifies its bundled ONNX asset as well as native runtime libraries.
         from faster_whisper.vad import get_vad_model
         get_vad_model()
@@ -290,6 +354,13 @@ def main():
         # Keep the Mac responsive: inference yields to foreground apps.
         os.nice(5)
     emit({"event": "ready", "status": engine.status()})
+    # On Windows, loading a native extension deadlocks while another thread is blocked reading
+    # stdin. Import them before the reader starts; commands wait in the pipe meanwhile.
+    import numpy  # noqa: F401
+    import onnxruntime  # noqa: F401
+    import onnx_asr  # noqa: F401
+    import faster_whisper  # noqa: F401
+    from faster_whisper import vad  # noqa: F401
     requests = queue.Queue()
 
     def read_commands():

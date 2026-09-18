@@ -33,6 +33,12 @@ test('model ids and modes cannot be arbitrary strings', () => {
   assert.throws(() => validateSettings({autoPaste: 'false'}));
   assert.equal(validateSettings({model: 'large-v3', autoCopy: false}).autoPaste, true);
 });
+test('Russian-only GigaAM is the default and cannot be combined with other languages', () => {
+  assert.equal(validateSettings({}).model, 'gigaam');
+  assert.throws(() => validateSettings({model: 'gigaam', language: 'en'}), /только русский/);
+  assert.throws(() => validateSettings({model: 'gigaam', language: 'auto'}), /только русский/);
+  assert.equal(validateSettings({model: 'turbo', language: 'en'}).language, 'en');
+});
 test('dictionary rejects duplicates and bounded invalid inputs', () => {
   assert.throws(() => validateDictionary([{word: 'iOS', aliases: []}, {word: 'ios', aliases: []}]), /уже/);
   assert.throws(() => validateDictionary([{word: 'a', aliases: ['b'.repeat(81)]}]));

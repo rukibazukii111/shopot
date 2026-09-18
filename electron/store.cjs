@@ -3,22 +3,27 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const DEFAULT_SETTINGS = {
-  model: 'turbo', language: 'ru', mode: 'natural', context: '',
+  model: 'gigaam', language: 'ru', mode: 'natural', context: '',
   autoCopy: true, autoPaste: true, keepAudio: false, microphoneId: 'default',
 };
+const MODEL_IDS = ['gigaam', 'small', 'turbo', 'large-v3'];
+const RUSSIAN_ONLY = ['gigaam'];
 const INITIAL_DICTIONARY = ['Whisper', 'GitHub', 'iOS', 'iPhone', 'Reels', 'TikTok', 'YouTube', 'VPN']
   .map(word => ({id: crypto.randomUUID(), word, aliases: []}));
 
 function validateSettings(input) {
   if (!input || typeof input !== 'object') throw new Error('Некорректные настройки');
   const result = {...DEFAULT_SETTINGS};
-  for (const [key, values] of Object.entries({model: ['small', 'turbo', 'large-v3'], language: ['ru', 'en', 'auto'], mode: ['natural', 'minimal', 'raw']})) {
+  for (const [key, values] of Object.entries({model: MODEL_IDS, language: ['ru', 'en', 'auto'], mode: ['natural', 'minimal', 'raw']})) {
     if (!values.includes(input[key] ?? result[key])) throw new Error('Некорректное значение: ' + key);
     result[key] = input[key] ?? result[key];
   }
   for (const key of ['autoCopy', 'autoPaste', 'keepAudio']) {
     if (key in input && typeof input[key] !== 'boolean') throw new Error('Некорректное значение: ' + key);
     result[key] = input[key] ?? result[key];
+  }
+  if (RUSSIAN_ONLY.includes(result.model) && result.language !== 'ru') {
+    throw new Error('GigaAM распознаёт только русский. Для других языков выбери Whisper в разделе «Модели».');
   }
   result.context = String(input.context ?? '').slice(0, 200);
   result.microphoneId = String(input.microphoneId ?? 'default').slice(0, 256);
@@ -68,4 +73,4 @@ class Store {
   addHistory(entry) { this.data.history.unshift(entry); this.save(); return entry; }
 }
 
-module.exports = {Store, validateSettings, validateDictionary, DEFAULT_SETTINGS};
+module.exports = {Store, validateSettings, validateDictionary, DEFAULT_SETTINGS, MODEL_IDS};

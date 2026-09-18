@@ -26,7 +26,7 @@ function paintIcons(parent = document) { parent.querySelectorAll('[data-icon]').
 function escapeHtml(value) { return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 const names = {dictation: 'Диктовка', history: 'История', dictionary: 'Мой словарь', models: 'Модели', settings: 'Настройки'};
 const modes = {natural: 'Естественно', minimal: 'Минимум знаков', raw: 'Исходный результат'};
-const modelNames = {turbo: 'Whisper turbo', small: 'Whisper small', 'large-v3': 'Whisper large-v3'};
+const modelNames = {gigaam: 'GigaAM', turbo: 'Whisper turbo', small: 'Whisper small', 'large-v3': 'Whisper large-v3'};
 const state = {settings: {}, dictionary: [], history: [], pendingRecordings: [], engine: null, page: 'dictation', phase: 'idle', operation: 0, hotkeyRegistered: false};
 let recorder, stream, audioContext, analyser, raf, recordingTimer, startedAt, recordingCanceled = false;
 let editingWord = null, toastTimer, blobUrls = [], contextDirty = false, captureId = null;
@@ -51,6 +51,7 @@ function duration(seconds) { const s = Math.max(0, Math.round(seconds || 0)); re
 function dateLabel(iso) { return new Intl.DateTimeFormat('ru', {day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'}).format(new Date(iso)); }
 function pluralWords(number) { return number % 10 === 1 && number % 100 !== 11 ? 'слово' : [2, 3, 4].includes(number % 10) && ![12,13,14].includes(number % 100) ? 'слова' : 'слов'; }
 function updateEngine() {
+  syncLanguages();
   $('#engine-dot').className = 'status-dot' + (state.engine ? '' : state.engineError ? ' error' : ' starting');
   $('#engine-label').textContent = state.engine ? 'Локальный движок' : state.engineError ? 'Движок недоступен' : 'Запускаем движок';
   $('#active-model').textContent = modelNames[state.settings.model] || 'Whisper turbo';
@@ -100,6 +101,11 @@ async function saveSettings(changes) {
   state.settings = await api.settings({...state.settings, ...changes});
   if ('context' in changes) contextDirty = false;
   syncSettings(); updateEngine();
+}
+function syncLanguages() {
+  // Russian-only models (GigaAM) cannot take English or auto-detection. The list arrives with the engine status.
+  const languages = state.engine?.models?.find(m => m.id === state.settings.model)?.languages || ['ru', 'en', 'auto'];
+  for (const option of $('#quick-language').options) option.disabled = !languages.includes(option.value);
 }
 function syncSettings() {
   $('#quick-language').value = state.settings.language;
@@ -288,11 +294,12 @@ function wordDialog(entry = null) {
 }
 function renderModels() {
   const descriptions = {
-    turbo: {title: 'Баланс', subtitle: 'LARGE-V3 TURBO', text: 'Первая модель для повседневной диктовки. Начни с неё и проверь на своих фразах.', tag: 'НАЧАТЬ ЗДЕСЬ'},
+    gigaam: {title: 'Быстрая', subtitle: 'GIGAAM V3 · ТОЛЬКО РУССКИЙ', text: 'Короткая фраза распознаётся за доли секунды. Мало памяти, есть пунктуация.', tag: 'РЕКОМЕНДУЕМ'},
+    turbo: {title: 'Точная', subtitle: 'WHISPER LARGE-V3 TURBO', text: 'Лучше со сленгом и терминами, понимает английский. Распознаёт медленнее: несколько секунд даже на короткую фразу.', tag: '1,6 ГБ'},
     small: {title: 'Лёгкая', subtitle: 'WHISPER SMALL', text: 'Меньше загрузка и расход памяти. На сложных словах может ошибаться чаще.', tag: '484 МБ'},
     'large-v3': {title: 'Полная', subtitle: 'WHISPER LARGE-V3', text: 'Полная модель для сравнения качества. Требует больше памяти и времени.', tag: '3,1 ГБ'},
   };
-  $('#models-list').innerHTML = ['small', 'turbo', 'large-v3'].map(id => {
+  $('#models-list').innerHTML = ['gigaam', 'small', 'turbo', 'large-v3'].map(id => {
     const desc = descriptions[id]; const model = state.engine?.models?.find(m => m.id === id); const selected = state.settings.model === id;
     return `<article class="card model-card ${selected ? 'selected' : ''}"><div class="model-topline"><span class="model-symbol">${icon(id === 'small' ? 'sparkle' : 'layers')}</span><span class="model-tag">${selected ? 'ВЫБРАНА' : desc.tag}</span></div><h2>${desc.title}</h2><p class="model-subtitle">${desc.subtitle}</p><p class="model-summary">${desc.text}</p><div class="model-size">${model?.installed ? '✓ Уже на компьютере' : `${model?.size || (id === 'turbo' ? '1,6 ГБ' : desc.tag)} · загрузка с Hugging Face`}</div><button class="${selected && model?.installed ? 'secondary' : 'primary'}-button" data-model="${id}" ${isBusy() || !state.engine || (selected && model?.installed) ? 'disabled' : ''}>${model?.installed ? (selected ? 'Используется' : 'Выбрать модель') : `${icon('download')}Скачать`}</button></article>`;
   }).join('');
@@ -300,14 +307,16 @@ function renderModels() {
 async function selectModel(id) {
   if (isBusy()) return;
   const model = state.engine.models.find(m => m.id === id);
-  if (model.installed) { await saveSettings({model: id}); renderModels(); toast('Модель выбрана'); return; }
+  // Russian-only models switch the language along with the model.
+  const changes = {model: id, ...(model.languages?.includes(state.settings.language) === false ? {language: 'ru'} : {})};
+  if (model.installed) { await saveSettings(changes); renderModels(); toast('Модель выбрана'); return; }
   const operation = ++state.operation;
   state.phase = 'downloading'; refreshControls(); renderModels();
   $('#download-title').textContent = 'Скачиваем ' + modelNames[id];
   $('#download-detail').textContent = 'Подключаемся…'; $('#download-progress').removeAttribute('value');
   try {
     const engine = await api.download(id);
-    if (operation === state.operation) { state.engine = engine; await saveSettings({model: id}); toast('Модель готова. Можно диктовать.'); }
+    if (operation === state.operation) { state.engine = engine; await saveSettings(changes); toast('Модель готова. Можно диктовать.'); }
   } catch (error) { if (operation === state.operation) showError(error); }
   finally { if (operation === state.operation) { state.phase = 'idle'; updateEngine(); } }
 }

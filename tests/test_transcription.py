@@ -120,3 +120,35 @@ def test_stale_idle_timer_does_not_unload_a_model_used_after_it_fired(tmp_path):
         assert engine.model is None and engine.loaded_key is None
     finally:
         engine.cancel_idle_unload()
+
+
+def test_join_segments_drops_chunk_capitals_mid_sentence_only():
+    from text_processing import join_segments
+    chunks = ['Столбики поставить', 'Иконки у меня расположены.', 'Всё готово', 'iPhone и XR', 'Москва ждёт']
+    assert join_segments(chunks, ['Москва']) == (
+        'Столбики поставить иконки у меня расположены. Всё готово iPhone и XR Москва ждёт')
+    assert join_segments(['', '  ', 'Текст']) == 'Текст'
+
+
+def test_speech_windows_merge_regions_without_exceeding_the_limit():
+    from engine import speech_windows
+    speech = [{'start': 0, 'end': 50}, {'start': 60, 'end': 90}, {'start': 95, 'end': 180}, {'start': 200, 'end': 230}]
+    assert speech_windows(speech, 100) == [(0, 90), (95, 180), (200, 230)]
+    assert speech_windows([], 100) == []
+
+
+def test_gigaam_needs_all_onnx_files_and_rejects_other_languages(tmp_path):
+    import json
+    from engine import MODELS, GIGAAM_FILES
+    engine = Engine(tmp_path)
+    folder = engine.model_path('gigaam')
+    folder.mkdir(parents=True)
+    (folder / 'shopot-ready.json').write_text(json.dumps({'revision': MODELS['gigaam']['revision']}), 'utf-8')
+    for name in GIGAAM_FILES[:-1]:
+        (folder / name).write_bytes(b'x')
+    assert not engine.is_installed('gigaam')
+    (folder / GIGAAM_FILES[-1]).write_bytes(b'x')
+    assert engine.is_installed('gigaam')
+    (engine.audio_dir / 'abc.wav').write_bytes(b'x')
+    with pytest.raises(ValueError, match='только русский'):
+        engine.transcribe({'model': 'gigaam', 'audioFile': 'abc.wav', 'language': 'en'})

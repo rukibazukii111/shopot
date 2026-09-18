@@ -9,6 +9,28 @@ def vocabulary_prompt(entries, context=""):
     return f"{context.strip()[:200]}\n{terms}".strip()
 
 
+def join_segments(texts, keep_capitalized=()):
+    """Join independently recognized chunks into one text.
+
+    Models such as GigaAM treat every chunk as a new sentence and capitalize its first word,
+    even when the speaker only paused mid-sentence. The capital is dropped when the previous
+    chunk has no sentence-ending punctuation, unless the word looks like a name or acronym
+    (dictionary word, all caps, or mixed case such as iPhone).
+    """
+    keep = {str(word).casefold() for word in keep_capitalized}
+    result = ""
+    for text in (t.strip() for t in texts):
+        if not text:
+            continue
+        first = re.match(r"\w+", text)
+        if (result and first and not re.search(r"[.!?…]$", result)
+                and re.fullmatch(r"[^\W\d_][^\W\d_A-ZА-ЯЁ]*", first.group())
+                and first.group()[0].isupper() and first.group().casefold() not in keep):
+            text = text[0].lower() + text[1:]
+        result = f"{result} {text}" if result else text
+    return result
+
+
 def format_transcript(text, entries=None, mode="natural"):
     text = text.strip()
     if mode == "raw":
