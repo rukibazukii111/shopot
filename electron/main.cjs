@@ -5,7 +5,7 @@ const {pathToFileURL} = require('node:url');
 const crypto = require('node:crypto');
 const {Store, MODEL_IDS} = require('./store.cjs');
 const {Worker} = require('./worker.cjs');
-const {PasteService} = require('./paste.cjs');
+const {PasteService, clipboardText} = require('./paste.cjs');
 const {createNativeBackend} = require('./native-input.cjs');
 
 const root = path.resolve(__dirname, '..');
@@ -319,7 +319,7 @@ else {
       const file = audioFor(entry); if (file && fs.existsSync(file)) fs.unlinkSync(file);
       forgetRecording(entry.audioFile); send('snapshot', snapshot()); return true;
     });
-    ipc('copy', async value => { await clipboard.writeText(textValue(value)); return true; });
+    ipc('copy', async value => { await clipboard.writeText(clipboardText(textValue(value))); return true; });
     ipc('save-text', async value => {
       const text = textValue(value);
       const result = await dialog.showSaveDialog(window, {defaultPath: 'Диктовка.txt', filters: [{name: 'Текст', extensions: ['txt']}]});

@@ -22,7 +22,7 @@ os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
-from text_processing import format_transcript, join_segments, vocabulary_prompt
+from text_processing import format_transcript, join_segments, layout_text, pause_sentences, vocabulary_prompt
 
 WHISPER_FILES = ["model.bin", "config.json", "tokenizer.json", "vocabulary.json", "preprocessor_config.json"]
 GIGAAM_FILES = ["config.json", "v3_e2e_rnnt_encoder.int8.onnx", "v3_e2e_rnnt_decoder.int8.onnx",
@@ -47,6 +47,8 @@ for _model in MODELS.values():
 # GigaAM is trained on utterances up to ~25 s; longer speech is split at VAD pauses.
 GIGAAM_MAX_CHUNK_SECONDS = 20
 VAD_OPTIONS = {"min_silence_duration_ms": 500, "speech_pad_ms": 300}
+# A gap this long between VAD regions (~1.6 s of silence with padding) usually ends a thought: new paragraph.
+PARAGRAPH_PAUSE_SECONDS = 1.0
 # Measured: above 4 threads Whisper gains <15% but starves the rest of the system (laptops freeze).
 THREADS = max(1, min(4, (os.cpu_count() or 4) // 2))
 IDLE_UNLOAD_SECONDS = 10 * 60
@@ -164,6 +166,8 @@ class Engine:
         mode = request.get("mode", "natural")
         if mode not in ("natural", "minimal", "raw"):
             raise ValueError("Неизвестный режим текста")
+        if request.get("formatting", "rules") not in ("rules", "off"):
+            raise ValueError("Неизвестный режим оформления")
         request_id = request.get("id")
         with self.model_lock:
             self.cancel_idle_unload()
@@ -258,14 +262,18 @@ class Engine:
             return {"text": "", "rawText": "", "words": [], "segments": [], "replacements": [],
                     "duration": duration, "elapsed": finite(time.monotonic() - started),
                     "language": language, "model": key, "noSpeech": True}
+        names = [e["word"] for e in entries]
         if MODELS[key]["engine"] == "gigaam":
             parsed = self._gigaam_segments(audio, duration, request_id)
-            raw = join_segments([s["text"] for s in parsed], [e["word"] for e in entries])
+            raw = join_segments([s["text"] for s in parsed], names)
             words, detected = [], "ru"
         else:
             parsed, words, detected = self._whisper_segments(audio, duration, language, entries, request, request_id)
             raw = " ".join(s["text"] for s in parsed).strip()
         text, replacements = format_transcript(raw, entries, mode)
+        if mode == "natural" and request.get("formatting", "rules") == "rules":
+            gaps = [i > 0 and parsed[i]["start"] - parsed[i - 1]["end"] >= PARAGRAPH_PAUSE_SECONDS for i in range(len(parsed))]
+            text = layout_text(text, pause_sentences([s["text"] for s in parsed], gaps, names))
         return {"text": text, "rawText": raw, "words": words, "segments": parsed,
                 "replacements": replacements, "duration": finite(duration),
                 "elapsed": finite(time.monotonic() - started), "language": detected,
@@ -280,7 +288,7 @@ class Engine:
         from faster_whisper.vad import VadOptions, get_speech_timestamps
         speech = get_speech_timestamps(audio, VadOptions(**VAD_OPTIONS, max_speech_duration_s=GIGAAM_MAX_CHUNK_SECONDS))
         parsed = []
-        for start, end in speech_windows(speech, GIGAAM_MAX_CHUNK_SECONDS * 16000):
+        for start, end in speech_windows(speech, GIGAAM_MAX_CHUNK_SECONDS * 16000, int(PARAGRAPH_PAUSE_SECONDS * 16000)):
             self.check_canceled(request_id)
             # Pauses inside a window are kept: they help the model place punctuation.
             text = self.model.recognize(audio[start:end], sample_rate=16000).strip()
@@ -312,11 +320,15 @@ class Engine:
         return parsed, words, info.language
 
 
-def speech_windows(speech, max_samples):
-    """Group VAD speech regions into contiguous windows no longer than max_samples."""
+def speech_windows(speech, max_samples, split_gap=None):
+    """Group VAD speech regions into contiguous windows no longer than max_samples.
+
+    A gap of split_gap samples or more always starts a new window, so long pauses stay visible.
+    """
     windows = []
     for region in speech:
-        if windows and region["end"] - windows[-1][0] <= max_samples:
+        if (windows and region["end"] - windows[-1][0] <= max_samples
+                and (split_gap is None or region["start"] - windows[-1][1] < split_gap)):
             windows[-1][1] = region["end"]
         else:
             windows.append([region["start"], region["end"]])

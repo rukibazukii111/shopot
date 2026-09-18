@@ -113,12 +113,13 @@ function syncSettings() {
   $('#auto-copy').checked = state.settings.autoCopy;
   $('#auto-paste').checked = state.settings.autoPaste;
   $('#keep-audio').checked = state.settings.keepAudio;
+  $('#formatting-select').value = state.settings.formatting;
   if (!contextDirty) $('#context-input').value = state.settings.context;
   $('#accessibility-row').hidden = state.platform !== 'darwin';
   $('#accessibility-status').textContent = state.pastePermission ? 'Доступ разрешён. Автовставка готова.' : 'Разреши Шёпоту управление в Системных настройках → Конфиденциальность и безопасность → Универсальный доступ.';
   $('#mode-description').textContent = {natural: 'Пунктуация модели и замены из твоего словаря. Слова сохраняются.', minimal: 'Убираем большинство знаков в конце слов. Написание версий и адресов сохраняется.', raw: 'Текст, который вернула модель, включая её пунктуацию. Без наших замен и правок.'}[state.settings.mode];
   if (state.platform === 'darwin') { $$('.modifier-key').forEach(el => el.textContent = '⌘'); $$('.paste-hint').forEach(el => el.textContent = '⌘V'); }
-  $('#hotkey-description').textContent = state.hotkeyRegistered ? 'Открывает виджет, начинает и заканчивает запись. Escape — отменить запись или распознавание.' : 'Сочетание занято другим приложением. Используй кнопку записи или освободи сочетание и перезапусти Шёпот.';
+  $('#hotkey-description').textContent = state.hotkeyRegistered ? 'Открывает виджет, начинает и заканчивает запись. Escape во время записи — отменить её.' : 'Сочетание занято другим приложением. Используй кнопку записи или освободи сочетание и перезапусти Шёпот.';
   $('.shortcut-anywhere').textContent = state.hotkeyRegistered ? 'из любого приложения' : 'сочетание занято';
 }
 
@@ -375,6 +376,7 @@ $('#auto-copy').addEventListener('change', event => guard(() => saveSettings({au
 $('#auto-paste').addEventListener('change', event => guard(() => saveSettings({autoPaste: event.target.checked})));
 $('#accessibility-button').addEventListener('click', () => guard(async () => { state.pastePermission = await api.pastePermission(); syncSettings(); }));
 $('#context-input').addEventListener('input', () => { contextDirty = true; });
+$('#formatting-select').addEventListener('change', event => guard(() => saveSettings({formatting: event.target.value})));
 $('#keep-audio').addEventListener('change', event => guard(() => saveSettings({keepAudio: event.target.checked})));
 $('#microphone-select').addEventListener('change', event => guard(() => saveSettings({microphoneId: event.target.value})));
 $('#save-context').addEventListener('click', () => guard(async () => { await saveSettings({context: $('#context-input').value.trim()}); toast('Контекст сохранён'); }));

@@ -31,6 +31,186 @@ def join_segments(texts, keep_capitalized=()):
     return result
 
 
+SENTENCE_BREAK = re.compile(r"(?<=[.!?…])\s+")
+LAYOUT_TAGS = ("new", "same", "num", "bul")
+ORDINALS = [
+    ("во-первых", "первое", "первый пункт", "пункт первый"),
+    ("во-вторых", "второе", "второй пункт", "пункт второй"),
+    ("в-третьих", "третье", "третий пункт", "пункт третий"),
+    ("в-четвертых", "четвертое", "четвертый пункт", "пункт четвертый"),
+    ("в-пятых", "пятое", "пятый пункт", "пункт пятый"),
+]
+# Words that usually open a new thought in dictation.
+TOPIC_STARTS = ("так", "теперь", "дальше", "далее", "также", "кроме того", "еще", "в общем", "итак",
+                "по поводу", "что касается", "и последнее", "последнее", "плюс ко всему", "отдельно")
+MAX_PARAGRAPH_SENTENCES = 5
+MAX_PARAGRAPH_CHARS = 700
+MAX_LAST_ITEM_SENTENCES = 2
+
+
+def split_sentences(text):
+    return [s for s in SENTENCE_BREAK.split(text.strip()) if s]
+
+
+def _folded(sentence):
+    return re.sub(r"^[\W_]+", "", sentence.casefold().replace("ё", "е"))
+
+
+def _ordinal(sentence):
+    """1-based ordinal a sentence opens with («Во-вторых, …», «Ну и третье …»), or None."""
+    text = re.sub(r"^(?:(?:ну|и|а|итак|так)\W+)*", "", _folded(sentence))
+    for number, forms in enumerate(ORDINALS, 1):
+        if any(re.match(re.escape(form).replace(r"\-", r"[-\s]?") + r"(?!\w)", text) for form in forms):
+            return number
+    return None
+
+
+def _starts_topic(sentence):
+    text = _folded(sentence)
+    return any(re.match(re.escape(start) + r"(?!\w)", text) for start in TOPIC_STARTS)
+
+
+def _is_filler(sentence):
+    return len(re.findall(r"\w+", sentence)) <= 2
+
+
+def rule_tags(sentences, pauses=()):
+    """Tag each sentence: new paragraph, same paragraph/item, numbered or bulleted item.
+
+    pauses: indices of sentences preceded by a long pause in speech.
+    """
+    tags = ["same"] * len(sentences)
+    if not sentences:
+        return tags
+    ordinals = [_ordinal(s) for s in sentences]
+    # «…это раз.» closes the first item when the next ordinal follows.
+    ordinals = [1 if o is None and re.search(r"(?i)\bэто раз\W*$", s) else o for o, s in zip(ordinals, sentences)]
+    in_list = set()
+    i = 0
+    while i < len(sentences):
+        # A numbered list needs consecutive ordinals in order: first, second, ...
+        if ordinals[i] is not None:
+            items, expected, j = [i], ordinals[i] + 1, i + 1
+            while j < len(sentences):
+                if ordinals[j] == expected:
+                    items.append(j); expected += 1
+                elif ordinals[j] is not None or (j in pauses and j - items[-1] > 1):
+                    break
+                j += 1
+            if len(items) >= 2:
+                # The last item runs until a pause or a couple of sentences, whichever comes first.
+                end = items[-1] + 1
+                while (end < len(sentences) and end - items[-1] <= MAX_LAST_ITEM_SENTENCES
+                       and end not in pauses and not _starts_topic(sentences[end])):
+                    end += 1
+                for k in range(items[0], end):
+                    tags[k] = "num" if k in items else "same"
+                    in_list.add(k)
+                if end < len(sentences):
+                    tags[end] = "new"
+                i = end
+                continue
+        i += 1
+    count, chars = 0, 0
+    for i, sentence in enumerate(sentences):
+        if i in in_list:
+            count, chars = 0, 0
+            continue
+        if i == 0 or tags[i] == "new":
+            tags[i] = "new"
+        elif not _is_filler(sentence) and count >= 2 and (
+                i in pauses or _starts_topic(sentence) or count >= MAX_PARAGRAPH_SENTENCES or chars >= MAX_PARAGRAPH_CHARS):
+            tags[i] = "new"
+        if tags[i] == "new":
+            count, chars = 0, 0
+        count += 1
+        chars += len(sentence)
+    return tags
+
+
+def _inline_bullets(sentence):
+    """«Нужно купить: молоко, хлеб и яйца.» -> prefix and items, when the tail is a list of short items."""
+    match = re.match(r"^(.*\S):\s+(.+?)[.!…]?$", sentence)
+    if not match:
+        return None
+    items = [x.strip() for x in re.split(r",\s+|\s+и\s+(?=[^,]+$)", match.group(2))]
+    if len(items) < 3 or any(not x or len(re.findall(r"\w+", x)) > 4 or re.search(r"[.!?;:]", x) for x in items):
+        return None
+    return match.group(1) + ":", items
+
+
+def _capitalize(text):
+    return text[:1].upper() + text[1:] if text[:1].islower() else text
+
+
+def render_layout(sentences, tags):
+    """Rebuild text from the original sentences. Words are never changed, only line breaks and list markers."""
+    blocks = []  # [kind, [item, ...]]
+    for sentence, tag in zip(sentences, tags):
+        kind = {"num": "numbered", "bul": "bulleted"}.get(tag)
+        if kind:
+            if blocks and blocks[-1][0] == kind:
+                blocks[-1][1].append(sentence)
+            else:
+                blocks.append([kind, [sentence]])
+        elif tag == "same" and blocks:
+            blocks[-1][1][-1] += " " + sentence
+        else:
+            blocks.append(["paragraph", [sentence]])
+    parts = []
+    for kind, items in blocks:
+        if kind == "paragraph" or len(items) < 2:
+            for item in items:
+                parts.extend(_paragraph_with_bullets(_capitalize(item)))
+        elif kind == "numbered":
+            parts.append("\n".join(f"{n}. {_capitalize(t)}" for n, t in enumerate(items, 1)))
+        else:
+            parts.append("\n".join(f"• {_capitalize(t)}" for t in items))
+    return "\n\n".join(parts)
+
+
+def _paragraph_with_bullets(paragraph):
+    """Split out a trailing «prefix: a, b, c» list inside a paragraph as a bulleted list."""
+    sentences = split_sentences(paragraph)
+    parts, current = [], []
+    for sentence in sentences:
+        bullets = _inline_bullets(sentence)
+        if bullets:
+            prefix, items = bullets
+            parts.append(" ".join(current + [prefix]) + "\n" + "\n".join(f"• {item}" for item in items))
+            current = []
+        else:
+            current.append(sentence)
+    if current:
+        parts.append(" ".join(current))
+    return parts
+
+
+def pause_sentences(texts, pause_before, keep_capitalized=()):
+    """Sentence indices that follow a long pause.
+
+    texts are recognized chunks in order; pause_before[i] is True when chunk i follows a long pause.
+    A pause only counts where the previous chunk ended a sentence.
+    """
+    result = set()
+    for i in range(1, len(texts)):
+        if pause_before[i]:
+            prefix = join_segments(texts[:i], keep_capitalized)
+            if re.search(r"[.!?…]$", prefix):
+                result.add(len(split_sentences(prefix)))
+    return result
+
+
+def layout_text(text, pauses=(), tags=None):
+    """Paragraphs and lists for dictated text; tags may come from a language model."""
+    sentences = split_sentences(text)
+    if len(sentences) < 2 and not any(_inline_bullets(s) for s in sentences):
+        return text
+    if tags is None or len(tags) != len(sentences) or any(t not in LAYOUT_TAGS for t in tags):
+        tags = rule_tags(sentences, set(pauses))
+    return render_layout(sentences, tags)
+
+
 def format_transcript(text, entries=None, mode="natural"):
     text = text.strip()
     if mode == "raw":

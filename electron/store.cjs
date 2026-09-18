@@ -4,17 +4,18 @@ const crypto = require('node:crypto');
 
 const DEFAULT_SETTINGS = {
   model: 'gigaam', language: 'ru', mode: 'natural', context: '',
-  autoCopy: true, autoPaste: true, keepAudio: false, microphoneId: 'default',
+  autoCopy: true, autoPaste: true, keepAudio: false, microphoneId: 'default', formatting: 'rules',
 };
 const MODEL_IDS = ['gigaam', 'small', 'turbo', 'large-v3'];
 const RUSSIAN_ONLY = ['gigaam'];
+const FORMATTING = ['rules', 'off'];
 const INITIAL_DICTIONARY = ['Whisper', 'GitHub', 'iOS', 'iPhone', 'Reels', 'TikTok', 'YouTube', 'VPN']
   .map(word => ({id: crypto.randomUUID(), word, aliases: []}));
 
 function validateSettings(input) {
   if (!input || typeof input !== 'object') throw new Error('Некорректные настройки');
   const result = {...DEFAULT_SETTINGS};
-  for (const [key, values] of Object.entries({model: MODEL_IDS, language: ['ru', 'en', 'auto'], mode: ['natural', 'minimal', 'raw']})) {
+  for (const [key, values] of Object.entries({model: MODEL_IDS, language: ['ru', 'en', 'auto'], mode: ['natural', 'minimal', 'raw'], formatting: FORMATTING})) {
     if (!values.includes(input[key] ?? result[key])) throw new Error('Некорректное значение: ' + key);
     result[key] = input[key] ?? result[key];
   }

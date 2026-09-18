@@ -152,3 +152,70 @@ def test_gigaam_needs_all_onnx_files_and_rejects_other_languages(tmp_path):
     (engine.audio_dir / 'abc.wav').write_bytes(b'x')
     with pytest.raises(ValueError, match='только русский'):
         engine.transcribe({'model': 'gigaam', 'audioFile': 'abc.wav', 'language': 'en'})
+
+
+def _words(text):
+    import re
+    text = re.sub(r"(?m)^\s*(?:\d+\.|•)\s+", "", text)
+    return re.findall(r"\w+", text.casefold())
+
+
+LIST_TEXT = ('Давай обсудим план. Во-первых, нужно ускорить распознавание. Это важно. '
+             'Во-вторых, надо поработать со вставкой. В-третьих, проверим память на Mac. '
+             'Теперь про дизайн. Им займусь потом.')
+
+
+def test_ordinals_become_a_numbered_list_without_changing_words():
+    from text_processing import layout_text
+    result = layout_text(LIST_TEXT)
+    assert result == ('Давай обсудим план.\n\n'
+                      '1. Во-первых, нужно ускорить распознавание. Это важно.\n'
+                      '2. Во-вторых, надо поработать со вставкой.\n'
+                      '3. В-третьих, проверим память на Mac.\n\n'
+                      'Теперь про дизайн. Им займусь потом.')
+    assert _words(result) == _words(LIST_TEXT)
+
+
+def test_eto_raz_opens_a_list_and_a_lone_ordinal_does_not():
+    from text_processing import layout_text
+    spoken = 'Надо сделать абзацы, это раз. Второе замечание, нужно ускорить запись. Спасибо тебе большое.'
+    assert layout_text(spoken).startswith('1. Надо сделать абзацы, это раз.\n2. Второе замечание')
+    lone = 'Первое, что я бы хотел, это изучить файл. Потом расскажу о проекте. Вот так.'
+    assert '1.' not in layout_text(lone)
+
+
+def test_short_items_after_a_colon_become_bullets():
+    from text_processing import layout_text
+    result = layout_text('Проверим прогрев. Нужны соцсети: Instagram, TikTok, YouTube и Snapchat.')
+    assert result == 'Проверим прогрев. Нужны соцсети:\n• Instagram\n• TikTok\n• YouTube\n• Snapchat'
+    long_items = 'Смотри. Итог: мы долго думали над этим, потом ещё раз всё проверили, и всё заработало.'
+    assert '•' not in layout_text(long_items)
+
+
+def test_paragraphs_follow_pauses_and_topic_words_but_not_fillers():
+    from text_processing import layout_text, rule_tags, split_sentences
+    sentences = split_sentences('Раз два три. Четыре пять. Шесть семь восемь. Вот. Так, новая тема здесь. Девять десять.')
+    assert rule_tags(sentences) == ['new', 'same', 'same', 'same', 'new', 'same']
+    assert rule_tags(sentences, pauses={2}) == ['new', 'same', 'new', 'same', 'new', 'same']
+    assert layout_text('Короткий текст.') == 'Короткий текст.'
+
+
+def test_invalid_model_tags_fall_back_to_rules():
+    from text_processing import layout_text, rule_tags, split_sentences
+    expected = layout_text(LIST_TEXT)
+    assert layout_text(LIST_TEXT, tags=['new', 'bogus']) == expected
+    tags = ['new'] * len(split_sentences(LIST_TEXT))
+    assert layout_text(LIST_TEXT, tags=tags).count('\n\n') == len(tags) - 1
+
+
+def test_pause_sentences_only_counts_pauses_after_a_finished_sentence():
+    from text_processing import pause_sentences
+    chunks = ['Первая мысль. Ещё фраза.', 'Вторая мысль', 'продолжается. Конец.']
+    assert pause_sentences(chunks, [False, True, True]) == {2}
+
+
+def test_long_pauses_start_a_new_speech_window():
+    from engine import speech_windows
+    speech = [{'start': 0, 'end': 50}, {'start': 60, 'end': 90}, {'start': 150, 'end': 180}]
+    assert speech_windows(speech, 1000) == [(0, 180)]
+    assert speech_windows(speech, 1000, split_gap=40) == [(0, 90), (150, 180)]

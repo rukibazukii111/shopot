@@ -38,6 +38,17 @@ test('clipboard changed by another app during wait is neither replaced nor paste
   assert.equal((await f.service.deliver('Текст', settings)).code, 'clipboard-changed');
   assert.equal(f.inputs(), 0); assert.equal(await f.clipboard.readText(), 'new clipboard');
 });
+test('multi-line dictation uses CRLF on Windows and LF elsewhere', async () => {
+  const {clipboardText} = require('../electron/paste.cjs');
+  assert.equal(clipboardText('Абзац\n\n1. Пункт', 'win32'), 'Абзац\r\n\r\n1. Пункт');
+  assert.equal(clipboardText('Абзац\r\n\n1. Пункт', 'win32'), 'Абзац\r\n\r\n1. Пункт');
+  assert.equal(clipboardText('Абзац\n\n1. Пункт', 'darwin'), 'Абзац\n\n1. Пункт');
+  const clipboard = {text: '', writeText: async t => { clipboard.text = t; }, readText: async () => clipboard.text};
+  const native = {permitted: () => true, sameTarget: () => true, modifiersDown: () => false, paste: () => true};
+  const service = new PasteService({clipboard, native, platform: 'win32'});
+  assert.equal((await service.deliver('А\nБ', {autoPaste: true, target: {}})).code, 'pasted');
+  assert.equal(clipboard.text, 'А\r\nБ');
+});
 test('failed native input is reported as a copy fallback', async () => {
   const f = fixture({paste: () => false});
   assert.equal((await f.service.deliver('Текст', settings)).code, 'blocked');
