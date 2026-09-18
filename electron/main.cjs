@@ -1,4 +1,4 @@
-const {app, BrowserWindow, ipcMain, dialog, clipboard, globalShortcut, session, Tray, Menu, nativeImage, powerSaveBlocker, screen, systemPreferences} = require('electron');
+const {app, BrowserWindow, ipcMain, dialog, clipboard, globalShortcut, session, Tray, Menu, nativeImage, nativeTheme, powerSaveBlocker, screen, systemPreferences} = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const {pathToFileURL} = require('node:url');
@@ -117,7 +117,7 @@ function createWidget() {
 }
 function createWindow() {
   window = new BrowserWindow({width: 1240, height: 850, minWidth: 1000, minHeight: 720,
-    title: 'Шёпот — локальная диктовка', backgroundColor: '#f6f7f9', autoHideMenuBar: true, icon: path.join(root, 'renderer', 'app-icon.png'),
+    title: 'Шёпот', backgroundColor: '#07080a', autoHideMenuBar: true, icon: path.join(root, 'renderer', 'app-icon.png'),
     webPreferences: {preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false,
       sandbox: true, backgroundThrottling: false, spellcheck: false}});
   window.webContents.setWindowOpenHandler(() => ({action: 'deny'}));
@@ -186,6 +186,8 @@ if (!app.requestSingleInstanceLock()) { app.quit(); }
 else {
   app.on('second-instance', () => { window?.show(); window?.focus(); });
   app.whenReady().then(() => {
+    // The interface is dark only; this also darkens the native title bar and dialogs.
+    nativeTheme.themeSource = 'dark';
     fs.mkdirSync(audioDir, {recursive: true});
     try { store = new Store(dataDir); }
     catch (error) { dialog.showErrorBox('Шёпот', error.message); app.quit(); return; }

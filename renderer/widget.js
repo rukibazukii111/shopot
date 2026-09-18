@@ -1,19 +1,43 @@
 const api = window.dictationWidget;
 const $ = id => document.getElementById(id);
 const terminal = ['success', 'error', 'canceled'];
+const labels = {requesting: 'Подключаю микрофон', recording: 'Слушаю тебя', stopping: 'Сохраняю запись', transcribing: 'Распознаю на устройстве'};
+// Tabler Icons (MIT).
+const stateIcons = {
+  success: '<path d="M5 12l5 5l10 -10"/>',
+  error: '<path d="M12 9v4"/><path d="M10.363 3.591l-8.106 13.534a1.914 1.914 0 0 0 1.636 2.871h16.214a1.914 1.914 0 0 0 1.636 -2.87l-8.106 -13.536a1.914 1.914 0 0 0 -3.274 0z"/><path d="M12 16h.01"/>',
+  canceled: '<path d="M18 6l-12 12"/><path d="M6 6l12 12"/>',
+};
+const waveShape = [7, 13, 19, 24, 17, 11, 6];
 let state;
+function keycap(text) { const key = document.createElement('kbd'); key.textContent = text; return key; }
+function note(text, gap = false) { const span = document.createElement('span'); span.textContent = text; if (gap) span.className = 'gap'; return span; }
+// 'Ctrl⇧Space' becomes Ctrl, Shift, Space; '⌘⇧Space' becomes ⌘, ⇧, Space.
+function shortcutKeys(shortcut = '') {
+  const mac = shortcut.includes('⌘');
+  return shortcut.replace('⇧', ' ⇧ ').split(/\s+/).filter(Boolean).map(key => key === '⇧' && !mac ? 'Shift' : key);
+}
+function renderHint(value) {
+  const hint = $('hint');
+  if (value.phase === 'recording') hint.replaceChildren(...shortcutKeys(value.shortcut).map(keycap), note('закончить', true), keycap('Esc'), note('отменить'));
+  else if (value.phase === 'requesting') hint.replaceChildren(keycap('Esc'), note('отменить'));
+  else if (terminal.includes(value.phase)) hint.replaceChildren(note(value.hint || 'Текст доступен в истории'));
+  else hint.replaceChildren();
+}
 function render(value) {
   state = value; $('widget').dataset.phase = value.phase;
-  const done = terminal.includes(value.phase);
-  $('label').textContent = value.message || ({requesting: 'Подключаю микрофон', recording: 'Слушаю тебя', stopping: 'Сохраняю запись', transcribing: 'Распознаю на устройстве'}[value.phase] || 'Шёпот');
+  const done = terminal.includes(value.phase), recording = value.phase === 'recording';
+  $('label').textContent = value.message || labels[value.phase] || 'Шёпот';
   const seconds = Math.floor(value.elapsed || 0);
   $('time').textContent = `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
-  $('time').hidden = done;
-  $('hint').textContent = done ? (value.hint || 'Текст доступен в истории') : (value.phase === 'recording' ? `${value.shortcut} — закончить · Esc — отмена` : 'Esc — отменить');
-  $('stop').hidden = value.phase !== 'recording';
+  $('time').hidden = !recording;
+  $('state-icon').innerHTML = done ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${stateIcons[value.phase]}</svg>` : '';
+  renderHint(value);
+  $('stop').hidden = !recording;
   $('open').hidden = !done;
-  $('cancel').title = done ? 'Закрыть' : 'Отменить'; $('cancel').setAttribute('aria-label', $('cancel').title);
-  [...$('wave').children].forEach((bar, i) => bar.style.height = Math.max(4, (value.level || 0) * 25 * [0.35,.6,.8,1,.75,.5,.3][i]) + 'px');
+  $('cancel').title = done ? 'Закрыть' : 'Отменить';
+  $('cancel').setAttribute('aria-label', done ? 'Закрыть' : 'Отменить диктовку');
+  [...$('wave').children].forEach((bar, i) => bar.style.height = (recording ? Math.max(5, (value.level || 0) * 24 * waveShape[i] / 24) : waveShape[i]) + 'px');
 }
 $('stop').onclick = () => api.action('stop');
 $('cancel').onclick = () => api.action(terminal.includes(state.phase) ? 'hide' : 'cancel');

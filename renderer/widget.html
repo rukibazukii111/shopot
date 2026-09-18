@@ -1,8 +1,19 @@
 <!doctype html>
 <html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'">
-<title>Шёпот · диктовка</title><link rel="stylesheet" href="widget.css"></head>
+<title>Шёпот: диктовка</title><link rel="stylesheet" href="widget.css"></head>
 <body><main id="widget" data-phase="requesting">
-  <div class="top"><div id="wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><strong id="label" role="status">Подключаю микрофон</strong><span id="time">00:00</span></div>
-  <div class="bottom"><span id="hint">Esc — отменить</span><button id="stop" aria-label="Закончить диктовку" title="Закончить диктовку">■</button><button id="open" hidden>Открыть</button><button id="cancel" aria-label="Отменить диктовку" title="Отменить">×</button></div>
+  <div class="row">
+    <div id="wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+    <span id="state-icon" aria-hidden="true"></span>
+    <strong id="label" role="status">Подключаю микрофон</strong>
+    <span id="time">00:00</span>
+    <button id="stop" aria-label="Закончить диктовку" title="Закончить диктовку"><span></span></button>
+    <button id="cancel" aria-label="Отменить диктовку" title="Отменить"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6l-12 12"/><path d="M6 6l12 12"/></svg></button>
+  </div>
+  <div class="row sub">
+    <span id="hint"></span>
+    <span id="progress" aria-hidden="true"><i></i></span>
+    <button id="open" hidden>Открыть</button>
+  </div>
 </main><script src="widget.js"></script></body></html>

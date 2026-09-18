@@ -4,57 +4,171 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
-  <title>Шёпот — локальная диктовка</title>
+  <title>Шёпот</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <aside class="sidebar">
-    <a class="brand" href="#dictation" aria-label="Шёпот, главная"><span class="brand-mark"><i></i><i></i><i></i><i></i></span><span>шёпот<span class="brand-dot">.</span></span></a>
-    <div class="workspace-label">ТВОЁ ПРОСТРАНСТВО</div>
-    <nav aria-label="Основная навигация">
-      <button class="nav-item active" data-page="dictation"><span data-icon="mic"></span>Диктовка</button>
-      <button class="nav-item" data-page="history"><span data-icon="history"></span>История<span id="history-count" class="nav-count">0</span></button>
+  <header class="toolbar">
+    <button class="brand" id="brand" aria-label="Шёпот, диктовка"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>Шёпот</span></button>
+    <nav class="tabs" aria-label="Разделы">
+      <button class="nav-item active" data-page="dictation" aria-current="page"><span data-icon="mic"></span>Диктовка</button>
+      <button class="nav-item" data-page="history"><span data-icon="history"></span>История<span id="history-count" class="count-badge">0</span></button>
       <button class="nav-item" data-page="dictionary"><span data-icon="book"></span>Мой словарь</button>
       <button class="nav-item" data-page="models"><span data-icon="layers"></span>Модели</button>
-    </nav>
-    <div class="sidebar-bottom">
-      <div class="private-note"><span data-icon="shield"></span><strong>Только на твоём<br>компьютере</strong><p>Голос остаётся с тобой.<br>Без аккаунта и подписки.</p><span class="private-tag">LOCAL FIRST</span></div>
       <button class="nav-item" data-page="settings"><span data-icon="settings"></span>Настройки</button>
-      <div class="sidebar-version"><span class="version-dot"></span>Шёпот <span>v0.3 · локально</span></div>
+    </nav>
+    <div class="engine-chip"><span id="engine-dot" class="status-dot starting"></span><span id="engine-label">Запускаем движок</span></div>
+  </header>
+
+  <main class="app-main">
+    <div class="banners">
+      <div id="error-banner" class="banner banner-error" role="alert" hidden><span class="banner-icon" data-icon="alert"></span><span id="error-text" class="banner-text"></span><button id="dismiss-error" class="icon-button" aria-label="Закрыть сообщение"><span data-icon="x"></span></button></div>
+      <div id="recovery-banner" class="banner" role="status" hidden><span class="banner-icon" data-icon="refresh"></span><div class="banner-text"><strong id="recovery-title"></strong><p id="recovery-detail"></p></div><div class="banner-actions"><button id="retry-recording" class="button">Повторить</button><button id="delete-recording" class="button-ghost danger">Удалить</button></div></div>
     </div>
-  </aside>
-  <div class="app-shell">
-    <header class="topbar"><div><span class="breadcrumb-muted">Рабочее пространство</span><span class="slash">/</span><span id="breadcrumb">Диктовка</span></div><div class="connection"><span id="engine-dot" class="status-dot starting"></span><span id="engine-label">Запускаем движок</span></div></header>
-    <main>
-      <div id="error-banner" class="error-banner" role="alert" hidden><span id="error-text"></span><button id="dismiss-error" aria-label="Закрыть сообщение">×</button></div>
-      <div id="recovery-banner" class="recovery-banner" role="status" hidden><div><strong id="recovery-title"></strong><p id="recovery-detail"></p></div><div class="recovery-actions"><button id="retry-recording" class="secondary-button">Повторить</button><button id="delete-recording" class="text-button">Удалить</button></div></div>
-      <section id="page-dictation" class="page">
-        <div class="page-heading"><div><div class="eyebrow">МЕНЬШЕ КЛАВИШ. БОЛЬШЕ ТВОЕГО ГОЛОСА.</div><h1>Говори как есть<span class="accent">.</span></h1><p>Твои слова, твой сленг, твой ритм. Просто начни говорить.</p></div><span class="quiet-badge"><span data-icon="sparkle"></span>Без перефразирования</span></div>
-        <div class="dictation-grid">
-          <div class="recorder-card" id="recorder-card">
-            <div class="recorder-top"><span class="small-label" id="record-status"><span class="status-dot"></span>Готов к диктовке</span><span id="record-time">00:00</span></div>
-            <div class="wave-scene" aria-hidden="true"><div class="wave-halo"></div><div class="waveform" id="waveform"></div></div>
-            <div class="recorder-caption"><h2 id="record-heading">Пусть мысли звучат</h2><p id="record-description">Нажми на микрофон или используй горячую клавишу</p></div>
-            <div class="recorder-controls"><button id="record-button" class="primary-button record-button"><span data-icon="mic"></span><span id="record-label">Начать диктовку</span></button><button id="cancel-button" class="text-button" hidden>Отменить</button></div>
-            <div class="shortcut-hint"><kbd class="modifier-key">Ctrl</kbd><span>+</span><kbd>Shift</kbd><span>+</span><kbd>Space</kbd><span class="shortcut-anywhere">из любого приложения</span></div>
-            <div class="record-progress" id="record-progress" hidden><progress id="transcribe-progress" max="1"></progress></div>
+
+    <section id="page-dictation" class="page dictation">
+      <div class="dictation-main">
+        <section id="recorder-card" class="panel recorder" aria-label="Запись">
+          <div class="recorder-top"><span id="record-status" class="record-status"></span><span id="record-time" class="record-time">00:00</span></div>
+          <div id="waveform" class="waveform" aria-hidden="true"></div>
+          <div class="recorder-body">
+            <div class="recorder-caption"><h1 id="record-heading">Говори как есть</h1><p id="record-description">Сочетание работает в любом окне. Текст вставится туда, где стоит курсор.</p></div>
+            <div class="hero-keys" id="hero-keys"><kbd class="modifier-key">Ctrl</kbd><kbd>Shift</kbd><kbd class="key-wide">Space</kbd></div>
           </div>
-          <aside class="dictation-options">
-            <div class="card option-card"><div class="card-kicker">ТВОЙ РЕЖИМ</div><label for="quick-language">Язык речи</label><select id="quick-language"><option value="ru">Русский</option><option value="auto">Автоопределение</option><option value="en">English</option></select><label for="quick-mode">Как записывать</label><select id="quick-mode"><option value="natural">Естественно</option><option value="minimal">Минимум пунктуации</option><option value="raw">Исходный результат</option></select><p id="mode-description">Пунктуация модели и замены из твоего словаря. Слова сохраняются.</p><div class="option-divider"></div><button id="model-link" class="model-link"><span class="model-icon" data-icon="layers"></span><span><strong id="active-model">Whisper turbo</strong><small id="active-model-state">Проверяем модель…</small></span><span data-icon="chevron"></span></button></div>
-            <button class="import-card" id="import-button"><span data-icon="upload"></span><span><strong>Уже есть запись?</strong><small>Открой аудио или видео · до 100 МБ</small></span><span data-icon="arrow"></span></button>
-          </aside>
+          <div class="recorder-actions">
+            <button id="record-button" class="button-primary"><span data-icon="mic"></span><span id="record-label">Начать диктовку</span></button>
+            <button id="import-button" class="button"><span data-icon="upload"></span>Открыть запись</button>
+            <button id="cancel-button" class="button" hidden>Отменить<kbd>Esc</kbd></button>
+            <span id="record-hint" class="recorder-hint">Аудио или видео, до 100 МБ</span>
+          </div>
+          <div id="record-progress" class="card-progress" hidden><progress id="transcribe-progress" max="1"></progress></div>
+        </section>
+        <section id="latest-result" class="panel latest" aria-label="Последняя диктовка"></section>
+      </div>
+
+      <aside class="panel mode-panel" aria-label="Режим диктовки">
+        <h2>Режим</h2>
+        <div class="field">
+          <label for="quick-language">Язык речи</label>
+          <div class="select"><select id="quick-language"><option value="ru">Русский</option><option value="auto">Автоопределение</option><option value="en">English</option></select><span data-icon="chevron-down"></span></div>
+          <p id="language-note" class="help"></p>
         </div>
-        <section class="result-section"><div class="section-heading"><h2>Последняя диктовка <span id="result-count" class="count-badge" hidden></span></h2><button class="text-button" id="all-history">Вся история <span data-icon="arrow"></span></button></div><div id="latest-result"></div></section>
-        <div class="bottom-note"><span data-icon="shield"></span>Распознавание на устройстве. Интернет нужен только для загрузки моделей.</div>
-      </section>
-      <section id="page-history" class="page" hidden><div class="page-heading"><div><div class="eyebrow">НИ ОДНА МЫСЛЬ НЕ ПОТЕРЯЕТСЯ</div><h1>История диктовок<span class="accent">.</span></h1><p>Найди, поправь или скопируй то, что уже сказал.</p></div></div><div class="search-box"><span data-icon="search"></span><input id="history-search" placeholder="Найти в диктовках…" aria-label="Поиск по истории"></div><div id="history-list" class="history-list"></div></section>
-      <section id="page-dictionary" class="page" hidden><div class="page-heading"><div><div class="eyebrow">СЛОВА, КОТОРЫЕ ЗНАЕШЬ ТЫ</div><h1>Мой словарь<span class="accent">.</span></h1><p>Имена, сленг и рабочие термины — в твоём написании.</p></div><button class="primary-button" id="add-word"><span data-icon="plus"></span>Добавить слово</button></div><div class="dictionary-note"><span data-icon="sparkle"></span><div><strong>Подсказки для распознавания</strong><p>Слова передаются модели как контекст. Для повторяющейся ошибки можно добавить точную замену. Это помогает, но не гарантирует результат.</p></div></div><div class="dictionary-table"><div class="dictionary-table-head"><span>КАК ПИСАТЬ</span><span>ЧТО ЗАМЕНЯТЬ</span><span></span></div><div id="dictionary-list"></div></div><p class="muted table-footnote">До 100 слов. В подсказку модели попадут первые 500 символов словаря.</p></section>
-      <section id="page-models" class="page" hidden><div class="page-heading"><div><div class="eyebrow">РАСПОЗНАВАНИЕ БЕЗ ОБЛАКА</div><h1>Выбери свой голос<span class="accent">.</span></h1><p>Скачай модель один раз. Дальше она работает без интернета.</p></div></div><div id="models-list" class="models-list"></div><div class="section-heading"><h2>Оформление текста</h2></div><div id="formatter-list" class="models-list"></div><div class="card hardware-note"><span data-icon="cpu"></span><div><strong>Работает на процессоре · INT8</strong><p>В этой версии используется CPU на Windows и macOS. Скорость зависит от компьютера, длины записи и модели. Ускорение на NVIDIA и Apple GPU пока не подключено.</p></div></div><div id="download-panel" class="card download-panel" hidden><div><strong id="download-title">Загрузка модели</strong><span id="download-detail"></span></div><progress id="download-progress"></progress><button class="secondary-button" id="cancel-download">Остановить загрузку</button></div></section>
-      <section id="page-settings" class="page" hidden><div class="page-heading"><div><div class="eyebrow">УДОБНО ИМЕННО ТЕБЕ</div><h1>Настройки<span class="accent">.</span></h1><p>Управляй записью, текстом и тем, что остаётся в истории.</p></div></div><div class="settings-card card"><div class="settings-row"><div><strong>Микрофон</strong><p>Список обновится после первого доступа к микрофону.</p></div><select id="microphone-select" aria-label="Микрофон"><option value="default">Системный по умолчанию</option></select></div><div class="settings-row"><div><strong>Горячая клавиша</strong><p id="hotkey-description">Начать и закончить запись из любого приложения.</p></div><div class="key-combo"><kbd class="modifier-key">Ctrl</kbd><kbd>Shift</kbd><kbd>Space</kbd></div></div><div class="settings-row"><div><strong>Вставлять в активное приложение</strong><p>Диктовка по горячей клавише вставляется туда, где стоял курсор. Текст также остаётся в буфере. При смене окна — только копируется.</p></div><label class="switch"><input type="checkbox" id="auto-paste" aria-label="Вставлять в активное приложение"><span></span></label></div><div class="settings-row" id="accessibility-row" hidden><div><strong>Разрешение на автовставку</strong><p id="accessibility-status"></p></div><button id="accessibility-button" class="secondary-button">Разрешить / проверить</button></div><div class="settings-row"><div><strong>Копировать готовый текст</strong><p>Для записи кнопкой и импорта. Вставка через <span class="paste-hint">Ctrl+V</span>.</p></div><label class="switch"><input type="checkbox" id="auto-copy" aria-label="Копировать готовый текст"><span></span></label></div><div class="settings-row"><div><strong>Оформление текста</strong><p>Абзацы по паузам и смене темы, нумерованные списки для «во-первых, во-вторых». Слова не меняются. Работает в режиме «Естественно».</p></div><select id="formatting-select" aria-label="Оформление текста"><option value="rules">Абзацы и списки</option><option value="llm">Умное (нейросеть)</option><option value="off">Одним абзацем</option></select></div><div class="settings-row"><div><strong>Хранить аудио в истории</strong><p>Можно переслушать сомнительный фрагмент. По умолчанию сохраняется только текст.</p></div><label class="switch"><input type="checkbox" id="keep-audio" aria-label="Хранить аудио в истории"><span></span></label></div><div class="settings-row vertical"><div><strong>О чём ты обычно говоришь</strong><p>Короткая подсказка модели: область работы, названия, тема. До 200 символов.</p></div><textarea id="context-input" rows="3" maxlength="200" placeholder="Например: разработка приложений, монтаж видео, автоматизация" aria-label="Контекст распознавания"></textarea><button id="save-context" class="secondary-button">Сохранить контекст</button></div></div></section>
-    </main>
-    <footer><span>Твои мысли. Твои слова.</span><span><span class="status-dot"></span>Сделано для спокойной работы</span></footer>
-  </div>
-  <dialog id="dictionary-dialog"><form id="dictionary-form"><div class="dialog-heading"><h2 id="word-dialog-title">Новое слово</h2><button type="button" class="icon-button" id="close-word" aria-label="Закрыть">×</button></div><label for="word-input">Правильное написание</label><input id="word-input" required maxlength="80" placeholder="Например, LocalSend"><label for="alias-input">Варианты ошибки <span class="muted">· необязательно</span></label><input id="alias-input" placeholder="локал сенд, local send"><p class="muted">Через запятую. Эти слова и фразы будут заменяться целиком. Не добавляй обычные слова, если они могут означать что-то другое.</p><p id="word-error" class="inline-error" role="alert"></p><div class="dialog-actions"><button type="button" class="secondary-button" id="cancel-word">Отмена</button><button type="submit" class="primary-button">Сохранить слово</button></div></form></dialog>
+        <fieldset class="field">
+          <legend>Как записывать</legend>
+          <div class="radio-list">
+            <label class="radio-row"><input type="radio" name="mode" value="natural"><span class="radio-dot" aria-hidden="true"></span><span class="radio-text"><strong>Естественно</strong><small>Пунктуация модели и замены из словаря. Слова не меняются.</small></span></label>
+            <label class="radio-row"><input type="radio" name="mode" value="minimal"><span class="radio-dot" aria-hidden="true"></span><span class="radio-text"><strong>Минимум знаков</strong><small>Убираем большинство знаков в конце слов. Написание версий и адресов сохраняется.</small></span></label>
+            <label class="radio-row"><input type="radio" name="mode" value="raw"><span class="radio-dot" aria-hidden="true"></span><span class="radio-text"><strong>Исходный результат</strong><small>Ровно то, что вернула модель. Без замен и правок.</small></span></label>
+          </div>
+        </fieldset>
+        <div class="field">
+          <span class="field-label">Модель</span>
+          <button id="model-link" class="model-link"><span id="active-model-icon" class="tile" data-icon="bolt"></span><span class="model-link-text"><strong id="active-model">GigaAM v3</strong><small id="active-model-state">Проверяем модель</small></span><span class="chevron" data-icon="chevron"></span></button>
+        </div>
+        <p class="privacy-note"><span data-icon="shield"></span><span>Распознавание на устройстве. Интернет нужен только для загрузки моделей.</span></p>
+      </aside>
+    </section>
+
+    <section id="page-history" class="page split history" hidden>
+      <div class="pane list-pane">
+        <div class="pane-top">
+          <label class="search"><span data-icon="search"></span><input id="history-search" type="search" placeholder="Найти в диктовках" aria-label="Поиск по истории"><span class="keys"><kbd class="modifier-key">Ctrl</kbd><kbd>F</kbd></span></label>
+        </div>
+        <div id="history-list" class="list-scroll"></div>
+        <div class="key-hints"><span><kbd>↑</kbd><kbd>↓</kbd>выбрать</span><span><kbd>Enter</kbd>скопировать</span></div>
+      </div>
+      <div id="history-detail" class="pane detail-pane"></div>
+    </section>
+
+    <section id="page-dictionary" class="page split dictionary" hidden>
+      <div class="pane list-pane">
+        <div class="pane-head">
+          <div class="pane-title"><h1>Мой словарь</h1><span id="dictionary-count" class="count-badge">0 из 100</span><button id="add-word" class="button"><span data-icon="plus"></span>Добавить слово<span class="keys"><kbd class="modifier-key">Ctrl</kbd><kbd>N</kbd></span></button></div>
+          <p class="info-line"><span data-icon="info"></span><span>Замены работают с любой моделью. Подсказки для распознавания понимает только Whisper.</span></p>
+        </div>
+        <div class="dictionary-columns" aria-hidden="true"><span>Как писать</span><span>Что заменять</span><span></span></div>
+        <div id="dictionary-list" class="list-scroll"></div>
+        <p class="pane-foot">До 100 слов. В подсказку Whisper попадают первые 500 символов словаря.</p>
+      </div>
+      <form id="dictionary-form" class="pane detail-pane" novalidate>
+        <div class="detail-head"><h2 id="word-dialog-title">Новое слово</h2></div>
+        <div class="detail-body">
+          <div class="field">
+            <label for="word-input">Правильное написание</label>
+            <input id="word-input" class="input" maxlength="80" placeholder="Например, LocalSend" autocomplete="off">
+            <p id="word-error" class="inline-error" role="alert"></p>
+          </div>
+          <div class="field">
+            <label for="alias-input">Варианты ошибки <span class="optional">необязательно</span></label>
+            <div class="chips-input" id="alias-box"><span id="alias-chips" class="chips"></span><input id="alias-input" placeholder="Добавить вариант и нажать Enter" autocomplete="off"></div>
+            <p class="help">Эти слова и фразы заменяются целиком. Не добавляй обычные слова, если у них есть другой смысл.</p>
+          </div>
+        </div>
+        <div class="action-bar">
+          <button type="button" id="delete-word" class="button-ghost danger"><span data-icon="trash"></span>Удалить слово</button>
+          <span class="spacer"></span>
+          <button type="button" id="cancel-word" class="button-ghost">Отмена</button>
+          <button type="submit" id="save-word" class="button-primary">Сохранить слово<kbd>Enter</kbd></button>
+        </div>
+      </form>
+    </section>
+
+    <section id="page-models" class="page scroll" hidden>
+      <div class="page-inner">
+        <div class="page-heading"><h1>Модели</h1><p>Скачай модель один раз. Дальше она работает без интернета.</p></div>
+        <div id="models-list" class="card-grid"></div>
+        <h2 class="section-title">Оформление текста</h2>
+        <div id="formatter-list" class="card-grid single"></div>
+        <div class="hardware-note"><span class="tile" data-icon="cpu"></span><div><strong>Распознавание работает на процессоре, INT8</strong><p>Скорость зависит от компьютера, длины записи и модели. Ускорение на видеокартах NVIDIA и Apple пока не подключено.</p></div></div>
+      </div>
+    </section>
+
+    <section id="page-settings" class="page scroll" hidden>
+      <div class="settings">
+        <div class="settings-row settings-heading"><h1>Настройки</h1><p>Управляй записью, текстом и тем, что остаётся в истории.</p></div>
+        <section class="panel settings-group" aria-label="Запись">
+          <div class="settings-row">
+            <label class="setting-label" for="microphone-select">Микрофон</label>
+            <div class="setting-control"><div class="select"><select id="microphone-select"><option value="default">Системный по умолчанию</option></select><span data-icon="chevron-down"></span></div><p class="help">Список обновится после первого доступа к микрофону.</p></div>
+          </div>
+          <div class="settings-row">
+            <span class="setting-label">Горячая клавиша</span>
+            <div class="setting-control"><div class="hotkey-field"><kbd class="modifier-key">Ctrl</kbd><kbd>Shift</kbd><kbd class="key-wide">Space</kbd><span id="hotkey-state" class="hotkey-state"></span></div><p id="hotkey-description" class="help"></p></div>
+          </div>
+          <div class="settings-row">
+            <label class="setting-label" for="keep-audio">Хранить аудио в истории</label>
+            <div class="setting-control inline"><span class="switch"><input type="checkbox" id="keep-audio" role="switch"><span></span></span><p class="help">Можно переслушать сомнительный фрагмент. По умолчанию сохраняется только текст.</p></div>
+          </div>
+        </section>
+        <section class="panel settings-group" aria-label="Текст">
+          <div class="settings-row">
+            <label class="setting-label" for="auto-paste">Вставлять в активное приложение</label>
+            <div class="setting-control inline"><span class="switch"><input type="checkbox" id="auto-paste" role="switch"><span></span></span><p class="help">Диктовка по горячей клавише вставится туда, где стоял курсор. Текст также остаётся в буфере. Если окно сменилось, текст только копируется.</p></div>
+          </div>
+          <div class="settings-row" id="accessibility-row" hidden>
+            <span class="setting-label">Разрешение на автовставку</span>
+            <div class="setting-control"><p id="accessibility-status" class="help"></p><button id="accessibility-button" class="button">Разрешить или проверить</button></div>
+          </div>
+          <div class="settings-row">
+            <label class="setting-label" for="auto-copy">Копировать готовый текст</label>
+            <div class="setting-control inline"><span class="switch"><input type="checkbox" id="auto-copy" role="switch"><span></span></span><p class="help">Для записи кнопкой и импорта. Вставка через <span class="paste-hint">Ctrl+V</span>.</p></div>
+          </div>
+          <div class="settings-row">
+            <label class="setting-label" for="formatting-select">Оформление текста</label>
+            <div class="setting-control"><div class="select"><select id="formatting-select"><option value="rules">Абзацы и списки</option><option value="llm">Умное (нейросеть)</option><option value="off">Одним абзацем</option></select><span data-icon="chevron-down"></span></div><p class="help">Абзацы по паузам и смене темы, нумерованные списки для «во-первых, во-вторых». Слова не меняются. Работает в режиме «Естественно».</p></div>
+          </div>
+          <div class="settings-row">
+            <label class="setting-label" for="context-input">О чём ты обычно говоришь</label>
+            <div class="setting-control">
+              <div class="textarea-wrap"><textarea id="context-input" class="input" rows="3" maxlength="200" placeholder="Например: разработка приложений, монтаж видео, автоматизация"></textarea><span id="context-count" class="counter">0/200</span></div>
+              <div class="context-foot"><p class="help">Подсказка для Whisper: область работы, названия, тема. GigaAM её не использует.</p><button id="save-context" class="button">Сохранить контекст</button></div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+  </main>
+
   <div id="toast" class="toast" role="status" hidden></div>
   <script src="app.js"></script>
 </body>

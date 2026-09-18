@@ -47,6 +47,8 @@ npm run test:packaged             # smoke-tests the packaged app
 
 A monotonically increasing `job` counter invalidates stale results after a cancel or restart. Late events must not reopen the widget or paste. On startup, any orphaned audio files are recovered into `pendingRecordings`.
 
+**UI.** The interface is dark only (`nativeTheme.themeSource = 'dark'`). `renderer/styles.css` holds the colour and font tokens on `:root`: colour appears only for state (red recording, green done, yellow attention, blue recommendation). The main window has top tabs (`data-page`), and history and dictionary are list-plus-detail panes. The page CSP (`style-src 'self'`) blocks inline `style` attributes, so dynamic sizes such as waveform bars and progress are set through the CSSOM.
+
 **Widget.** `renderer/widget.html/js` is a non-focusable, always-on-top window with its own narrow preload (`widget-preload.cjs`) and IPC (`widget-boot`, `widget-action`). Stopping a recording hides it immediately, and transcription continues in the background.
 
 **Auto-paste.** `electron/paste.cjs` (`PasteService`) sends only the standard paste shortcut, never Enter. It refuses to paste and returns a coded reason (`focus-changed`, `modifiers`, `clipboard-changed`, `permission`, …) if the target window or focus changed, modifier keys are held, or the clipboard no longer holds the text. `electron/native-input.cjs` implements the OS backends with Koffi: Win32 `SendInput`, and macOS Accessibility/CoreGraphics.
