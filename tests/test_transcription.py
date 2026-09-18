@@ -94,3 +94,29 @@ def test_symlink_cannot_escape_audio_directory_even_with_matching_prefix(tmp_pat
 def test_model_name_cannot_traverse_directories(tmp_path):
     with pytest.raises(ValueError):
         Engine(tmp_path).model_path('../../other')
+
+
+def test_cancel_covers_running_and_queued_requests_but_not_later_ones(tmp_path):
+    from engine import Canceled
+    engine = Engine(tmp_path)
+    engine.canceled_through = 5
+    for request_id in (3, 5):
+        with pytest.raises(Canceled):
+            engine.check_canceled(request_id)
+    engine.check_canceled(6)
+    engine.check_canceled(None)
+
+
+def test_stale_idle_timer_does_not_unload_a_model_used_after_it_fired(tmp_path):
+    engine = Engine(tmp_path)
+    engine.model, engine.loaded_key = object(), 'turbo'
+    engine.schedule_idle_unload()
+    stale = engine.idle_timer
+    engine.schedule_idle_unload()
+    try:
+        engine._idle_unload(stale)
+        assert engine.loaded_key == 'turbo'
+        engine._idle_unload(engine.idle_timer)
+        assert engine.model is None and engine.loaded_key is None
+    finally:
+        engine.cancel_idle_unload()

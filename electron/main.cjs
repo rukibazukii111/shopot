@@ -18,7 +18,7 @@ const shortcut = 'CommandOrControl+Shift+Space';
 let window, widget, tray, worker, store, paste, capture, busy = false, blocker, quitting = false, engineError = null;
 let hotkeyRegistered = false;
 let nativeAvailable = false;
-let widgetTimer, activeTranscription, job = 0;
+let widgetTimer, activeTranscription, downloading = false, job = 0;
 let widgetState = {phase: 'requesting', shortcut: process.platform === 'darwin' ? '⌘⇧Space' : 'Ctrl⇧Space'};
 
 function send(channel, value) { if (window && !window.isDestroyed()) window.webContents.send(channel, value); }
@@ -50,6 +50,8 @@ function setBusy(value) {
   else if (!value && blocker !== undefined && !capture) { powerSaveBlocker.stop(blocker); blocker = undefined; }
 }
 function updateTray(label = 'Шёпот') { if (tray) tray.setToolTip(label); }
+// Escape is taken from other apps only while the microphone is live; after that it belongs to the user again.
+function releaseEscape() { globalShortcut.unregister('Escape'); }
 function hideWidget() { clearTimeout(widgetTimer); widget?.hide(); }
 function showWidget(value, show = true) {
   clearTimeout(widgetTimer);
@@ -66,7 +68,7 @@ function showWidget(value, show = true) {
 function finishCapture(value) {
   const previous = capture; capture = null;
   if (previous?.target) paste.release(previous.target);
-  globalShortcut.unregister('Escape'); setBusy(busy); updateTray();
+  releaseEscape(); setBusy(busy); updateTray();
   hideWidget();
   if (previous?.global) showWidget(value, value.phase === 'error');
 }
@@ -76,6 +78,8 @@ function beginCapture(global = false) {
   if (!worker.status.models?.find(m => m.id === store.data.settings.model)?.installed) throw new Error('Сначала скачай модель в Шёпоте');
   capture = {id: crypto.randomUUID(), global, target: global ? paste.capture() : null, phase: 'requesting',
     settings: structuredClone(store.data.settings), dictionary: structuredClone(store.data.dictionary)};
+  // Load the model while the user speaks instead of after they stop.
+  worker.notify('preload', {model: capture.settings.model});
   if (blocker === undefined) blocker = powerSaveBlocker.start('prevent-app-suspension');
   globalShortcut.register('Escape', () => { hideWidget(); send('cancel-recording'); });
   if (global) showWidget({phase: 'requesting', elapsed: 0, level: 0, message: '', hint: ''});
@@ -84,7 +88,7 @@ function beginCapture(global = false) {
 function toggleGlobalRecording() {
   if (capture) {
     if (['requesting', 'recording'].includes(capture.phase)) {
-      capture.phase = 'stopping'; hideWidget(); send('toggle-recording');
+      capture.phase = 'stopping'; releaseEscape(); hideWidget(); send('toggle-recording');
     }
     return;
   }
@@ -159,6 +163,8 @@ async function runTranscription(filePath, source, recordingSession = null, retry
     completed = true;
     const delivery = await paste.deliver(entry.text, {autoCopy: settings.autoCopy,
       autoPaste: Boolean(recordingSession?.global && settings.autoPaste), target: recordingSession?.target}, () => currentJob === job);
+    // Kept for diagnosing why auto-paste did not happen on a user's machine.
+    entry.delivery = delivery.code; store.save();
     send('snapshot', snapshot());
     if (recordingSession && currentJob === job) finishCapture({phase: delivery.pasted || ['saved', 'copied'].includes(delivery.code) ? 'success' : 'error', message: delivery.message, hint: delivery.pasted ? 'Можно продолжать писать' : 'Текст доступен в истории'});
     return {entry, ...delivery};
@@ -239,9 +245,9 @@ else {
       } else if ((value.phase === 'recording' && ['requesting', 'recording'].includes(capture.phase)) ||
                  (value.phase === 'stopping' && ['recording', 'stopping'].includes(capture.phase))) {
         capture.phase = value.phase;
-        if (value.phase === 'stopping') hideWidget();
+        if (value.phase === 'stopping') { releaseEscape(); hideWidget(); }
         if (capture.global) showWidget({phase: value.phase, message: '', elapsed: Math.max(0, Math.min(900, Number(value.elapsed) || 0)), level: Math.max(0, Math.min(1, Number(value.level) || 0))}, value.phase === 'recording');
-        updateTray(value.phase === 'recording' ? 'Шёпот — идёт запись. Escape: отмена' : 'Шёпот — распознаю запись. Escape: отмена');
+        updateTray(value.phase === 'recording' ? 'Шёпот — идёт запись. Escape: отмена' : 'Шёпот — распознаю запись');
       }
     });
 
@@ -255,16 +261,18 @@ else {
     ipc('download', async id => {
       if (busy || capture) throw new Error('Дождись завершения текущей операции');
       const currentJob = ++job;
-      setBusy(true);
+      setBusy(true); downloading = true;
       try {
         const status = await worker.request('download', {model: modelId(id)});
         worker.status = status; send('engine', {status}); return status;
-      } finally { if (currentJob === job) setBusy(false); }
+      } finally { downloading = false; if (currentJob === job) setBusy(false); }
     });
     ipc('cancel', () => {
       if (activeTranscription) activeTranscription.canceled = true;
       ++job;
-      if (busy) { worker.restart(); send('engine', {status: null}); }
+      // A download can only be interrupted by killing the engine; transcription stops cooperatively.
+      if (downloading) { worker.restart(); send('engine', {status: null}); }
+      else if (busy) worker.cancel();
       busy = false; finishCapture({phase: 'canceled', message: 'Операция отменена', hint: 'Микрофон выключен'});
       return true;
     });

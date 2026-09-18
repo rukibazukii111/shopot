@@ -2,7 +2,7 @@
 const {globalShortcut} = require('electron');
 const {Worker} = require('../../electron/worker.cjs');
 const status = {models: [{id: 'turbo', installed: true}], device: 'cpu', computeType: 'int8'};
-globalThis.__test = {requests: [], nativeCalls: []};
+globalThis.__test = {requests: [], notifications: [], nativeCalls: []};
 const nativeModule = require('../../electron/native-input.cjs');
 const createNative = nativeModule.createNativeBackend;
 nativeModule.createNativeBackend = () => {
@@ -19,9 +19,10 @@ nativeModule.createNativeBackend = () => {
 };
 globalShortcut.register = (key, callback) => {
   if (key === 'CommandOrControl+Shift+Space') globalThis.__test.toggle = callback;
-  if (key === 'Escape') globalThis.__test.cancel = callback;
+  if (key === 'Escape') { globalThis.__test.cancel = callback; globalThis.__test.escape = true; }
   return true;
 };
+globalShortcut.unregister = key => { if (key === 'Escape') globalThis.__test.escape = false; };
 Worker.prototype.start = function () { this.status = status; setImmediate(() => this.emit('ready', status)); };
 Worker.prototype.request = function (command, payload) {
   globalThis.__test.requests.push({command, payload});
@@ -32,5 +33,7 @@ Worker.prototype.request = function (command, payload) {
     this.testReject = reject;
   });
 };
+Worker.prototype.notify = function (command, payload) { globalThis.__test.notifications.push({command, payload}); };
+Worker.prototype.cancel = function () { this.notify('cancel'); this.testReject?.(new Error('Операция отменена.')); };
 Worker.prototype.stop = function () { this.testReject?.(new Error('Операция отменена.')); this.status = null; };
 require('../../electron/main.cjs');

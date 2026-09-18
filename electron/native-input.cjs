@@ -26,7 +26,9 @@ function windowsBackend(koffi) {
     capture, release() {}, permitted: () => true,
     sameTarget(target) {
       const now = capture();
-      return Boolean(now && now.hwnd === target.hwnd && now.pid === target.pid && now.focus === target.focus);
+      if (!now || now.hwnd !== target.hwnd || now.pid !== target.pid) return false;
+      // Some apps (Qt, custom-drawn UIs) do not report a focus window; the same top-level window is then enough.
+      return !now.focus || !target.focus || now.focus === target.focus;
     },
     modifiersDown: () => [0x10, 0x11, 0x12, 0x5B, 0x5C].some(vk => (keyState(vk) & 0x8000) !== 0),
     paste: () => sendInput(4, [key(0x11), key(0x56), key(0x56, true), key(0x11, true)], koffi.sizeof(Input)) === 4,
@@ -71,9 +73,11 @@ function macBackend(koffi) {
     release(target) { if (target?.focus) release(target.focus); },
     sameTarget(target) {
       if (frontPid() !== target.pid) return false;
-      if (!target.focus) return false;
+      // Many apps (Telegram, Electron apps without AX enabled) expose no focused element.
+      // The same frontmost app is then enough; when both elements exist they must match.
+      if (!target.focus) return true;
       const now = focused(target.pid);
-      try { return Boolean(now && equal(now, target.focus)); }
+      try { return !now || equal(now, target.focus); }
       finally { if (now) release(now); }
     },
     modifiersDown: () => (BigInt(flags(0)) & 0x1E0000n) !== 0n,

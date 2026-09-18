@@ -55,6 +55,12 @@ class Worker extends EventEmitter {
       });
     });
   }
+  // Fire-and-forget commands: the engine handles them out of band and never replies.
+  notify(command, payload = {}) {
+    if (this.process && this.status) this.process.stdin.write(JSON.stringify({command, ...payload}) + '\n', 'utf8', () => {});
+  }
+  // Cancels the running and queued requests but keeps the process and the loaded model.
+  cancel() { this.notify('cancel'); }
   stop() {
     for (const item of this.pending.values()) { clearTimeout(item.timeout); item.reject(new Error('Операция отменена.')); }
     this.pending.clear(); this.status = null;

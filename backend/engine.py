@@ -11,6 +11,7 @@ import json
 import math
 import os
 from pathlib import Path
+import queue
 import re
 import sys
 import threading
@@ -32,7 +33,14 @@ MODELS = {
                  "revision": "edaa852ec7e145841d8ffdb056a99866b5f0a478", "size": "3,1 ГБ"},
 }
 MODEL_FILES = ["model.bin", "config.json", "tokenizer.json", "vocabulary.json", "preprocessor_config.json"]
+# Measured: above 4 threads Whisper gains <15% but starves the rest of the system (laptops freeze).
+THREADS = max(1, min(4, (os.cpu_count() or 4) // 2))
+IDLE_UNLOAD_SECONDS = 10 * 60
 _output_lock = threading.Lock()
+
+
+class Canceled(Exception):
+    pass
 
 
 def emit(value):
@@ -55,6 +63,11 @@ class Engine:
         self.audio_dir = audio_dir.resolve()
         self.model = None
         self.loaded_key = None
+        # The model is shared by the command thread and the idle-unload timer.
+        self.model_lock = threading.RLock()
+        # Requests with id <= this value were canceled, including ones still queued.
+        self.canceled_through = 0
+        self.idle_timer = None
 
     def audio_path(self, filename):
         if not isinstance(filename, str) or not re.fullmatch(
@@ -87,7 +100,7 @@ class Engine:
         return {"models": [{"id": key, **value, "installed": self.is_installed(key)}
                            for key, value in MODELS.items()],
                 "device": "cpu", "computeType": "int8", "loadedModel": self.loaded_key,
-                "threads": min(8, max(1, os.cpu_count() or 4))}
+                "threads": THREADS}
 
     def download(self, key, request_id=None):
         folder = self.model_path(key)
@@ -134,17 +147,74 @@ class Engine:
         if mode not in ("natural", "minimal", "raw"):
             raise ValueError("Неизвестный режим текста")
         request_id = request.get("id")
-        started = time.monotonic()
-        if self.loaded_key != key:
+        with self.model_lock:
+            self.cancel_idle_unload()
+            try:
+                return self._transcribe(request, key, audio_path, language, entries, mode, request_id)
+            finally:
+                self.schedule_idle_unload()
+
+    def load(self, key, request_id=None):
+        """Load the model if needed; returns seconds spent loading."""
+        with self.model_lock:
+            if self.loaded_key == key:
+                return 0.0
+            if not self.is_installed(key):
+                return 0.0
+            started = time.monotonic()
             emit({"event": "progress", "id": request_id, "stage": "loading",
                   "message": "Загружаем модель в память…"})
+            self.unload()
+            from faster_whisper import WhisperModel
+            self.model = WhisperModel(str(self.model_path(key)), device="cpu", compute_type="int8",
+                                      cpu_threads=THREADS, local_files_only=True)
+            self.loaded_key = key
+            return time.monotonic() - started
+
+    def unload(self):
+        with self.model_lock:
             self.model = None
             self.loaded_key = None
             gc.collect()
-            from faster_whisper import WhisperModel
-            self.model = WhisperModel(str(self.model_path(key)), device="cpu", compute_type="int8",
-                                      cpu_threads=min(8, os.cpu_count() or 4), local_files_only=True)
-            self.loaded_key = key
+
+    def preload(self, key):
+        """Warm the model while the user is still speaking."""
+        with self.model_lock:
+            self.cancel_idle_unload()
+            try:
+                self.load(key)
+            finally:
+                self.schedule_idle_unload()
+
+    def cancel_idle_unload(self):
+        if self.idle_timer:
+            self.idle_timer.cancel()
+            self.idle_timer = None
+
+    def schedule_idle_unload(self):
+        # Free RAM between dictations; preload on the hotkey hides the reload cost.
+        self.cancel_idle_unload()
+        timer = threading.Timer(IDLE_UNLOAD_SECONDS, lambda: self._idle_unload(timer))
+        timer.daemon = True
+        self.idle_timer = timer
+        timer.start()
+
+    def _idle_unload(self, timer):
+        with self.model_lock:
+            # A request may have run while this timer waited for the lock.
+            if self.idle_timer is timer:
+                self.idle_timer = None
+                self.unload()
+
+    def check_canceled(self, request_id):
+        if isinstance(request_id, int) and request_id <= self.canceled_through:
+            raise Canceled("Операция отменена.")
+
+    def _transcribe(self, request, key, audio_path, language, entries, mode, request_id):
+        started = time.monotonic()
+        self.check_canceled(request_id)
+        load_elapsed = self.load(key, request_id)
+        self.check_canceled(request_id)
         emit({"event": "progress", "id": request_id, "stage": "transcribe",
               "message": "Распознаём речь на компьютере…", "fraction": 0})
         from faster_whisper.audio import decode_audio
@@ -164,7 +234,7 @@ class Engine:
         prompt = vocabulary_prompt(entries, request.get("context", ""))
         segments, info = self.model.transcribe(
             audio, language=None if language == "auto" else language, task="transcribe",
-            beam_size=5, best_of=5, temperature=0.0,
+            beam_size=5, temperature=0.0,
             initial_prompt=prompt or None, hotwords=", ".join(e["word"] for e in entries)[:500] or None,
             condition_on_previous_text=False, word_timestamps=True,
             vad_filter=True, vad_parameters={"min_silence_duration_ms": 500, "speech_pad_ms": 300},
@@ -173,6 +243,7 @@ class Engine:
         parsed = []
         words = []
         for segment in segments:
+            self.check_canceled(request_id)
             parsed.append({"start": finite(segment.start), "end": finite(segment.end),
                            "text": segment.text.strip(), "noSpeechProbability": finite(segment.no_speech_prob)})
             words.extend({"start": finite(w.start), "end": finite(w.end), "word": w.word,
@@ -185,7 +256,8 @@ class Engine:
         return {"text": text, "rawText": raw, "words": words, "segments": parsed,
                 "replacements": replacements, "duration": finite(duration),
                 "elapsed": finite(time.monotonic() - started), "language": info.language,
-                "model": key, "noSpeech": not bool(raw), "device": "cpu"}
+                "model": key, "noSpeech": not bool(raw), "device": "cpu",
+                "loadElapsed": finite(load_elapsed)}
 
 
 def main():
@@ -214,12 +286,38 @@ def main():
         engine.download(args.download)
         emit(engine.status())
         return
+    if sys.platform == "darwin":
+        # Keep the Mac responsive: inference yields to foreground apps.
+        os.nice(5)
     emit({"event": "ready", "status": engine.status()})
-    for line in sys.stdin:
-        request = {}
+    requests = queue.Queue()
+
+    def read_commands():
+        # Control commands bypass the queue so they apply to the running request.
+        last_id = 0
+        for line in sys.stdin:
+            try:
+                request = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(request.get("id"), int):
+                last_id = request["id"]
+            if request.get("command") == "cancel":
+                engine.canceled_through = last_id
+            elif request.get("command") == "preload":
+                requests.put({**request, "id": None})
+            else:
+                requests.put(request)
+        requests.put(None)
+
+    threading.Thread(target=read_commands, daemon=True).start()
+    while (request := requests.get()) is not None:
         try:
-            request = json.loads(line)
             command = request.get("command")
+            if command == "preload":
+                if request.get("model") in MODELS:
+                    engine.preload(request["model"])
+                continue
             if command == "status":
                 result = engine.status()
             elif command == "download":
@@ -229,9 +327,12 @@ def main():
             else:
                 raise ValueError("Неизвестная команда")
             emit({"id": request.get("id"), "result": result})
+        except Canceled as error:
+            emit({"id": request.get("id"), "error": str(error), "canceled": True})
         except Exception as error:
             traceback.print_exc(file=sys.stderr)
-            emit({"id": request.get("id"), "error": str(error) or type(error).__name__})
+            if request.get("id") is not None:
+                emit({"id": request.get("id"), "error": str(error) or type(error).__name__})
 
 
 if __name__ == "__main__":
