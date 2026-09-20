@@ -4,7 +4,7 @@ const crypto = require('node:crypto');
 
 const DEFAULT_SETTINGS = {
   model: 'gigaam', language: 'ru', mode: 'natural', context: '',
-  autoCopy: true, autoPaste: true, keepAudio: false, microphoneId: 'default', formatting: 'rules',
+  autoCopy: true, autoPaste: true, keepAudio: false, microphoneId: 'default', formatting: 'rules', removeFillers: true,
 };
 const MODEL_IDS = ['gigaam', 'small', 'turbo', 'large-v3'];
 const RUSSIAN_ONLY = ['gigaam'];
@@ -19,7 +19,7 @@ function validateSettings(input) {
     if (!values.includes(input[key] ?? result[key])) throw new Error('Некорректное значение: ' + key);
     result[key] = input[key] ?? result[key];
   }
-  for (const key of ['autoCopy', 'autoPaste', 'keepAudio']) {
+  for (const key of ['autoCopy', 'autoPaste', 'keepAudio', 'removeFillers']) {
     if (key in input && typeof input[key] !== 'boolean') throw new Error('Некорректное значение: ' + key);
     result[key] = input[key] ?? result[key];
   }
