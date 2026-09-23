@@ -128,6 +128,29 @@ def rule_tags(sentences, pauses=()):
     return tags
 
 
+# A hesitation is one letter dragged out: «ааа», «а-а», «э-э-э», «мм». Real words mix letters,
+# so «а», «но», «ну», «мы» are untouched. Acronyms (ООО) and units after a number (10 мм) are kept.
+HESITATION = re.compile(r"(?<![^\W\d_])(?<!\d )(?<!-)(?P<word>(?P<letter>[аэыоумАЭЫОУМ])"
+                        r"(?:\s*-\s*(?P=letter)|(?P=letter))+)(?![^\W\d_])(?:\s*(?:\.{2,}|[,…]))?", re.I)
+
+
+def strip_hesitations(text):
+    """Remove dragged-out hesitation sounds the model transcribed, with the comma or ellipsis after them."""
+    def replace(match):
+        word = match.group("word")
+        return match.group(0) if word.isupper() and len(word) > 1 else " "
+
+    kept = []
+    for sentence in split_sentences(text):
+        cleaned = re.sub(r"\s+", " ", HESITATION.sub(replace, sentence)).strip()
+        cleaned = re.sub(r"^[\s,;:…·-]+", "", cleaned)
+        cleaned = re.sub(r"\s+([,.;:!?…])", r"\1", cleaned)
+        if not re.search(r"[^\W\d_]", cleaned):
+            continue
+        kept.append(_capitalize(cleaned) if sentence[:1].isupper() else cleaned)
+    return " ".join(kept)
+
+
 def _inline_bullets(sentence):
     """«Нужно купить: молоко, хлеб и яйца.» -> prefix and items, when the tail is a list of short items."""
     match = re.match(r"^(.*\S):\s+(.+?)[.!…]?$", sentence)

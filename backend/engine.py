@@ -27,7 +27,8 @@ os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 import llm
-from text_processing import format_transcript, join_segments, layout_text, pause_sentences, split_sentences, vocabulary_prompt
+from text_processing import (format_transcript, join_segments, layout_text, pause_sentences, split_sentences,
+                             strip_hesitations, vocabulary_prompt)
 
 WHISPER_FILES = ["model.bin", "config.json", "tokenizer.json", "vocabulary.json", "preprocessor_config.json"]
 GIGAAM_FILES = ["config.json", "v3_e2e_rnnt_encoder.int8.onnx", "v3_e2e_rnnt_decoder.int8.onnx",
@@ -393,10 +394,13 @@ class Engine:
             parsed, words, detected = self._whisper_segments(audio, duration, language, entries, request, request_id)
             raw = " ".join(s["text"] for s in parsed).strip()
         text, replacements = format_transcript(raw, entries, mode)
+        fillers = mode != "raw" and bool(request.get("removeFillers", True))
+        text = self.clean(text, mode, request.get("removeFillers", True))
         formatting, format_started = request.get("formatting", "rules"), time.monotonic()
         if mode == "natural" and formatting != "off":
             gaps = [i > 0 and parsed[i]["start"] - parsed[i - 1]["end"] >= PARAGRAPH_PAUSE_SECONDS for i in range(len(parsed))]
-            text, formatting = self.layout(text, pause_sentences([s["text"] for s in parsed], gaps, names), formatting, request_id)
+            chunks = [strip_hesitations(s["text"]) if fillers else s["text"] for s in parsed]
+            text, formatting = self.layout(text, pause_sentences(chunks, gaps, names), formatting, request_id)
         else:
             formatting = "off"
         return {"formatting": formatting, "formatElapsed": finite(time.monotonic() - format_started),"text": text, "rawText": raw, "words": words, "segments": parsed,
@@ -404,6 +408,10 @@ class Engine:
                 "elapsed": finite(time.monotonic() - started), "language": detected,
                 "model": key, "noSpeech": not bool(raw), "device": "cpu",
                 "loadElapsed": finite(load_elapsed)}
+
+    def clean(self, text, mode, remove_fillers):
+        """«Ааа», «э-э» are dictated sounds, not words. «Исходный результат» keeps everything."""
+        return strip_hesitations(text) if mode != "raw" and remove_fillers else text
 
     def _progress(self, request_id, fraction):
         emit({"event": "progress", "id": request_id, "stage": "transcribe",

@@ -175,6 +175,7 @@ function syncSettings() {
   $('#auto-copy').checked = state.settings.autoCopy;
   $('#auto-paste').checked = state.settings.autoPaste;
   $('#keep-audio').checked = state.settings.keepAudio;
+  $('#remove-fillers').checked = state.settings.removeFillers;
   $('#formatting-select').value = state.settings.formatting;
   if (!contextDirty) $('#context-input').value = state.settings.context;
   updateContextCount();
@@ -603,6 +604,7 @@ $('#auto-paste').addEventListener('change', event => guard(() => saveSettings({a
 $('#accessibility-button').addEventListener('click', () => guard(async () => { state.pastePermission = await api.pastePermission(); syncSettings(); }));
 $('#context-input').addEventListener('input', () => { contextDirty = true; updateContextCount(); });
 $('#formatting-select').addEventListener('change', event => guard(() => saveSettings({formatting: event.target.value})));
+$('#remove-fillers').addEventListener('change', event => guard(() => saveSettings({removeFillers: event.target.checked})));
 $('#keep-audio').addEventListener('change', event => guard(() => saveSettings({keepAudio: event.target.checked})));
 $('#microphone-select').addEventListener('change', event => guard(() => saveSettings({microphoneId: event.target.value})));
 $('#save-context').addEventListener('click', () => guard(async () => {

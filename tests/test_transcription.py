@@ -274,3 +274,21 @@ def test_real_model_tags_an_ordinal_list():
         assert tags[1:3] == ['num', 'num'] and tags[0] == 'new'
     finally:
         formatter.close()
+
+
+def test_hesitation_sounds_are_removed_but_real_words_are_not():
+    from text_processing import strip_hesitations
+    assert strip_hesitations('У меня расположены э-э идентично всё, кроме S08.') == 'У меня расположены идентично всё, кроме S08.'
+    assert strip_hesitations('Ааа... И да, кстати, ты прав.') == 'И да, кстати, ты прав.'
+    assert strip_hesitations('А-а, по поводу денег.') == 'По поводу денег.'
+    assert strip_hesitations('Мм, не знаю. Ммм. Хорошо.') == 'Не знаю. Хорошо.'
+    for kept in ('А потом мы на ну и он, а она не тут.', 'Ширина 10 мм и всё.', 'ООО «Ромашка» платит.'):
+        assert strip_hesitations(kept) == kept
+
+
+def test_raw_mode_keeps_hesitations(tmp_path):
+    engine = Engine(tmp_path)
+    spoken = 'Ааа... Видосы готовы.'
+    assert engine.clean(spoken, 'raw', True) == spoken
+    assert engine.clean(spoken, 'natural', False) == spoken
+    assert engine.clean(spoken, 'natural', True) == 'Видосы готовы.'

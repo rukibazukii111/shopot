@@ -32,6 +32,8 @@ test('model ids and modes cannot be arbitrary strings', () => {
   assert.throws(() => validateSettings({keepAudio: 'false'}));
   assert.throws(() => validateSettings({autoPaste: 'false'}));
   assert.throws(() => validateSettings({formatting: 'rewrite'}));
+  assert.throws(() => validateSettings({removeFillers: 'yes'}));
+  assert.equal(validateSettings({}).removeFillers, true);
   assert.equal(validateSettings({}).formatting, 'rules');
   assert.equal(validateSettings({formatting: 'llm'}).formatting, 'llm');
   assert.equal(validateSettings({model: 'large-v3', autoCopy: false}).autoPaste, true);
