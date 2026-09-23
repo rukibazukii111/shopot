@@ -105,7 +105,6 @@ class Engine:
         self.canceled_through = 0
         self.idle_timer = None
         self.formatter_dir = self.data_dir / "formatter"
-        self.formatter_runtime = None
         self.formatter = None
 
     def audio_path(self, filename):
@@ -241,13 +240,15 @@ class Engine:
             traceback.print_exc(file=sys.stderr)
         return self.status()
 
+    def formatter_command(self):
+        """This same program again, as the formatter worker (see llm.FormatterProcess)."""
+        program = [sys.executable] if getattr(sys, "frozen", False) else [sys.executable, os.path.abspath(__file__)]
+        return program + ["--data-dir", str(self.data_dir), "--formatter-worker"]
+
     def load_formatter(self):
         with self.model_lock:
             if self.formatter is None:
-                runtime, model, _ = self.formatter_paths()
-                if self.formatter_runtime is None:
-                    self.formatter_runtime = llm.Runtime(runtime)
-                self.formatter = llm.Formatter(self.formatter_runtime, model, THREADS)
+                self.formatter = llm.FormatterProcess(self.formatter_command())
             return self.formatter
 
     def unload_formatter(self):
@@ -501,11 +502,17 @@ def main():
     parser.add_argument("--data-dir", required=True)
     parser.add_argument("--download", choices=list(MODELS))
     parser.add_argument("--self-check", action="store_true")
+    parser.add_argument("--formatter-worker", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
         sys.stdin.reconfigure(encoding="utf-8")
     engine = Engine(args.data_dir)
+    if args.formatter_worker:
+        # Only llama.cpp lives here: importing the ASR runtimes would bring back the OpenMP clash.
+        runtime, model, _ = engine.formatter_paths()
+        llm.serve(runtime, model, THREADS)
+        return
     if args.self_check:
         import faster_whisper
         import ctranslate2

@@ -1,19 +1,31 @@
 """Paragraph and list layout with a local language model through llama.cpp's C API.
 
-No server and no network: the official llama.cpp build is loaded in-process with ctypes.
+No server and no network: the official llama.cpp build is loaded with ctypes, in a child process
+(`serve`), and the engine talks to it through `FormatterProcess`. llama.cpp and ctranslate2 each
+bring their own OpenMP runtime, and two of them in one process abort it, so Whisper and the layout
+model cannot share one. The child also contains crashes: the engine falls back to the rules.
 The model never writes text. Its answer has a fixed shape,
 {"tags": [{"n": 1, "t": "new"}, {"n": 2, "t": "same"}, ...]}, so everything except the tags is fed
 as known text and at each tag the model only compares four options. The text is then rebuilt from
 the original sentences. The struct layouts below match llama.cpp LLAMA_BUILD; the runtime is pinned to it.
 """
 import ctypes as C
+import json
 import os
+import queue
+import subprocess
 import sys
+import threading
+import time
+import traceback
 
 LLAMA_BUILD = "b11040"
 LAYOUT_TAGS = ("new", "same", "num", "bul")
 CONTEXT_TOKENS = 4096
 MAX_SENTENCES = 120
+# Loading includes the first Vulkan shader build on a new binary; laying out a dictation is seconds.
+READY_TIMEOUT = 900
+TAGS_TIMEOUT = 600
 
 SYSTEM = """Ты верстаешь расшифровку устной речи. Тебе дают пронумерованные предложения. Сам текст не меняется: ты только ставишь каждому предложению метку разметки.
 
@@ -165,6 +177,111 @@ class Runtime:
                 found.append({"name": self.ggml.ggml_backend_dev_description(device).decode("utf-8", "replace"),
                               "memoryMb": total.value // 2**20})
         return found
+
+
+def _write(stream, message):
+    stream.write(json.dumps(message, ensure_ascii=False) + "\n")
+    stream.flush()
+
+
+def serve(runtime_dir, model_path, threads, stdin=None, stdout=None):
+    """Child process: load the model once, then answer {"cmd": "tags"} requests as JSON lines."""
+    stdin, stdout = stdin or sys.stdin, stdout or sys.stdout
+    try:
+        formatter = Formatter(Runtime(runtime_dir), model_path, threads)
+    except Exception as error:
+        traceback.print_exc(file=sys.stderr)
+        _write(stdout, {"error": str(error) or type(error).__name__})
+        return
+    _write(stdout, {"ready": True, "gpu": formatter.on_gpu})
+    try:
+        for line in stdin:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                request = json.loads(line)
+                if request.get("cmd") == "close":
+                    break
+                if request.get("cmd") != "tags":
+                    raise ValueError("Неизвестная команда оформления")
+                _write(stdout, {"tags": formatter.tags(request.get("sentences") or [])})
+            except Exception as error:
+                traceback.print_exc(file=sys.stderr)
+                _write(stdout, {"error": str(error) or type(error).__name__})
+    finally:
+        formatter.close()
+
+
+class FormatterProcess:
+    """The formatter running in its own process; the engine keeps it between dictations.
+
+    Any failure here (a crash, a hang, a refusal) raises, and the caller falls back to the rules.
+    """
+
+    def __init__(self, command, ready_timeout=READY_TIMEOUT):
+        flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        text=True, encoding="utf-8", creationflags=flags)
+        self.answers = queue.Queue()
+        threading.Thread(target=self._read, args=(self.process.stdout,), daemon=True).start()
+        self.on_gpu = bool(self._answer(ready_timeout, lambda: False).get("gpu"))
+
+    def _read(self, stream):
+        try:
+            for line in stream:
+                if line.strip():
+                    self.answers.put(line.strip())
+        except (OSError, ValueError):
+            pass
+        finally:
+            self.answers.put(None)  # the child is gone
+
+    def _answer(self, timeout, should_stop):
+        deadline = time.monotonic() + timeout
+        while True:
+            if should_stop():
+                self.close()
+                raise TimeoutError("Оформление прервано")
+            try:
+                line = self.answers.get(timeout=0.2)
+            except queue.Empty:
+                if time.monotonic() < deadline:
+                    continue
+                self.close()
+                raise TimeoutError("Модель оформления не ответила вовремя")
+            if line is None:
+                self.close()
+                raise RuntimeError("Процесс оформления завершился")
+            answer = json.loads(line)
+            if answer.get("error"):
+                raise RuntimeError(answer["error"])
+            return answer
+
+    def tags(self, sentences, should_stop=lambda: False):
+        if self.process is None or self.process.poll() is not None:
+            self.close()
+            raise RuntimeError("Процесс оформления не запущен")
+        try:
+            _write(self.process.stdin, {"cmd": "tags", "sentences": list(sentences)})
+        except OSError as error:
+            self.close()
+            raise RuntimeError("Процесс оформления не принимает запросы") from error
+        return self._answer(TAGS_TIMEOUT, should_stop)["tags"]
+
+    def close(self):
+        process, self.process = self.process, None
+        if process is None or process.poll() is not None:
+            return
+        try:
+            _write(process.stdin, {"cmd": "close"})
+            process.stdin.close()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
 
 
 class Formatter:

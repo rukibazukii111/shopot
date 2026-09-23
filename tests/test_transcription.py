@@ -249,6 +249,61 @@ def test_llm_failure_falls_back_to_rules(tmp_path, monkeypatch):
     assert engine.layout(LIST_TEXT, set(), 'llm', 1)[1] == 'rules'
 
 
+def fake_worker(body):
+    """A stand-in for the formatter process: speaks the same JSON lines without llama.cpp."""
+    return [sys.executable, '-c', 'import json, os, sys, time\n' + body]
+
+
+def test_formatter_process_answers_tags_and_stops_cleanly():
+    import llm
+    formatter = llm.FormatterProcess(fake_worker(
+        "print(json.dumps({'ready': True, 'gpu': True}), flush=True)\n"
+        "for line in sys.stdin:\n"
+        "    request = json.loads(line)\n"
+        "    if request.get('cmd') == 'close': break\n"
+        "    print(json.dumps({'tags': ['new'] * len(request['sentences'])}), flush=True)\n"))
+    try:
+        assert formatter.on_gpu is True
+        assert formatter.tags(['Раз.', 'Два.']) == ['new', 'new']
+    finally:
+        formatter.close()
+    assert formatter.process is None
+
+
+def test_formatter_process_reports_a_killed_child_instead_of_dying_with_it():
+    """An OpenMP clash or any other native abort kills the child only; the engine keeps running."""
+    import llm
+    formatter = llm.FormatterProcess(fake_worker(
+        "print(json.dumps({'ready': True}), flush=True)\n"
+        "sys.stdin.readline()\n"
+        "os._exit(3)\n"))
+    with pytest.raises(RuntimeError):
+        formatter.tags(['Раз.', 'Два.'])
+    with pytest.raises(RuntimeError):
+        formatter.tags(['Раз.', 'Два.'])
+
+
+def test_formatter_process_stops_when_the_dictation_is_canceled():
+    import llm
+    formatter = llm.FormatterProcess(fake_worker(
+        "print(json.dumps({'ready': True}), flush=True)\n"
+        "sys.stdin.readline()\n"
+        "time.sleep(30)\n"))
+    with pytest.raises(TimeoutError):
+        formatter.tags(['Раз.', 'Два.'], should_stop=lambda: True)
+    assert formatter.process is None
+
+
+def test_formatter_process_surfaces_a_load_failure(tmp_path):
+    import llm
+    with pytest.raises(RuntimeError):
+        llm.FormatterProcess(fake_worker("print(json.dumps({'error': 'нет библиотеки'}), flush=True)\n"))
+    # A failed formatter must not take the dictation down with it.
+    engine = Engine(tmp_path)
+    monkey = engine.formatter_command()
+    assert monkey[-1] == '--formatter-worker' and '--data-dir' in monkey
+
+
 def test_formatter_is_not_installed_without_verified_marker(tmp_path):
     import json
     engine = Engine(tmp_path)
