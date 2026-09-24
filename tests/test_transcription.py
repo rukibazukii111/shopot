@@ -304,6 +304,32 @@ def test_formatter_process_surfaces_a_load_failure(tmp_path):
     assert monkey[-1] == '--formatter-worker' and '--data-dir' in monkey
 
 
+def test_shutdown_cancels_running_work_and_stops_the_layout_process(tmp_path):
+    engine = Engine(tmp_path)
+
+    class FakeFormatter:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    formatter = FakeFormatter()
+    engine.formatter = formatter
+    engine.schedule_idle_unload()
+    engine.shutdown(7)
+    assert formatter.closed and engine.formatter is None and engine.idle_timer is None
+    assert engine.is_canceled(7) and engine.is_canceled(3) and not engine.is_canceled(8)
+
+
+def test_engine_leaves_when_the_app_closes_the_pipe(tmp_path):
+    """No orphan engine: closing stdin ends the process instead of finishing the work for nobody."""
+    import subprocess
+    engine_py = Path(__file__).resolve().parents[1] / 'backend' / 'engine.py'
+    done = subprocess.run([sys.executable, str(engine_py), '--data-dir', str(tmp_path)],
+                          stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, timeout=180)
+    assert done.returncode == 0
+
+
 def test_formatter_is_not_installed_without_verified_marker(tmp_path):
     import json
     engine = Engine(tmp_path)

@@ -81,7 +81,10 @@ class Canceled(Exception):
 
 def emit(value):
     with _output_lock:
-        print(json.dumps(value, ensure_ascii=False, allow_nan=False), flush=True)
+        try:
+            print(json.dumps(value, ensure_ascii=False, allow_nan=False), flush=True)
+        except OSError:
+            os._exit(0)  # The app is gone and nobody reads the answers any more.
 
 
 def finite(value):
@@ -337,6 +340,14 @@ class Engine:
             finally:
                 self.schedule_idle_unload()
 
+    def shutdown(self, through):
+        """The app closed the pipe: stop the running work and the layout process, without waiting for locks."""
+        self.canceled_through = max(self.canceled_through, through)
+        self.cancel_idle_unload()
+        formatter, self.formatter = self.formatter, None
+        if formatter is not None:
+            formatter.close()
+
     def cancel_idle_unload(self):
         if self.idle_timer:
             self.idle_timer.cancel()
@@ -559,7 +570,12 @@ def main():
                 requests.put({**request, "id": None})
             else:
                 requests.put(request)
+        # The app is gone: cancel the work in flight instead of heating the CPU for nobody.
+        engine.shutdown(last_id)
         requests.put(None)
+        leave = threading.Timer(5, lambda: os._exit(0))  # in case the request cannot stop at once
+        leave.daemon = True
+        leave.start()
 
     threading.Thread(target=read_commands, daemon=True).start()
     while (request := requests.get()) is not None:
