@@ -350,6 +350,73 @@ def apply_voice_commands(text):
     return _capitalize(result) if not parts[0].strip() else result, used
 
 
+def timed_words(tokens, timestamps, offset=0.0, end=None):
+    """Words of a recognized chunk with start and end seconds, from its tokens and their timestamps.
+
+    Tokens that start a word begin with a space. The spacing rule is the one onnx-asr decodes with
+    (a space before «₽» or «,» is dropped), applied per character so every word keeps its token's time.
+    """
+    chars = [(char, time) for token, time in zip(tokens, timestamps) for char in token]
+    text = "".join(char for char, _ in chars)
+    dropped = {m.start() for m in re.finditer(r"\A\s|\s\B|(\s)\b", text) if not m.group(1)}
+    kept = [pair for i, pair in enumerate(chars) if i not in dropped]
+    words = [{"word": m.group(), "start": round(offset + kept[m.start()][1], 3), "last": offset + kept[m.end() - 1][1]}
+             for m in re.finditer(r"\S+", "".join(char for char, _ in kept))]
+    for i, word in enumerate(words):
+        # A word ends a little after its last token, and never after the next word starts.
+        later = words[i + 1]["start"] if i + 1 < len(words) else end if end is not None else word["last"] + 0.4
+        word["end"] = round(max(word["start"], min(later, word.pop("last") + 0.4)), 3)
+    return words
+
+
+SUBTITLE_CHARS = 84
+SUBTITLE_SECONDS = 6.0
+
+
+def _last_break(words):
+    """Index after which a full cue is best cut: the last sentence end, else the last comma."""
+    for marks in (r"[.!?…]$", r"[,;:]$"):
+        for index in range(len(words) - 1, -1, -1):
+            if re.search(marks, words[index]["word"]):
+                return index
+    return None
+
+
+def subtitle_cues(words, max_chars=SUBTITLE_CHARS, max_seconds=SUBTITLE_SECONDS):
+    """Group timed words into subtitle cues of up to two lines and a few seconds.
+
+    A cue breaks at a long pause and after a sentence once it is half full. When it runs out of room,
+    it is cut at its last sentence end or comma, so a phrase is not split on a random word.
+    """
+    cues, current = [], []
+    for word in words:
+        text = str(word.get("word", "")).strip()
+        if not text:
+            continue
+        word = {"word": text, "start": float(word["start"]), "end": float(word["end"])}
+        if current:
+            joined = len(" ".join(w["word"] for w in current)) + 1 + len(text)
+            sentence_done = re.search(r"[.!?…]$", current[-1]["word"]) and joined > max_chars / 2
+            if word["start"] - current[-1]["end"] > 1.0 or sentence_done:
+                cues.append(current)
+                current = []
+            elif joined > max_chars or word["end"] - current[0]["start"] > max_seconds:
+                cut = _last_break(current)
+                if cut is None and len(current) > 1 and re.fullmatch(r"\d+", current[-1]["word"]) and re.match(r"\d", text):
+                    cut = len(current) - 2  # the digit groups of one number («120 000₽») stay together
+                if cut is None or cut == len(current) - 1:
+                    cues.append(current)
+                    current = []
+                else:
+                    cues.append(current[:cut + 1])
+                    current = current[cut + 1:]
+        current.append(word)
+    if current:
+        cues.append(current)
+    return [{"start": round(c[0]["start"], 3), "end": round(c[-1]["end"], 3), "text": " ".join(w["word"] for w in c)}
+            for c in cues]
+
+
 def drop_final_period(text):
     """Messenger style: no period after the last sentence. An ellipsis, «?» and «!» stay."""
     return re.sub(r"(?<=[^.\s])\.\s*$", "", text)

@@ -439,7 +439,7 @@ function entryActions(entry, primary) {
   const copy = primary
     ? `<button class="button-primary copy-button" data-action="copy"><span class="copy-check">${icon('check')}</span><span class="copy-label">Скопировать</span><kbd>Enter</kbd></button>`
     : `<button class="button copy-button" data-action="copy"><span class="copy-icon">${icon('copy')}</span><span class="copy-check">${icon('check')}</span><span class="copy-label">Скопировать</span></button>`;
-  return `${entry.audioFile ? `<button class="icon-button" data-action="play" aria-label="Прослушать запись" title="Прослушать">${icon('play')}</button>` : ''}<button class="icon-button" data-action="export" aria-label="Сохранить в .txt" title="Сохранить в .txt">${icon('download')}</button><button class="icon-button" data-action="delete" aria-label="Удалить диктовку" title="Удалить">${icon('trash')}</button>${copy}`;
+  return `${entry.audioFile ? `<button class="icon-button" data-action="play" aria-label="Прослушать запись" title="Прослушать">${icon('play')}</button>` : ''}<button class="icon-button" data-action="export" aria-label="Сохранить в файл: текст, Markdown или субтитры" title="Сохранить в файл">${icon('download')}</button><button class="icon-button" data-action="delete" aria-label="Удалить диктовку" title="Удалить">${icon('trash')}</button>${copy}`;
 }
 function latestCard(entry) {
   const text = entryText(entry), count = wordCount(text), id = escapeHtml(entry.id);
@@ -517,7 +517,7 @@ async function entryAction(button) {
   const text = holder.querySelector('textarea')?.value ?? entryText(entry);
   const action = button.dataset.action;
   if (action === 'copy') { await api.copy(text); markCopied(button); }
-  if (action === 'export') { if (await api.saveText(text)) toast('Текст сохранён в файл'); }
+  if (action === 'export') { const name = await api.saveText(entry.id, text); if (name) toast(`Сохранено: ${name}`); }
   if (action === 'delete' && await api.deleteEntry(entry.id)) { state.history = state.history.filter(e => e.id !== entry.id); drafts.delete(entry.id); renderResults(); }
   if (action === 'play') {
     const existing = holder.querySelector('audio'); if (existing) { existing.paused ? await existing.play() : existing.pause(); return; }

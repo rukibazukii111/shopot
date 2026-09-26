@@ -18,7 +18,7 @@ contextBridge.exposeInMainWorld('shopot', {
   deleteRecording: id => ipcRenderer.invoke('delete-recording', id),
   cancel: () => ipcRenderer.invoke('cancel'),
   copy: text => ipcRenderer.invoke('copy', text),
-  saveText: text => ipcRenderer.invoke('save-text', text),
+  saveText: (id, text) => ipcRenderer.invoke('save-text', {id, text}),
   deleteEntry: id => ipcRenderer.invoke('delete-entry', id),
   updateEntry: (id, text) => ipcRenderer.invoke('update-entry', {id, text}),
   readAudio: id => ipcRenderer.invoke('read-audio', id),

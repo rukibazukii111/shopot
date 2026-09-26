@@ -9,6 +9,7 @@ const {Worker} = require('./worker.cjs');
 const {PasteService, clipboardText} = require('./paste.cjs');
 const {createNativeBackend} = require('./native-input.cjs');
 const {suggestCorrections} = require('./corrections.cjs');
+const {exportText} = require('./export.cjs');
 
 const root = path.resolve(__dirname, '..');
 const dataDir = path.resolve(process.env.SHOPOT_DATA_DIR || (app.isPackaged ? path.join(app.getPath('appData'), 'Shopot') : path.join(root, '.local')));
@@ -359,10 +360,17 @@ else {
     });
     ipc('copy', async value => { await clipboard.writeText(clipboardText(textValue(value))); return true; });
     ipc('save-text', async value => {
-      const text = textValue(value);
-      const result = await dialog.showSaveDialog(window, {defaultPath: 'Диктовка.txt', filters: [{name: 'Текст', extensions: ['txt']}]});
+      const text = textValue(value?.text);
+      const entry = value?.id ? entryFor(value.id) : null;
+      // A transcribed file suggests its own name; subtitles are offered when the words have timing.
+      const fromFile = entry && !['Микрофон', 'Незавершённая запись'].includes(entry.source);
+      const filters = [{name: 'Текст', extensions: ['txt']}, {name: 'Markdown', extensions: ['md']},
+        ...(entry?.cues?.length ? [{name: 'Субтитры SRT', extensions: ['srt']}] : [])];
+      const result = await dialog.showSaveDialog(window, {defaultPath: `${fromFile ? path.parse(entry.source).name : 'Диктовка'}.txt`, filters});
       if (result.canceled) return false;
-      fs.writeFileSync(result.filePath, text, 'utf8'); return true;
+      const format = path.extname(result.filePath).slice(1).toLowerCase();
+      fs.writeFileSync(result.filePath, exportText(['md', 'srt'].includes(format) ? format : 'txt', entry, text), 'utf8');
+      return path.basename(result.filePath);
     });
     ipc('update-entry', value => {
       const entry = entryFor(value.id), before = entry.text;

@@ -30,7 +30,7 @@ import llm
 import memory
 from text_processing import (apply_voice_commands, drop_final_period, expand_snippets, format_transcript,
                              join_segments, layout_text, pause_sentences, split_sentences, strip_hesitations,
-                             vocabulary_prompt)
+                             subtitle_cues, timed_words, vocabulary_prompt)
 
 WHISPER_FILES = ["model.bin", "config.json", "tokenizer.json", "vocabulary.json", "preprocessor_config.json"]
 GIGAAM_FILES = ["config.json", "v3_e2e_rnnt_encoder.int8.onnx", "v3_e2e_rnnt_decoder.int8.onnx",
@@ -446,10 +446,13 @@ class Engine:
         names = [e["word"] for e in entries]
         if MODELS[key]["engine"] == "gigaam":
             parsed = self._gigaam_segments(audio, duration, request_id)
+            # GigaAM words carry timing only; `words` stays for Whisper's per-word confidence.
+            timings = [w for s in parsed for w in s.pop("words", [])]
             raw = join_segments([s["text"] for s in parsed], names)
             words, detected = [], "ru"
         else:
             parsed, words, detected = self._whisper_segments(audio, duration, language, entries, request, request_id)
+            timings = words
             raw = " ".join(s["text"] for s in parsed).strip()
         text, replacements = format_transcript(raw, entries, mode)
         fillers = mode != "raw" and bool(request.get("removeFillers", True))
@@ -470,8 +473,19 @@ class Engine:
             text = drop_final_period(text)
         # Last, so the saved text goes in exactly as written: no dictionary, cleanup or layout touches it.
         text, expanded = expand_snippets(text, request["snippets"], entries) if mode != "raw" else (text, [])
+        # Subtitles for export: timed words in cues, with the dictionary and cleanup of the chosen mode.
+        cues = subtitle_cues(timings or [{"word": s["text"], "start": s["start"], "end": s["end"]} for s in parsed])
+        for cue in cues:
+            cue["text"] = format_transcript(cue["text"], entries, mode)[0]
+            if fillers:
+                cue["text"] = strip_hesitations(cue["text"])
+            if mode != "raw" and request.get("voiceCommands", True):
+                # A spoken «новый абзац» is an instruction, not a line to show on screen.
+                cue["text"] = " ".join(apply_voice_commands(cue["text"])[0].split())
+        cues = [cue for cue in cues if cue["text"]]
         return {"formatting": formatting, "formatElapsed": finite(time.monotonic() - format_started),"text": text, "rawText": raw, "words": words, "segments": parsed,
-                "replacements": replacements, "snippets": expanded, "commands": commands, "duration": finite(duration),
+                "replacements": replacements, "snippets": expanded, "commands": commands, "cues": cues,
+                "duration": finite(duration),
                 "elapsed": finite(time.monotonic() - started), "language": detected,
                 "model": key, "noSpeech": not bool(raw), "device": "cpu",
                 "loadElapsed": finite(load_elapsed)}
@@ -488,13 +502,18 @@ class Engine:
         from faster_whisper.vad import VadOptions, get_speech_timestamps
         speech = get_speech_timestamps(audio, VadOptions(**VAD_OPTIONS, max_speech_duration_s=GIGAAM_MAX_CHUNK_SECONDS))
         parsed = []
+        # Token timestamps come at no extra decoding cost; they time the words for subtitles.
+        recognizer = self.model.with_timestamps()
         for start, end in speech_windows(speech, GIGAAM_MAX_CHUNK_SECONDS * 16000, int(PARAGRAPH_PAUSE_SECONDS * 16000)):
             self.check_canceled(request_id)
             # Pauses inside a window are kept: they help the model place punctuation.
-            text = self.model.recognize(audio[start:end], sample_rate=16000).strip()
+            result = recognizer.recognize(audio[start:end], sample_rate=16000)
+            text = result.text.strip()
             if text:
                 parsed.append({"start": finite(start / 16000), "end": finite(end / 16000),
-                               "text": text, "noSpeechProbability": 0.0})
+                               "text": text, "noSpeechProbability": 0.0,
+                               "words": timed_words(result.tokens or [], result.timestamps or [],
+                                                    start / 16000, end / 16000)})
             self._progress(request_id, end / 16000 / max(duration, 0.1))
         return parsed
 

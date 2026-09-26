@@ -490,6 +490,8 @@ def test_pipeline_applies_commands_then_snippets_and_leaves_raw_mode_alone(tmp_p
         assert result['text'] == 'Привет.\n\nПиши на ivan@example.com.'
         assert result['commands'] == ['новый абзац'] and result['snippets'] == ['моя почта']
         assert result['rawText'] == spoken
+        # Without word timings the recognized chunks become the subtitle cues, without the spoken commands.
+        assert result['cues'] == [{'start': 0.0, 'end': 1.0, 'text': 'Привет. Пиши на моя почта.'}]
         assert engine.transcribe({**request, 'voiceCommands': False})['text'] == 'Привет. Новый абзац. Пиши на ivan@example.com.'
         assert engine.transcribe({**request, 'mode': 'raw'})['text'] == spoken
         # A messenger profile: no period after the spoken text.
@@ -505,3 +507,43 @@ def test_pipeline_applies_commands_then_snippets_and_leaves_raw_mode_alone(tmp_p
 def test_drop_final_period_keeps_ellipsis_and_other_marks(text, expected):
     from text_processing import drop_final_period
     assert drop_final_period(text) == expected
+
+
+# Real GigaAM tokens and times for «25 сентября в 15:30 созвон бюджет 120 000₽, это 20%.» (synthesized speech).
+GIGAAM_TOKENS = [(' 2', 0.16), ('5', 0.72), (' с', 1.16), ('ент', 1.36), ('я', 1.52), ('б', 1.6), ('ря', 1.68),
+                 (' в', 1.88), (' 1', 2.0), ('5', 2.24), (':', 2.52), ('30', 2.76), (' со', 3.28), ('звон', 3.48),
+                 (' б', 4.16), ('ю', 4.28), ('д', 4.36), ('же', 4.44), ('т', 4.56), (' 1', 4.76), ('2', 5.04),
+                 ('0', 5.28), (' 000', 5.56), (' ₽', 6.16), (',', 6.72), (' это', 6.96), (' 20', 7.2), ('%', 8.0),
+                 ('.', 9.28)]
+
+
+def test_timed_words_follow_the_decoder_spacing_and_token_times():
+    from text_processing import timed_words
+    words = timed_words([t for t, _ in GIGAAM_TOKENS], [s for _, s in GIGAAM_TOKENS], offset=10.0, end=19.5)
+    # The same text the model returned: the space before «₽» is dropped, «000₽,» is one word.
+    assert ' '.join(w['word'] for w in words) == '25 сентября в 15:30 созвон бюджет 120 000₽, это 20%.'
+    assert [w['start'] for w in words][:3] == [10.16, 11.16, 11.88]
+    # A word ends shortly after its last token, never after the next word starts or the chunk ends.
+    assert words[0]['end'] == 11.12 and words[7] == {'word': '000₽,', 'start': 15.56, 'end': 16.96}
+    assert words[-1]['end'] == 19.5
+    assert all(w['start'] <= w['end'] for w in words)
+
+
+def test_subtitle_cues_break_at_sentences_pauses_and_length():
+    from text_processing import subtitle_cues
+    timed = lambda text, start, step=0.3: [{'word': w, 'start': start + i * step, 'end': start + i * step + 0.25}
+                                           for i, w in enumerate(text.split())]
+    words = (timed('Сегодня мы запускаем новый курс по монтажу видео.', 0.0)
+             + timed('Первый урок уже доступен.', 2.6) + timed('Второй выйдет в пятницу.', 6.0))
+    cues = subtitle_cues(words)
+    assert [c['text'] for c in cues] == ['Сегодня мы запускаем новый курс по монтажу видео.',
+                                          'Первый урок уже доступен.', 'Второй выйдет в пятницу.']
+    assert cues[0]['start'] == 0.0 and cues[1]['start'] == 2.6
+    # Out of room: the cue is cut at its last sentence end, not on a random word.
+    cut = subtitle_cues(timed('Привет! Как дела? Новый абзац. Завтра встречаемся в десять утра.', 0.0, step=0.7))
+    assert [c['text'] for c in cut] == ['Привет! Как дела? Новый абзац.', 'Завтра встречаемся в десять утра.']
+    number = subtitle_cues(timed('Созвон в пятницу, бюджет проекта пока 120 000₽, это двадцать процентов.', 0.0, step=0.9))
+    assert not any(c['text'].endswith('120') for c in number)
+    long = subtitle_cues(timed(' '.join(['слово'] * 40), 0.0, step=0.1))
+    assert all(len(c['text']) <= 84 for c in long) and len(long) > 1
+    assert subtitle_cues([]) == []
