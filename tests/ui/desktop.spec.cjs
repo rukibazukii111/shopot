@@ -15,7 +15,7 @@ test('desktop: real worker, personal dictionary, modes and local history', async
     text: 'Открой LocalSend. Видосы готовы.', rawText: 'Открой локал сенд. Видосы готовы.', words: [],
     duration: 5, elapsed: 1.2, model: 'turbo', mode: 'natural', replacements: [], audioFile: null});
   const errors = [];
-  const app = await electron.launch({args: [root], env: {...cleanEnv, SHOPOT_DATA_DIR: dataDir}});
+  const app = await electron.launch({args: [path.join(root, 'tests/fixtures/app.cjs')], env: {...cleanEnv, SHOPOT_DATA_DIR: dataDir}});
   try {
     const page = await app.firstWindow(); page.on('pageerror', error => errors.push(error.message));
     await expect(page.locator('#engine-label')).toHaveText('Локальный движок', {timeout: 20000});

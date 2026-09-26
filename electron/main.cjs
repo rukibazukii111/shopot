@@ -245,7 +245,8 @@ function createWidget() {
   });
 }
 function createWindow() {
-  window = new BrowserWindow({width: 1240, height: 850, minWidth: 1000, minHeight: 720,
+  // Shown once the first frame is painted: no empty frame, and nothing on screen before it is ready.
+  window = new BrowserWindow({width: 1240, height: 850, minWidth: 1000, minHeight: 720, show: false,
     title: 'Шёпот', backgroundColor: '#07080a', autoHideMenuBar: true, icon: path.join(root, 'renderer', 'app-icon.png'),
     webPreferences: {preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false,
       sandbox: true, backgroundThrottling: false, spellcheck: false}});
@@ -258,6 +259,7 @@ function createWindow() {
     finishCapture({phase: 'error', message: 'Окно записи перезапустилось', hint: 'Повтори диктовку'});
     window.reload();
   });
+  window.once('ready-to-show', () => window.show());
   window.on('close', event => { if (!quitting && tray) { event.preventDefault(); window.hide(); } });
   window.webContents.once('did-finish-load', createWidget);
   window.loadURL(uiUrl);

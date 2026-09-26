@@ -1,4 +1,5 @@
 // Isolated UI harness: production IPC/controller, fake ASR, actual OS input backend.
+require('./offscreen.cjs');
 const {globalShortcut} = require('electron');
 // Tests pick the machine size: warnings for heavy models depend on it.
 if (process.env.SHOPOT_TEST_TOTAL_MEMORY) require('node:os').totalmem = () => Number(process.env.SHOPOT_TEST_TOTAL_MEMORY);

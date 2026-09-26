@@ -33,6 +33,8 @@ test('waiting for microphone can be canceled and late permission cannot start re
 test('global widget keeps main window hidden and cancels transcription cleanly', async () => {
   const {app, page, dataDir} = await launch();
   try {
+    // The main window appears after its first paint; hide it only once it has.
+    await expect.poll(() => app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith('/index.html')).isVisible())).toBe(true);
     await app.evaluate(({BrowserWindow}) => { BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith('/index.html')).hide(); globalThis.__test.toggle(); });
     await expect(page.locator('#record-label')).toHaveText('Закончить запись');
     await expect.poll(() => app.windows().some(p => p.url().endsWith('/widget.html'))).toBe(true);
@@ -187,6 +189,7 @@ test('Windows: native paste reaches the original external input exactly once wit
     await app.evaluate((_, pid) => { globalThis.__test.targetPid = pid; }, targetPid);
     console.log('Native input test target PID:', targetPid);
     const fieldPage = await target.firstWindow();
+    await expect.poll(() => app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith('/index.html')).isVisible())).toBe(true);
     await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith('/index.html')).hide());
     await target.evaluate(({BrowserWindow}) => { BrowserWindow.getAllWindows()[0].show(); BrowserWindow.getAllWindows()[0].focus(); });
     await fieldPage.locator('textarea').click();
