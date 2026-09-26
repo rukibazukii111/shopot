@@ -195,7 +195,7 @@ function syncSettings() {
   $('#accessibility-row').hidden = state.platform !== 'darwin';
   $('#accessibility-status').textContent = state.pastePermission ? 'Доступ разрешён. Автовставка готова.' : 'Разреши Шёпоту управление в Системных настройках → Конфиденциальность и безопасность → Универсальный доступ.';
   if (state.platform === 'darwin') { $$('.modifier-key').forEach(el => el.textContent = '⌘'); $$('.paste-hint').forEach(el => el.textContent = '⌘V'); }
-  $('#hotkey-description').textContent = state.hotkeyRegistered ? 'Открывает виджет, начинает и заканчивает запись. Esc во время записи отменяет её.' : 'Сочетание занято другим приложением. Используй кнопку записи или освободи сочетание и перезапусти Шёпот.';
+  $('#hotkey-description').textContent = state.hotkeyRegistered ? 'Нажми, чтобы начать запись, и ещё раз, чтобы закончить. Или держи, пока говоришь, и отпусти. Esc во время записи отменяет её.' : 'Сочетание занято другим приложением. Используй кнопку записи или освободи сочетание и перезапусти Шёпот.';
   $('#hotkey-state').className = 'hotkey-state ' + (state.hotkeyRegistered ? 'ok' : 'warn');
   $('#hotkey-state').innerHTML = state.hotkeyRegistered ? `${icon('check')}Работает` : `${icon('alert')}Занято`;
   $('#hero-keys').classList.toggle('unavailable', !state.hotkeyRegistered);

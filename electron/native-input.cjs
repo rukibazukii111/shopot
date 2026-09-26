@@ -57,6 +57,8 @@ function windowsBackend(koffi) {
       return !now.focus || !target.focus || now.focus === target.focus;
     },
     modifiersDown: () => [0x10, 0x11, 0x12, 0x5B, 0x5C].some(vk => (keyState(vk) & 0x8000) !== 0),
+    // Ctrl+Shift+Space still held: the user is dictating push-to-talk style.
+    hotkeyDown: () => [0x11, 0x10, 0x20].every(vk => (keyState(vk) & 0x8000) !== 0),
     paste: () => sendInput(4, [key(0x11), key(0x56), key(0x56, true), key(0x11, true)], koffi.sizeof(Input)) === 4,
   };
 }
@@ -85,6 +87,9 @@ function macBackend(koffi) {
   // Per-app text settings are optional: if this lookup fails, the app is unknown and paste still works.
   let msgText = null;
   try { msgText = objc.func('objc_msgSend', 'const char *', ['void *', 'void *']); } catch { msgText = null; }
+  // Hold-to-talk is optional too: without it the hotkey keeps working as start/stop.
+  let keyDown = null;
+  try { keyDown = services.func('bool CGEventSourceKeyState(int state, uint16_t key)'); } catch { keyDown = null; }
   const frontApp = () => msg(msg(cls('NSWorkspace'), sel('sharedWorkspace')), sel('frontmostApplication'));
   function frontPid() { return msgInt(frontApp(), sel('processIdentifier')); }
   function appInfo() {
@@ -116,6 +121,8 @@ function macBackend(koffi) {
       finally { if (now) release(now); }
     },
     modifiersDown: () => (BigInt(flags(0)) & 0x1E0000n) !== 0n,
+    // ⌘⇧Space still held (Space is key code 49); command 0x100000 and shift 0x20000 in the flags.
+    hotkeyDown: () => Boolean(keyDown) && (BigInt(flags(0)) & 0x120000n) === 0x120000n && keyDown(0, 49),
     paste() {
       const down = event(null, 9, true), up = event(null, 9, false);
       try {

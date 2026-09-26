@@ -19,7 +19,10 @@ const widgetUrl = pathToFileURL(path.join(root, 'renderer', 'widget.html')).href
 const shortcut = 'CommandOrControl+Shift+Space';
 let window, widget, tray, worker, store, paste, capture, busy = false, blocker, quitting = false, engineError = null;
 let hotkeyRegistered = false;
-let nativeAvailable = false;
+let nativeAvailable = false, nativeBackend = null;
+// Holding the hotkey longer than this makes it push-to-talk: letting go ends the recording.
+const HOLD_MS = 450;
+let hold = null;
 let widgetTimer, activeTranscription, downloading = false, job = 0;
 let widgetState = {phase: 'requesting', shortcut: process.platform === 'darwin' ? '⌘⇧Space' : 'Ctrl⇧Space'};
 
@@ -67,7 +70,27 @@ function showWidget(value, show = true) {
   }
   if (show && ['success', 'error', 'canceled'].includes(value.phase)) widgetTimer = setTimeout(hideWidget, 3000);
 }
+function stopWatchingHold() { if (hold) { clearInterval(hold.timer); hold = null; } }
+// After the hotkey starts a recording, watch whether it is still held. A short press keeps the
+// recording going until the next press; a long hold ends it when the keys are released.
+function watchHotkeyHold() {
+  stopWatchingHold();
+  if (!nativeBackend?.hotkeyDown) return;
+  const startedAt = Date.now();
+  const current = hold = {holding: false, timer: setInterval(() => {
+    let down = false;
+    try { down = nativeBackend.hotkeyDown(); } catch { down = false; }
+    const held = Date.now() - startedAt;
+    if (down) {
+      if (!current.holding && held >= HOLD_MS) { current.holding = true; showWidget({holding: true}, capture?.phase === 'recording'); }
+      return;
+    }
+    stopWatchingHold();
+    if (current.holding && capture?.global && ['requesting', 'recording'].includes(capture.phase)) toggleGlobalRecording();
+  }, 40)};
+}
 function finishCapture(value) {
+  stopWatchingHold();
   const previous = capture; capture = null;
   if (previous?.target) paste.release(previous.target);
   releaseEscape(); setBusy(busy); updateTray();
@@ -88,17 +111,19 @@ function beginCapture(global = false) {
   worker.notify('preload', {model: capture.settings.model, formatting: capture.settings.formatting});
   if (blocker === undefined) blocker = powerSaveBlocker.start('prevent-app-suspension');
   globalShortcut.register('Escape', () => { hideWidget(); send('cancel-recording'); });
-  if (global) showWidget({phase: 'requesting', elapsed: 0, level: 0, message: '', hint: ''});
+  if (global) showWidget({phase: 'requesting', elapsed: 0, level: 0, message: '', hint: '', holding: false});
   return {id: capture.id, settings: capture.settings};
 }
 function toggleGlobalRecording() {
   if (capture) {
+    // While the keys are still down, another trigger is the held key repeating, not a second press.
+    if (hold) return;
     if (['requesting', 'recording'].includes(capture.phase)) {
       capture.phase = 'stopping'; releaseEscape(); hideWidget(); send('toggle-recording');
     }
     return;
   }
-  try { send('toggle-recording', beginCapture(true)); }
+  try { send('toggle-recording', beginCapture(true)); watchHotkeyHold(); }
   catch (error) { showWidget({phase: 'error', message: error.message, hint: 'Открой Шёпот, чтобы продолжить', elapsed: 0}); }
 }
 function createWidget() {
@@ -220,7 +245,7 @@ else {
     // The renderer has no reason to contact the network. Downloads live in the worker.
     session.defaultSession.webRequest.onBeforeRequest({urls: ['http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*']}, (_, callback) => callback({cancel: true}));
     let native;
-    try { native = createNativeBackend(); nativeAvailable = true; } catch (error) { console.error('Автовставка недоступна:', error.message); }
+    try { native = createNativeBackend(); nativeAvailable = true; nativeBackend = native; } catch (error) { console.error('Автовставка недоступна:', error.message); }
     paste = new PasteService({clipboard, native});
     createWindow();
     worker = new Worker({root, dataDir, resourcesPath: process.resourcesPath, packaged: app.isPackaged});

@@ -19,7 +19,9 @@ function shortcutKeys(shortcut = '') {
 }
 function renderHint(value) {
   const hint = $('hint');
-  if (value.phase === 'recording') hint.replaceChildren(...shortcutKeys(value.shortcut).map(keycap), note('закончить', true), keycap('Esc'), note('отменить'));
+  // Push-to-talk: the keys are held down, so releasing them is the way to finish.
+  if (value.phase === 'recording' && value.holding) hint.replaceChildren(note('Отпусти клавиши, чтобы закончить', true), keycap('Esc'), note('отменить'));
+  else if (value.phase === 'recording') hint.replaceChildren(...shortcutKeys(value.shortcut).map(keycap), note('закончить', true), keycap('Esc'), note('отменить'));
   else if (value.phase === 'requesting') hint.replaceChildren(keycap('Esc'), note('отменить'));
   else if (terminal.includes(value.phase)) hint.replaceChildren(note(value.hint || 'Текст доступен в истории'));
   else hint.replaceChildren();

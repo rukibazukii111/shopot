@@ -11,6 +11,9 @@ const createNative = nativeModule.createNativeBackend;
 nativeModule.createNativeBackend = () => {
   const native = createNative();
   globalThis.__test.foregroundPid = () => { const target = native.capture(); native.release(target); return target?.pid; };
+  // Tests hold or release the hotkey through __test.keysDown; otherwise the real key state is read.
+  const hotkeyDown = native.hotkeyDown;
+  native.hotkeyDown = () => globalThis.__test.keysDown !== undefined ? Boolean(globalThis.__test.keysDown) : hotkeyDown();
   for (const method of ['capture', 'sameTarget', 'paste']) {
     const original = native[method];
     native[method] = (...args) => {
