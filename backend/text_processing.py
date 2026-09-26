@@ -249,11 +249,32 @@ def _word_pattern(word):
     return "".join("[её]" if c in "её" else "[ЕЁ]" if c in "ЕЁ" else re.escape(c) for c in word)
 
 
+# «моя» has a two-letter stem; its forms (мою, моей, моего) still name the same thing.
+_SHORT_STEMS = {"моя", "мой", "моё", "мое", "мои"}
+
+
+def _inflected_pattern(word):
+    """A Russian trigger word in any case form: «почта» also matches «почту» and «почтой», not «почтовый».
+
+    The model follows grammar, so «моя почта» said mid-sentence comes out as «мою почту».
+    Words in Latin letters or with digits match exactly.
+    """
+    folded = word.casefold().replace("ё", "е")
+    if not re.fullmatch(r"[а-я]+", folded):
+        return _word_pattern(word)
+    stem = folded.rstrip("аеиоуыэюяьй")
+    if len(stem) < 3 and folded not in _SHORT_STEMS:
+        return _word_pattern(word)
+    # Case endings start with a vowel or «ь» and are short; derived words («почтовый», «реквизитная») do not match.
+    return _word_pattern(stem) + "(?:[аеёиоуыэюяь][а-яё]{0,2})?"
+
+
 def expand_snippets(text, snippets, entries=()):
     """Replace spoken trigger phrases with the user's saved text. Returns (text, triggers used).
 
     The saved text goes in exactly as written and is never matched again. Punctuation and hyphens
-    between the spoken words do not matter, and a dictionary replacement inside the phrase still matches.
+    between the spoken words and Russian case endings do not matter, and a dictionary replacement
+    inside the phrase still matches.
     A trigger that is a whole sentence takes the sentence's end punctuation with it, and a
     multi-line snippet then stands as its own paragraph.
     """
@@ -263,7 +284,7 @@ def expand_snippets(text, snippets, entries=()):
         for variant in {trigger, format_transcript(trigger, entries)[0]}:
             words = _spoken_words(variant)
             if words:
-                alternatives.append((sum(map(len, words)), index, SNIPPET_SEPARATOR.join(map(_word_pattern, words))))
+                alternatives.append((sum(map(len, words)), index, SNIPPET_SEPARATOR.join(map(_inflected_pattern, words))))
     if not alternatives:
         return text, []
     # One pass over the text, longer phrases first, so «моя рабочая почта» wins over «моя почта».
@@ -297,6 +318,36 @@ def expand_snippets(text, snippets, entries=()):
         used.append(str(snippet.get("trigger", "")))
     parts.append(text[position:])
     return "".join(parts), used
+
+
+VOICE_COMMANDS = {"новый абзац": "\n\n", "с нового абзаца": "\n\n", "новый параграф": "\n\n",
+                  "новая строка": "\n", "с новой строки": "\n"}
+_COMMAND_PATTERN = re.compile(
+    # Commas and dashes the model put around the spoken command go with it; a colon before it stays («Список:»).
+    r"[\s,;\-–—]*(?<![^\W_])(?P<command>"
+    + "|".join(SNIPPET_SEPARATOR.join(map(_word_pattern, phrase.split()))
+               for phrase in sorted(VOICE_COMMANDS, key=len, reverse=True))
+    + r")(?![^\W_])[\s.,;:!?…\-–—]*", re.IGNORECASE)
+
+
+def apply_voice_commands(text):
+    """«Новый абзац» and «с новой строки» spoken during dictation become breaks. Returns (text, commands used).
+
+    Nothing else is rewritten: only the command words, the punctuation around them and the capital after the break.
+    """
+    parts, position, used = [], 0, []
+    for match in _COMMAND_PATTERN.finditer(text):
+        command = " ".join(_spoken_words(match.group("command").casefold().replace("ё", "е")))
+        parts += [text[position:match.start()], VOICE_COMMANDS[command]]
+        position = match.end()
+        used.append(command)
+    if not used:
+        return text, []
+    parts.append(text[position:])
+    result = re.sub(r"\n{3,}", "\n\n", "".join(parts)).strip()
+    # A new line or paragraph starts with a capital, and so does text that opened with a command.
+    result = re.sub(r"(\n)(\W*)(\w)", lambda m: m.group(1) + m.group(2) + m.group(3).upper(), result)
+    return _capitalize(result) if not parts[0].strip() else result, used
 
 
 def format_transcript(text, entries=None, mode="natural"):

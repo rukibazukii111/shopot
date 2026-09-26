@@ -188,6 +188,7 @@ function syncSettings() {
   $('#auto-paste').checked = state.settings.autoPaste;
   $('#keep-audio').checked = state.settings.keepAudio;
   $('#remove-fillers').checked = state.settings.removeFillers;
+  $('#voice-commands').checked = state.settings.voiceCommands;
   $('#formatting-select').value = state.settings.formatting;
   if (!contextDirty) $('#context-input').value = state.settings.context;
   updateContextCount();
@@ -363,8 +364,12 @@ function memoryLabel(entry) {
 function rawNote(entry) { return doubtsOf(entry) ? 'Жёлтым отмечены слова, в которых модель не уверена. Исходный результат сохранён без правок.' : 'Исходный результат сохранён без правок. Пунктуацию расставила сама модель.'; }
 function replacementsHtml(entry) {
   const replacements = entry.replacements || [], snippets = entry.snippets || [];
-  if (!replacements.length && !snippets.length) return '';
-  return `<div class="replacements">${replacements.length ? `<span>${replacements.length === 1 ? 'Замена из словаря' : 'Замены из словаря'}</span>${replacements.map(r => `<span class="chip-static">${escapeHtml(r.from)} → ${escapeHtml(r.to)}</span>`).join('')}` : ''}${snippets.length ? `<span>${snippets.length === 1 ? 'Сниппет' : 'Сниппеты'}</span>${snippets.map(trigger => `<span class="chip-static">${escapeHtml(trigger)}</span>`).join('')}` : ''}</div>`;
+  // The same command said twice shows once: the chip explains where the words went.
+  const commands = [...new Set(entry.commands || [])];
+  const group = (items, one, many, chip) => items.length ? `<span>${items.length === 1 ? one : many}</span>${items.map(item => `<span class="chip-static">${chip(item)}</span>`).join('')}` : '';
+  const html = group(replacements, 'Замена из словаря', 'Замены из словаря', r => `${escapeHtml(r.from)} → ${escapeHtml(r.to)}`)
+    + group(snippets, 'Сниппет', 'Сниппеты', escapeHtml) + group(commands, 'Команда', 'Команды', escapeHtml);
+  return html ? `<div class="replacements">${html}</div>` : '';
 }
 function tabsHtml(kind, entry) {
   const doubts = doubtsOf(entry);
@@ -677,6 +682,7 @@ $('#accessibility-button').addEventListener('click', () => guard(async () => { s
 $('#context-input').addEventListener('input', () => { contextDirty = true; updateContextCount(); });
 $('#formatting-select').addEventListener('change', event => guard(() => saveSettings({formatting: event.target.value})));
 $('#remove-fillers').addEventListener('change', event => guard(() => saveSettings({removeFillers: event.target.checked})));
+$('#voice-commands').addEventListener('change', event => guard(() => saveSettings({voiceCommands: event.target.checked})));
 $('#keep-audio').addEventListener('change', event => guard(() => saveSettings({keepAudio: event.target.checked})));
 $('#microphone-select').addEventListener('change', event => guard(() => saveSettings({microphoneId: event.target.value})));
 $('#save-context').addEventListener('click', () => guard(async () => {

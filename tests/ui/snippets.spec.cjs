@@ -45,6 +45,7 @@ test('snippets: added in the dictionary, saved to disk and sent with the dictati
     await expect.poll(() => app.evaluate(() => globalThis.__test.requests.length)).toBe(1);
     const request = await app.evaluate(() => globalThis.__test.requests[0]);
     expect(request.payload.snippets).toEqual([{trigger: 'Моя почта', text: 'ivan@example.com'}]);
+    expect(request.payload.voiceCommands).toBe(true);
     await app.evaluate(() => globalThis.__test.resolve({text: 'Пиши на ivan@example.com.', rawText: 'Пиши на моя почта.',
       snippets: ['Моя почта'], words: [], duration: 2, elapsed: .1, model: 'gigaam', replacements: []}));
     await expect(page.locator('.transcript-editor')).toHaveValue('Пиши на ivan@example.com.');

@@ -28,8 +28,8 @@ os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 import llm
 import memory
-from text_processing import (expand_snippets, format_transcript, join_segments, layout_text, pause_sentences,
-                             split_sentences, strip_hesitations, vocabulary_prompt)
+from text_processing import (apply_voice_commands, expand_snippets, format_transcript, join_segments, layout_text,
+                             pause_sentences, split_sentences, strip_hesitations, vocabulary_prompt)
 
 WHISPER_FILES = ["model.bin", "config.json", "tokenizer.json", "vocabulary.json", "preprocessor_config.json"]
 GIGAAM_FILES = ["config.json", "v3_e2e_rnnt_encoder.int8.onnx", "v3_e2e_rnnt_decoder.int8.onnx",
@@ -460,10 +460,14 @@ class Engine:
             text, formatting = self.layout(text, pause_sentences(chunks, gaps, names), formatting, request_id)
         else:
             formatting = "off"
+        # Spoken «новый абзац» / «с новой строки» break the text wherever the layout put them.
+        commands = []
+        if mode != "raw" and request.get("voiceCommands", True):
+            text, commands = apply_voice_commands(text)
         # Last, so the saved text goes in exactly as written: no dictionary, cleanup or layout touches it.
         text, expanded = expand_snippets(text, request["snippets"], entries) if mode != "raw" else (text, [])
         return {"formatting": formatting, "formatElapsed": finite(time.monotonic() - format_started),"text": text, "rawText": raw, "words": words, "segments": parsed,
-                "replacements": replacements, "snippets": expanded, "duration": finite(duration),
+                "replacements": replacements, "snippets": expanded, "commands": commands, "duration": finite(duration),
                 "elapsed": finite(time.monotonic() - started), "language": detected,
                 "model": key, "noSpeech": not bool(raw), "device": "cpu",
                 "loadElapsed": finite(load_elapsed)}

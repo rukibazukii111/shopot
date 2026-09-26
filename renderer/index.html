@@ -119,7 +119,7 @@
             <label for="snippet-trigger">Фраза</label>
             <input id="snippet-trigger" class="input" maxlength="60" placeholder="Например, моя почта" autocomplete="off">
             <p id="snippet-error" class="inline-error" role="alert"></p>
-            <p class="help">Скажи её во время диктовки, и вместо неё вставится текст ниже. Регистр и знаки между словами не важны.</p>
+            <p class="help">Скажи её во время диктовки, и вместо неё вставится текст ниже. Регистр, знаки между словами и падеж не важны: «мою почту» тоже сработает.</p>
           </div>
           <div class="field">
             <label for="snippet-text">Текст</label>
@@ -183,6 +183,10 @@
           <div class="settings-row">
             <label class="setting-label" for="formatting-select">Оформление текста</label>
             <div class="setting-control"><div class="select"><select id="formatting-select"><option value="rules">Абзацы и списки</option><option value="llm">Умное (нейросеть)</option><option value="off">Одним абзацем</option></select><span data-icon="chevron-down"></span></div><p class="help">Абзацы по паузам и смене темы, нумерованные списки для «во-первых, во-вторых». Слова не меняются. Работает в режиме «Естественно».</p></div>
+          </div>
+          <div class="settings-row">
+            <label class="setting-label" for="voice-commands">Голосовые команды</label>
+            <div class="setting-control inline"><span class="switch"><input type="checkbox" id="voice-commands" role="switch"><span></span></span><p class="help">Скажи «новый абзац» или «с новой строки», и текст перенесётся. Выключи, если эти слова нужно писать как есть. В режиме «Исходный результат» не применяется.</p></div>
           </div>
           <div class="settings-row">
             <label class="setting-label" for="context-input">О чём ты обычно говоришь</label>

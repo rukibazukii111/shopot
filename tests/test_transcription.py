@@ -379,7 +379,8 @@ SNIPPETS = [{'trigger': 'моя почта', 'text': 'ivan@example.com'},
             {'trigger': 'моя рабочая почта', 'text': 'ivan@work.example'},
             {'trigger': 'моя подпись', 'text': 'С уважением,\nИван Петров'},
             {'trigger': 'быстрый ответ', 'text': 'Спасибо, получил. Посмотрю вечером.'},
-            {'trigger': 'ещё ссылка', 'text': 'https://example.com'}]
+            {'trigger': 'ещё ссылка', 'text': 'https://example.com'},
+            {'trigger': 'реквизиты', 'text': 'ИНН 7700000000'}]
 
 
 @pytest.mark.parametrize('spoken, expected', [
@@ -400,6 +401,11 @@ SNIPPETS = [{'trigger': 'моя почта', 'text': 'ivan@example.com'},
     ('Отвечу так: быстрый ответ.', 'Отвечу так: Спасибо, получил. Посмотрю вечером.'),
     # Whole words only.
     ('Моя почтальонша пришла.', 'Моя почтальонша пришла.'),
+    # Said mid-sentence, the model inflects the phrase: «мою почту», «реквизитов».
+    ('Напиши мне на мою почту, если что.', 'Напиши мне на ivan@example.com, если что.'),
+    ('Жду реквизитов.', 'Жду ИНН 7700000000.'),
+    # Derived words are other words.
+    ('Реквизитная часть и почтовый ящик.', 'Реквизитная часть и почтовый ящик.'),
 ])
 def test_snippets_replace_spoken_phrases_with_saved_text(spoken, expected):
     from text_processing import expand_snippets
@@ -438,3 +444,53 @@ def test_engine_rejects_malformed_snippets(tmp_path):
     for snippets in ('текст', [{'trigger': 'а' * 61, 'text': 'x'}], [{'trigger': 'фраза'}], [{'trigger': 'ф', 'text': 'x'}] * 51):
         with pytest.raises(ValueError, match='сниппеты'):
             engine.transcribe({'model': 'gigaam', 'audioFile': 'abc.wav', 'snippets': snippets})
+
+
+@pytest.mark.parametrize('spoken, expected', [
+    ('Привет. Новый абзац. Как дела?', 'Привет.\n\nКак дела?'),
+    # Commas the model put around the command go with it; the next line starts with a capital.
+    ('Привет, новый абзац, как дела', 'Привет\n\nКак дела'),
+    # A colon before a line break stays.
+    ('Список: с новой строки молоко. С новой строки хлеб.', 'Список:\nМолоко.\nХлеб.'),
+    # A command next to a paragraph the layout already made does not add a second one.
+    ('Раз. Два.\n\nНовый абзац. Три.', 'Раз. Два.\n\nТри.'),
+    # Breaks at the very start or end are dropped.
+    ('Новый абзац. Привет. С новой строки.', 'Привет.'),
+    ('НОВЫЙ, АБЗАЦ ещё текст', 'Ещё текст'),
+    ('с нового абзаца продолжим', 'Продолжим'),
+    # Whole words only.
+    ('Новый абзацный отступ.', 'Новый абзацный отступ.'),
+])
+def test_voice_commands_break_lines_and_paragraphs(spoken, expected):
+    from text_processing import apply_voice_commands
+    text, used = apply_voice_commands(spoken)
+    assert text == expected
+    assert bool(used) == (spoken != expected)
+
+
+def test_pipeline_applies_commands_then_snippets_and_leaves_raw_mode_alone(tmp_path, monkeypatch):
+    import math
+    import struct
+    import wave
+    engine = installed_engine(tmp_path)
+    with wave.open(str(engine.audio_dir / 'a1b2.wav'), 'wb') as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(16000)
+        out.writeframes(b''.join(struct.pack('<h', int(12000 * math.sin(i / 8))) for i in range(16000)))
+    # Only recognition is faked; decoding, layout, commands and snippets run for real.
+    spoken = 'Привет. Новый абзац. Пиши на моя почта.'
+    monkeypatch.setattr(engine, 'load', lambda key, request_id=None: 0.0)
+    monkeypatch.setattr(engine, '_gigaam_segments', lambda audio, duration, request_id: [
+        {'start': 0.0, 'end': 1.0, 'text': spoken, 'noSpeechProbability': 0.0}])
+    request = {'model': 'gigaam', 'audioFile': 'a1b2.wav', 'language': 'ru',
+               'snippets': [{'trigger': 'моя почта', 'text': 'ivan@example.com'}]}
+    try:
+        result = engine.transcribe(request)
+        assert result['text'] == 'Привет.\n\nПиши на ivan@example.com.'
+        assert result['commands'] == ['новый абзац'] and result['snippets'] == ['моя почта']
+        assert result['rawText'] == spoken
+        assert engine.transcribe({**request, 'voiceCommands': False})['text'] == 'Привет. Новый абзац. Пиши на ivan@example.com.'
+        assert engine.transcribe({**request, 'mode': 'raw'})['text'] == spoken
+    finally:
+        engine.cancel_idle_unload()

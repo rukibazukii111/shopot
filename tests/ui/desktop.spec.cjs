@@ -44,6 +44,8 @@ test('desktop: real worker, personal dictionary, modes and local history', async
     await page.locator('[data-page="settings"]').click();
     await page.locator('#context-input').fill('Монтаж, сленг и GitHub');
     await page.locator('#auto-copy').uncheck();
+    await page.locator('#voice-commands').uncheck();
+    await expect.poll(() => JSON.parse(fs.readFileSync(path.join(dataDir, 'store.json'), 'utf8')).settings.voiceCommands).toBe(false);
     await expect(page.locator('#context-input')).toHaveValue('Монтаж, сленг и GitHub');
     await page.locator('#save-context').click();
     await expect(page.locator('#save-context')).toHaveText('Сохранено');
