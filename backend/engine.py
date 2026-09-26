@@ -302,6 +302,9 @@ class Engine:
                 and len(s["trigger"]) <= 60 and len(s["text"]) <= 4000 for s in snippets):
             raise ValueError("Некорректные сниппеты")
         request = {**request, "snippets": snippets}
+        # Meeting recordings are stereo: the microphone on the left, the other side of the call on the right.
+        if request.get("channel") not in (None, "left", "right"):
+            raise ValueError("Неизвестный канал записи")
         mode = request.get("mode", "natural")
         if mode not in ("natural", "minimal", "raw"):
             raise ValueError("Неизвестный режим текста")
@@ -431,7 +434,11 @@ class Engine:
               "message": "Распознаём речь на компьютере…", "fraction": 0})
         from faster_whisper.audio import decode_audio
         import numpy as np
-        audio = decode_audio(str(audio_path), sampling_rate=16000)
+        if request.get("channel"):
+            left, right = decode_audio(str(audio_path), sampling_rate=16000, split_stereo=True)
+            audio = left if request["channel"] == "left" else right
+        else:
+            audio = decode_audio(str(audio_path), sampling_rate=16000)
         duration = len(audio) / 16000
         if not len(audio):
             raise ValueError("Аудиофайл пуст.")

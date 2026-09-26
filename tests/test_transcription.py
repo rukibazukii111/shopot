@@ -547,3 +547,28 @@ def test_subtitle_cues_break_at_sentences_pauses_and_length():
     long = subtitle_cues(timed(' '.join(['слово'] * 40), 0.0, step=0.1))
     assert all(len(c['text']) <= 84 for c in long) and len(long) > 1
     assert subtitle_cues([]) == []
+
+
+def test_meeting_channels_are_recognized_separately(tmp_path, monkeypatch):
+    import math
+    import struct
+    import wave
+    engine = installed_engine(tmp_path)
+    # Left: the user's microphone (a tone); right: the other side of the call (silence).
+    with wave.open(str(engine.audio_dir / 'c0ffee.wav'), 'wb') as out:
+        out.setnchannels(2)
+        out.setsampwidth(2)
+        out.setframerate(16000)
+        out.writeframes(b''.join(struct.pack('<hh', int(12000 * math.sin(i / 8)), 0) for i in range(16000)))
+    heard = []
+    monkeypatch.setattr(engine, 'load', lambda key, request_id=None: 0.0)
+    monkeypatch.setattr(engine, '_gigaam_segments', lambda audio, duration, request_id: heard.append(float(abs(audio).max())) or [
+        {'start': 0.0, 'end': 1.0, 'text': 'Да, слышно.', 'noSpeechProbability': 0.0}])
+    request = {'model': 'gigaam', 'audioFile': 'c0ffee.wav', 'language': 'ru', 'formatting': 'off', 'voiceCommands': False}
+    try:
+        assert engine.transcribe({**request, 'channel': 'left'})['text'] == 'Да, слышно.' and heard[-1] > 0.3
+        assert engine.transcribe({**request, 'channel': 'right'})['noSpeech'] is True
+        with pytest.raises(ValueError, match='канал'):
+            engine.transcribe({**request, 'channel': 'center'})
+    finally:
+        engine.cancel_idle_unload()

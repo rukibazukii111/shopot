@@ -30,6 +30,7 @@ const icons = {
   target: '<path d="M11 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0"/><path d="M7 12a5 5 0 1 0 10 0a5 5 0 1 0 -10 0"/><path d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0"/>',
   database: '<path d="M4 6a8 3 0 1 0 16 0a8 3 0 1 0 -16 0"/><path d="M4 6v6a8 3 0 0 0 16 0v-6"/><path d="M4 12v6a8 3 0 0 0 16 0v-6"/>',
   sparkles: '<path d="M16 18a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2zm0 -12a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2zm-7 12a6 6 0 0 1 6 -6a6 6 0 0 1 -6 -6a6 6 0 0 1 -6 6a6 6 0 0 1 6 6z"/>',
+  users: '<path d="M5 7a4 4 0 1 0 8 0a4 4 0 1 0 -8 0"/><path d="M3 21v-2a4 4 0 0 1 4 -4h4a4 4 0 0 1 4 4v2"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/><path d="M21 21v-2a4 4 0 0 0 -3 -3.85"/>',
 };
 function icon(name) { return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name] || icons.text}</svg>`; }
 function paintIcons(parent = document) { parent.querySelectorAll('[data-icon]').forEach(el => el.innerHTML = icon(el.dataset.icon)); }
@@ -161,7 +162,7 @@ function refreshControls() {
   $('#record-progress').hidden = !processing;
   if (!processing) $('#transcribe-progress').removeAttribute('value');
   if (phase === 'idle') { $('#record-time').textContent = '00:00'; resetWave(); }
-  renderRecovery();
+  renderRecovery(); renderMeeting();
 }
 async function saveSettings(changes) {
   state.settings = await api.settings({...state.settings, ...changes});
@@ -199,7 +200,15 @@ function syncSettings() {
   $('#hotkey-state').className = 'hotkey-state ' + (state.hotkeyRegistered ? 'ok' : 'warn');
   $('#hotkey-state').innerHTML = state.hotkeyRegistered ? `${icon('check')}Работает` : `${icon('alert')}Занято`;
   $('#hero-keys').classList.toggle('unavailable', !state.hotkeyRegistered);
-  renderProfiles();
+  renderProfiles(); syncMeetingSettings();
+}
+
+function syncMeetingSettings() {
+  $('#meeting-row').hidden = !state.meetingsSupported;
+  $('#meeting-offers').checked = state.settings.meetingOffers;
+  const ignored = state.settings.meetingIgnore || [];
+  $('#meeting-ignore').hidden = !ignored.length;
+  $('#meeting-ignore').innerHTML = ignored.length ? `<span class="help">Не предлагать для:</span>${ignored.map(app => `<span class="chip">${escapeHtml(app.name || app.id)}<button type="button" data-unignore="${escapeHtml(app.id)}" aria-label="Снова предлагать для ${escapeHtml(app.name || app.id)}">${icon('x')}</button></span>`).join('')}` : '';
 }
 
 // Apps that dictation was pasted into, newest first: the candidates for a per-app profile.
@@ -358,6 +367,74 @@ async function importAudio() {
   finally { if (operation === state.operation) { state.phase = 'idle'; refreshControls(); } }
 }
 
+// --- Call recording: the microphone on the left channel, the system audio (the other side) on the right ---
+let meetingSession = null, meetingTimer;
+async function recordMeeting({id, chunkMs}) {
+  if (meetingSession) return;
+  const session = meetingSession = {id, index: 0, pending: Promise.resolve(), tracks: []};
+  try {
+    const microphone = state.settings.microphoneId;
+    const mic = await navigator.mediaDevices.getUserMedia({audio: {deviceId: microphone !== 'default' ? {exact: microphone} : undefined,
+      channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true}});
+    session.tracks.push(...mic.getTracks());
+    const display = await navigator.mediaDevices.getDisplayMedia({video: true, audio: true});
+    session.tracks.push(...display.getTracks());
+    // Chromium hands system audio out together with a screen; the picture is not needed.
+    display.getVideoTracks().forEach(track => track.stop());
+    if (!display.getAudioTracks().length) throw new Error('Системный звук недоступен');
+    const context = session.context = new AudioContext();
+    const merger = context.createChannelMerger(2);
+    context.createMediaStreamSource(mic).connect(merger, 0, 0);
+    context.createMediaStreamSource(new MediaStream(display.getAudioTracks())).connect(merger, 0, 1);
+    const destination = context.createMediaStreamDestination();
+    merger.connect(destination);
+    session.stream = destination.stream; session.startedAt = performance.now();
+    session.recorder = meetingChunk(session);
+    session.timer = setInterval(() => { const previous = session.recorder; session.recorder = meetingChunk(session); previous.stop(); }, chunkMs);
+    if (session.finishing) await finishMeetingRecording();
+  } catch (error) {
+    releaseMeeting(session); if (meetingSession === session) meetingSession = null;
+    await api.meetingDone(id, error.message || 'Не удалось начать запись');
+  }
+}
+function meetingChunk(session) {
+  const recorder = new MediaRecorder(session.stream, {mimeType: 'audio/webm;codecs=opus', audioBitsPerSecond: 64000});
+  const parts = [], index = session.index++, offset = (performance.now() - session.startedAt) / 1000;
+  recorder.ondataavailable = event => { if (event.data.size) parts.push(event.data); };
+  // Chunks reach the engine in recording order, each as soon as it is closed.
+  recorder.onstop = () => {
+    session.pending = session.pending.then(async () => {
+      const audio = new Uint8Array(await new Blob(parts, {type: 'audio/webm'}).arrayBuffer());
+      if (audio.length) await api.meetingChunk(session.id, index, offset, audio);
+    }).catch(() => {});
+  };
+  recorder.start(1000);
+  return recorder;
+}
+async function finishMeetingRecording() {
+  const session = meetingSession;
+  if (!session) return;
+  if (!session.recorder) { session.finishing = true; return; }
+  meetingSession = null; clearInterval(session.timer);
+  await new Promise(resolve => { session.recorder.addEventListener('stop', resolve, {once: true}); session.recorder.stop(); });
+  await session.pending;
+  releaseMeeting(session);
+  await api.meetingDone(session.id);
+}
+function releaseMeeting(session) { session.tracks.forEach(track => track.stop()); session.context?.close().catch(() => {}); }
+function renderMeeting() {
+  const current = state.meeting;
+  $('#meeting-banner').hidden = !current;
+  $('#meeting-button').hidden = !state.meetingsSupported || Boolean(current) || state.phase !== 'idle' || !installed();
+  clearInterval(meetingTimer);
+  if (!current) return;
+  $('#meeting-title').textContent = current.stopping ? 'Собираю расшифровку созвона' : 'Идёт запись созвона';
+  $('#meeting-stop').hidden = current.stopping;
+  const tick = () => { $('#meeting-detail').textContent = [current.app, current.stopping ? 'Текст появится в истории' : duration((Date.now() - current.startedAt) / 1000)].filter(Boolean).join(' · '); };
+  tick();
+  if (!current.stopping) meetingTimer = setInterval(tick, 1000);
+}
+
 function renderRecovery() {
   const entries = state.pendingRecordings;
   $('#recovery-banner').hidden = !entries.length || isBusy();
@@ -439,7 +516,9 @@ function entryActions(entry, primary) {
   const copy = primary
     ? `<button class="button-primary copy-button" data-action="copy"><span class="copy-check">${icon('check')}</span><span class="copy-label">Скопировать</span><kbd>Enter</kbd></button>`
     : `<button class="button copy-button" data-action="copy"><span class="copy-icon">${icon('copy')}</span><span class="copy-check">${icon('check')}</span><span class="copy-label">Скопировать</span></button>`;
-  return `${entry.audioFile ? `<button class="icon-button" data-action="play" aria-label="Прослушать запись" title="Прослушать">${icon('play')}</button>` : ''}<button class="icon-button" data-action="export" aria-label="Сохранить в файл: текст, Markdown или субтитры" title="Сохранить в файл">${icon('download')}</button><button class="icon-button" data-action="delete" aria-label="Удалить диктовку" title="Удалить">${icon('trash')}</button>${copy}`;
+  // A call transcript goes to a chat assistant for notes only when the user pastes it there.
+  const summary = entry.meeting ? `<button class="icon-button" data-action="summary" aria-label="Скопировать с просьбой сделать резюме" title="Скопировать для резюме в ChatGPT или Claude">${icon('sparkles')}</button>` : '';
+  return `${summary}${entry.audioFile ? `<button class="icon-button" data-action="play" aria-label="Прослушать запись" title="Прослушать">${icon('play')}</button>` : ''}<button class="icon-button" data-action="export" aria-label="Сохранить в файл: текст, Markdown или субтитры" title="Сохранить в файл">${icon('download')}</button><button class="icon-button" data-action="delete" aria-label="Удалить диктовку" title="Удалить">${icon('trash')}</button>${copy}`;
 }
 function latestCard(entry) {
   const text = entryText(entry), count = wordCount(text), id = escapeHtml(entry.id);
@@ -470,7 +549,7 @@ function renderHistory() {
   for (const entry of entries) {
     const label = dayLabel(entry.createdAt), doubts = doubtsOf(entry), selected = entry.id === state.selected;
     if (label !== group) { group = label; html += `<div class="group-label">${escapeHtml(label)}</div>`; }
-    html += `<button class="history-row${selected ? ' selected' : ''}" data-select-entry="${escapeHtml(entry.id)}" aria-pressed="${selected}"><span class="tile">${icon(isFileSource(entry) ? 'text' : 'mic')}</span><span class="row-text"><span class="row-title">${escapeHtml(entryText(entry).replace(/\s+/g, ' ').trim() || 'Пустая диктовка')}</span><span class="row-meta"><span class="mono">${timeLabel(entry.createdAt)}</span><span class="mono">${duration(entry.duration)}</span><span>${escapeHtml(modelNames[entry.model] || entry.model)}</span></span></span>${doubts ? `<span class="badge-warn">${doubts} проверить</span>` : '<span></span>'}</button>`;
+    html += `<button class="history-row${selected ? ' selected' : ''}" data-select-entry="${escapeHtml(entry.id)}" aria-pressed="${selected}"><span class="tile">${icon(entry.meeting ? 'users' : isFileSource(entry) ? 'text' : 'mic')}</span><span class="row-text"><span class="row-title">${escapeHtml(entryText(entry).replace(/\s+/g, ' ').trim() || 'Пустая диктовка')}</span><span class="row-meta"><span class="mono">${timeLabel(entry.createdAt)}</span><span class="mono">${duration(entry.duration)}</span><span>${escapeHtml(modelNames[entry.model] || entry.model)}</span></span></span>${doubts ? `<span class="badge-warn">${doubts} проверить</span>` : '<span></span>'}</button>`;
   }
   $('#history-list').innerHTML = html || `<div class="list-empty"><strong>${query ? 'Ничего не нашлось' : 'Пока здесь тихо'}</strong><span>${query ? 'Попробуй другое слово или часть фразы.' : 'Начни с первой диктовки, и она появится здесь.'}</span></div>`;
   renderHistoryDetail();
@@ -518,6 +597,7 @@ async function entryAction(button) {
   const action = button.dataset.action;
   if (action === 'copy') { await api.copy(text); markCopied(button); }
   if (action === 'export') { const name = await api.saveText(entry.id, text); if (name) toast(`Сохранено: ${name}`); }
+  if (action === 'summary') { await api.copySummary(entry.id); toast('Скопировано с просьбой о резюме. Вставь в ChatGPT или Claude'); }
   if (action === 'delete' && await api.deleteEntry(entry.id)) { state.history = state.history.filter(e => e.id !== entry.id); drafts.delete(entry.id); renderResults(); }
   if (action === 'play') {
     const existing = holder.querySelector('audio'); if (existing) { existing.paused ? await existing.play() : existing.pause(); return; }
@@ -694,6 +774,8 @@ document.addEventListener('click', event => {
   if (addButton) { const id = addButton.closest('[data-suggestions]').dataset.suggestions; guard(() => addSuggestion(id, Number(addButton.dataset.addSuggestion))); return; }
   const dismiss = target.closest('[data-dismiss-suggestions]');
   if (dismiss) { const id = dismiss.closest('[data-suggestions]').dataset.suggestions; state.suggestions.delete(id); renderSuggestions(id); return; }
+  const unignore = target.closest('[data-unignore]');
+  if (unignore) { guard(() => saveSettings({meetingIgnore: state.settings.meetingIgnore.filter(app => app.id !== unignore.dataset.unignore)})); return; }
   const removeProfile = target.closest('[data-remove-profile]');
   if (removeProfile) { const app = removeProfile.closest('.profile-row').dataset.profile; guard(() => saveProfiles(state.profiles.filter(p => p.app !== app))); return; }
   const remove = target.closest('[data-remove-alias]');
@@ -760,6 +842,9 @@ $('#context-input').addEventListener('input', () => { contextDirty = true; updat
 $('#formatting-select').addEventListener('change', event => guard(() => saveSettings({formatting: event.target.value})));
 $('#remove-fillers').addEventListener('change', event => guard(() => saveSettings({removeFillers: event.target.checked})));
 $('#voice-commands').addEventListener('change', event => guard(() => saveSettings({voiceCommands: event.target.checked})));
+$('#meeting-offers').addEventListener('change', event => guard(() => saveSettings({meetingOffers: event.target.checked})));
+$('#meeting-button').addEventListener('click', () => guard(async () => { state.meeting = await api.startMeeting(); renderMeeting(); }));
+$('#meeting-stop').addEventListener('click', () => guard(() => api.stopMeeting()));
 $('#keep-audio').addEventListener('change', event => guard(() => saveSettings({keepAudio: event.target.checked})));
 $('#microphone-select').addEventListener('change', event => guard(() => saveSettings({microphoneId: event.target.value})));
 $('#save-context').addEventListener('click', () => guard(async () => {
@@ -817,7 +902,12 @@ $('#dictionary-form').addEventListener('submit', async event => {
 });
 api.onToggle(toggleRecording); api.onCancel(() => guard(cancelOperation));
 api.onEngine(({status, error}) => { state.engine = status || null; state.engineError = error; updateEngine(); if (error) showError(new Error(error)); });
-api.onSnapshot(snapshot => { state.history = snapshot.history; state.pendingRecordings = snapshot.pendingRecordings; renderResults(); renderRecovery(); renderProfiles(); });
+api.onSnapshot(snapshot => {
+  Object.assign(state, {history: snapshot.history, pendingRecordings: snapshot.pendingRecordings, meeting: snapshot.meeting, settings: snapshot.settings});
+  renderResults(); renderRecovery(); renderProfiles(); renderMeeting(); syncMeetingSettings();
+});
+api.onMeetingRecord(value => guard(() => recordMeeting(value)));
+api.onMeetingFinish(() => guard(finishMeetingRecording));
 api.onProgress(progress => {
   if (state.phase === 'opening') { state.phase = 'transcribing'; refreshControls(); }
   if (state.phase === 'transcribing') {
@@ -839,7 +929,7 @@ $('#delete-recording').addEventListener('click', () => guard(async () => {
 paintIcons(); resetWave(); refreshControls(); openWord(null); renderResults();
 guard(async () => {
   Object.assign(state, await api.boot());
-  syncSettings(); openWord(state.dictionary[0] || null); renderResults(); updateEngine();
+  syncSettings(); openWord(state.dictionary[0] || null); renderResults(); updateEngine(); renderMeeting();
   if (state.engineError) showError(new Error(state.engineError));
   await listMicrophones();
 });

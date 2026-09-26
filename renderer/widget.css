@@ -48,8 +48,19 @@ kbd {
 main[data-phase=transcribing] #progress { display: block; }
 main[data-phase=transcribing] #hint { display: none; }
 main[data-phase=success] .sub, main[data-phase=error] .sub, main[data-phase=canceled] .sub { padding-left: 36px; }
-#open { height: 28px; padding: 0 10px; border-radius: 6px; border: 1px solid #242728; background: #101111; color: #f4f4f6; font-size: 13px; font-weight: 500; }
-#open:hover { background: #16171a; }
+#open, #offer-ignore { height: 28px; padding: 0 10px; border-radius: 6px; border: 1px solid #242728; background: #101111; color: #f4f4f6; font-size: 13px; font-weight: 500; }
+#open:hover, #offer-ignore:hover { background: #16171a; }
+#offer-ignore { color: #cdcdcd; }
+#offer-record { height: 28px; padding: 0 12px; border-radius: 6px; background: #f4f4f6; color: #07080a; font-size: 13px; font-weight: 500; }
+#offer-record:hover { background: #ffffff; }
+/* Calls: an offer to record (blue, a recommendation) and a recording in progress (red, like dictation). */
+main[data-phase=meeting] #wave i { background: #ff6161; animation: breathe 1.4s ease-in-out infinite; }
+main[data-phase=meeting-offer] #state-icon { display: flex; background: rgba(87, 193, 255, .15); color: #57c1ff; }
+main[data-phase=meeting-offer] #wave { display: none; }
+main[data-phase=meeting-offer] .sub { padding-left: 36px; }
+main[data-phase=meeting-finishing] #wave i { animation: breathe 1.4s ease-in-out infinite; }
+main[data-phase=meeting-finishing] #progress { display: block; }
+main[data-phase=meeting-finishing] #hint { display: none; }
 [hidden] { display: none !important; }
 @keyframes breathe { 0%, 100% { opacity: .3; } 50% { opacity: .9; } }
 @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(260%); } }

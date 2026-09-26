@@ -1,4 +1,4 @@
-const {app, BrowserWindow, ipcMain, dialog, clipboard, globalShortcut, session, Tray, Menu, nativeImage, nativeTheme, powerSaveBlocker, screen, systemPreferences} = require('electron');
+const {app, BrowserWindow, ipcMain, dialog, clipboard, desktopCapturer, globalShortcut, session, Tray, Menu, nativeImage, nativeTheme, powerSaveBlocker, screen, systemPreferences} = require('electron');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -10,6 +10,7 @@ const {PasteService, clipboardText} = require('./paste.cjs');
 const {createNativeBackend} = require('./native-input.cjs');
 const {suggestCorrections} = require('./corrections.cjs');
 const {exportText} = require('./export.cjs');
+const {MicWatcher, meetingTurns, meetingText, summaryPrompt} = require('./meetings.cjs');
 
 const root = path.resolve(__dirname, '..');
 const dataDir = path.resolve(process.env.SHOPOT_DATA_DIR || (app.isPackaged ? path.join(app.getPath('appData'), 'Shopot') : path.join(root, '.local')));
@@ -25,6 +26,11 @@ let nativeAvailable = false, nativeBackend = null;
 const HOLD_MS = 450;
 let hold = null;
 let widgetTimer, activeTranscription, downloading = false, job = 0;
+// Calls are recorded on Windows only for now: that is where Electron captures system audio (WASAPI loopback).
+const MEETINGS = process.platform === 'win32';
+const MEETING_CHUNK_MS = (Number(process.env.SHOPOT_MEETING_CHUNK_SECONDS) || 300) * 1000;
+const MIC_POLL_MS = Number(process.env.SHOPOT_MIC_POLL_MS) || 4000;
+let meeting = null, offer = null, offerTimer, meetingClock, micWatcher = null, meetingQueue = Promise.resolve();
 let widgetState = {phase: 'requesting', shortcut: process.platform === 'darwin' ? '⌘⇧Space' : 'Ctrl⇧Space'};
 
 function send(channel, value) { if (window && !window.isDestroyed()) window.webContents.send(channel, value); }
@@ -33,7 +39,8 @@ function trusted(event) {
 }
 function ipc(name, handler) { ipcMain.handle(name, (event, value) => { trusted(event); return handler(value); }); }
 function pastePermission() { return process.platform !== 'darwin' || systemPreferences.isTrustedAccessibilityClient(false); }
-function snapshot() { return {...store.data, engine: worker.status, engineError, busy, hotkeyRegistered, nativeAvailable, pastePermission: pastePermission(), platform: process.platform, totalMemory: os.totalmem()}; }
+function meetingState() { return meeting ? {app: meeting.app?.name ?? null, startedAt: meeting.startedAt, stopping: meeting.stopping} : null; }
+function snapshot() { return {...store.data, engine: worker.status, engineError, busy, hotkeyRegistered, nativeAvailable, pastePermission: pastePermission(), platform: process.platform, totalMemory: os.totalmem(), meeting: meetingState(), meetingsSupported: MEETINGS}; }
 function modelId(id) { if (!MODEL_IDS.includes(id)) throw new Error('Неизвестная модель'); return id; }
 function textValue(value) { if (typeof value !== 'string' || value.length > 200000) throw new Error('Недопустимый текст'); return value; }
 function entryFor(id) { const entry = store.data.history.find(e => e.id === id); if (!entry) throw new Error('Запись не найдена'); return entry; }
@@ -53,7 +60,7 @@ function forgetRecording(audioFile) {
 function setBusy(value) {
   busy = value;
   if (value && blocker === undefined) blocker = powerSaveBlocker.start('prevent-app-suspension');
-  else if (!value && blocker !== undefined && !capture) { powerSaveBlocker.stop(blocker); blocker = undefined; }
+  else if (!value && blocker !== undefined && !capture && !meeting) { powerSaveBlocker.stop(blocker); blocker = undefined; }
 }
 function updateTray(label = 'Шёпот') { if (tray) tray.setToolTip(label); }
 // Escape is taken from other apps only while the microphone is live; after that it belongs to the user again.
@@ -127,6 +134,87 @@ function toggleGlobalRecording() {
   try { send('toggle-recording', beginCapture(true)); watchHotkeyHold(); }
   catch (error) { showWidget({phase: 'error', message: error.message, hint: 'Открой Шёпот, чтобы продолжить', elapsed: 0}); }
 }
+
+// --- Calls: noticed by microphone use, recorded as two channels, transcribed in chunks while they go on ---
+function dismissOffer() { clearTimeout(offerTimer); if (offer) { offer = null; if (!capture && !meeting) hideWidget(); } }
+function offerMeeting(user) {
+  const settings = store.data.settings;
+  if (meeting || capture || !settings.meetingOffers || settings.meetingIgnore.some(app => app.id === user.id)) return;
+  offer = user;
+  showWidget({phase: 'meeting-offer', message: `Созвон в ${user.name}. Записать?`, elapsed: 0, level: 0, hint: '', holding: false});
+  clearTimeout(offerTimer);
+  offerTimer = setTimeout(() => { if (offer === user) dismissOffer(); }, 20000);
+}
+function meetingWidget() {
+  // A dictation during a call owns the widget until it is done.
+  if (!meeting || capture) return;
+  showWidget({phase: meeting.stopping ? 'meeting-finishing' : 'meeting', elapsed: (Date.now() - meeting.startedAt) / 1000, level: 0,
+    message: meeting.stopping ? 'Собираю расшифровку созвона' : meeting.app ? `Созвон · ${meeting.app.name}` : 'Запись созвона'}, !meeting.hidden);
+}
+function startMeeting(app) {
+  if (!MEETINGS) throw new Error('Запись созвонов пока доступна только на Windows');
+  if (meeting) throw new Error('Созвон уже записывается');
+  if (capture) throw new Error('Дождись конца диктовки');
+  if (!worker.status?.models?.find(m => m.id === store.data.settings.model)?.installed) throw new Error('Сначала скачай модель в Шёпоте');
+  dismissOffer();
+  meeting = {id: crypto.randomUUID(), app: app ? {id: app.id, name: app.name} : null, startedAt: Date.now(), stopping: false, hidden: false,
+    cues: {left: [], right: []}, files: [], failed: 0, settings: structuredClone(store.data.settings), dictionary: structuredClone(store.data.dictionary)};
+  if (blocker === undefined) blocker = powerSaveBlocker.start('prevent-app-suspension');
+  send('meeting-record', {id: meeting.id, chunkMs: MEETING_CHUNK_MS});
+  clearInterval(meetingClock); meetingClock = setInterval(meetingWidget, 1000);
+  meetingWidget(); updateTray('Шёпот — идёт запись созвона'); send('snapshot', snapshot());
+  return meetingState();
+}
+function stopMeeting() {
+  if (!meeting || meeting.stopping) return;
+  meeting.stopping = true; clearTimeout(meeting.endTimer);
+  send('meeting-finish', {id: meeting.id});
+  meetingWidget(); send('snapshot', snapshot());
+}
+// Each chunk is transcribed channel by channel: left is the microphone (the user), right the other side.
+async function transcribeMeetingChunk(current, file, offset) {
+  for (const channel of ['left', 'right']) {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const result = await worker.request('transcribe', {audioFile: path.basename(file), channel, model: current.settings.model,
+          language: current.settings.language, mode: 'natural', formatting: 'off', voiceCommands: false, removeFillers: current.settings.removeFillers,
+          context: current.settings.context, dictionary: current.dictionary, snippets: []});
+        current.cues[channel].push(...(result.cues || []).map(cue => ({...cue, start: cue.start + offset, end: cue.end + offset})));
+        break;
+      } catch (error) {
+        // A dictation's cancel or an engine restart can take this request down with it: try again, a few times.
+        if (attempt >= 4) { console.error('Кусок созвона не распознан:', error.message); return false; }
+        await new Promise(resolve => setTimeout(resolve, 1500 * attempt));
+      }
+    }
+  }
+  return true;
+}
+async function finishMeeting(current, problem) {
+  await meetingQueue;
+  clearInterval(meetingClock);
+  if (meeting === current) meeting = null;
+  const turns = meetingTurns(current.cues.left, current.cues.right);
+  const duration = (Date.now() - current.startedAt) / 1000;
+  if (turns.length) {
+    const text = meetingText(turns);
+    store.addHistory({id: crypto.randomUUID(), createdAt: new Date(current.startedAt).toISOString(), source: current.app ? `Созвон · ${current.app.name}` : 'Созвон',
+      mode: 'natural', text, rawText: text, words: [], duration, elapsed: 0, model: current.settings.model, replacements: [], audioFile: null, app: null,
+      cues: [...current.cues.left, ...current.cues.right].sort((a, b) => a.start - b.start),
+      meeting: {app: current.app?.name ?? null, turns: turns.length, failedChunks: current.failed}});
+  }
+  // Transcribed chunks are not needed any more (after a crash they come back as recordings to retry).
+  // A chunk the engine could not transcribe stays as an unfinished recording, like a failed dictation.
+  for (const [index, {file, ok}] of current.files.entries()) {
+    if (ok) { if (fs.existsSync(file)) fs.unlinkSync(file); }
+    else store.data.pendingRecordings.push({id: crypto.randomUUID(), audioFile: path.basename(file), source: `Созвон, часть ${index + 1}`, createdAt: new Date().toISOString()});
+  }
+  store.save();
+  setBusy(busy); updateTray(); send('snapshot', snapshot());
+  const failed = current.failed ? ` Не распознано кусков: ${current.failed}.` : '';
+  showWidget(turns.length ? {phase: 'success', message: 'Расшифровка созвона готова', hint: `Она в истории Шёпота.${failed}`}
+    : {phase: 'error', message: problem || 'В записи созвона нет речи', hint: problem ? 'Проверь доступ к звуку и микрофону' : 'Ничего не сохранено'}, true);
+}
 function createWidget() {
   widget = new BrowserWindow({width: 384, height: 110, show: false, frame: false, transparent: true,
     alwaysOnTop: true, skipTaskbar: true, focusable: false, resizable: false, maximizable: false, minimizable: false, hasShadow: false,
@@ -142,8 +230,17 @@ function createWidget() {
   ipcMain.on('widget-action', (event, action) => {
     if (!trustedWidget(event)) return;
     if (action === 'stop' && capture?.phase === 'recording') toggleGlobalRecording();
+    if (action === 'stop' && meeting && !capture) stopMeeting();
     if (action === 'cancel' && capture) { hideWidget(); send('cancel-recording'); }
-    if (action === 'hide' && !capture) widget.hide();
+    if (action === 'hide' && !capture) { if (meeting) meeting.hidden = true; widget.hide(); }
+    if (action === 'meeting-record' && offer) {
+      try { startMeeting(offer); } catch (error) { showWidget({phase: 'error', message: error.message, hint: 'Открой Шёпот, чтобы продолжить'}); }
+    }
+    if (action === 'meeting-ignore' && offer) {
+      store.setSettings({...store.data.settings, meetingIgnore: [...store.data.settings.meetingIgnore, {id: offer.id, name: offer.name}]});
+      dismissOffer(); send('snapshot', snapshot());
+    }
+    if (action === 'meeting-dismiss') dismissOffer();
     if (action === 'open') { window.show(); window.focus(); widget.hide(); }
   });
 }
@@ -156,6 +253,8 @@ function createWindow() {
   window.webContents.on('will-navigate', (event, url) => { if (url !== uiUrl) event.preventDefault(); });
   window.webContents.on('render-process-gone', () => {
     ++job; worker?.restart(); busy = false;
+    // A call being recorded keeps what reached the engine so far.
+    if (meeting) finishMeeting(meeting, 'Окно записи перезапустилось').catch(() => {});
     finishCapture({phase: 'error', message: 'Окно записи перезапустилось', hint: 'Повтори диктовку'});
     window.reload();
   });
@@ -388,9 +487,54 @@ else {
       return true;
     });
     ipc('read-audio', id => { const file = audioFor(entryFor(id)); return file && fs.existsSync(file) ? fs.readFileSync(file) : null; });
+    ipc('meeting-start', () => startMeeting(null));
+    ipc('meeting-stop', () => { stopMeeting(); return true; });
+    ipc('meeting-chunk', value => {
+      if (!meeting || value?.id !== meeting.id) throw new Error('Запись созвона уже завершена');
+      const audio = value.audio, offset = Number(value.offset);
+      if (!(audio instanceof Uint8Array) || !audio.length || audio.length > 200 * 1024 * 1024) throw new Error('Недопустимая аудиозапись');
+      if (!Number.isFinite(offset) || offset < 0 || offset > 24 * 3600) throw new Error('Недопустимое время куска');
+      const file = path.join(audioDir, crypto.randomUUID() + '.webm');
+      fs.writeFileSync(file, audio, {mode: 0o600});
+      const current = meeting, record = {file, ok: false};
+      current.files.push(record);
+      // One engine request at a time, in recording order, while the call goes on.
+      meetingQueue = meetingQueue.then(async () => { record.ok = await transcribeMeetingChunk(current, file, offset); if (!record.ok) current.failed++; });
+      return true;
+    });
+    ipc('meeting-done', value => {
+      if (!meeting || value?.id !== meeting.id) return false;
+      const current = meeting;
+      current.stopping = true; clearTimeout(current.endTimer);
+      finishMeeting(current, value.error ? String(value.error).slice(0, 200) : '').catch(error => console.error('Созвон не сохранён:', error));
+      return true;
+    });
+    ipc('copy-summary', async id => {
+      const entry = entryFor(id);
+      await clipboard.writeText(clipboardText(summaryPrompt(entry.text, entry.meeting?.app)));
+      return true;
+    });
+    if (MEETINGS) {
+      // System audio for a call being recorded, and only for the main window: Chromium needs a screen source
+      // with it, and the page stops that video track at once.
+      session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
+        if (!meeting || request.frame?.url !== uiUrl) { callback({}); return; }
+        desktopCapturer.getSources({types: ['screen']}).then(sources => callback(sources[0] ? {video: sources[0], audio: 'loopback'} : {}), () => callback({}));
+      });
+    }
+    if (MEETINGS && native?.micUsers) {
+      micWatcher = new MicWatcher(() => native.micUsers(), MIC_POLL_MS);
+      micWatcher.on('start', user => { if (meeting?.app?.id === user.id) clearTimeout(meeting.endTimer); else offerMeeting(user); });
+      micWatcher.on('stop', user => {
+        if (offer?.id === user.id) dismissOffer();
+        // The call app let go of the microphone: the call is over, unless it picks it up again right away.
+        if (meeting?.app?.id === user.id && !meeting.stopping) { clearTimeout(meeting.endTimer); meeting.endTimer = setTimeout(stopMeeting, MIC_POLL_MS * 2.5); }
+      });
+      micWatcher.start();
+    }
   });
 }
 app.on('activate', () => { if (window) window.show(); });
 app.on('before-quit', () => { quitting = true; });
-app.on('will-quit', () => { clearTimeout(widgetTimer); globalShortcut.unregisterAll(); worker?.stop(); if (capture?.target) paste?.release(capture.target); });
+app.on('will-quit', () => { clearTimeout(widgetTimer); micWatcher?.stop(); globalShortcut.unregisterAll(); worker?.stop(); if (capture?.target) paste?.release(capture.target); });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

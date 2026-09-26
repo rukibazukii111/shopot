@@ -5,7 +5,7 @@ const crypto = require('node:crypto');
 const DEFAULT_SETTINGS = {
   model: 'gigaam', language: 'ru', mode: 'natural', context: '',
   autoCopy: true, autoPaste: true, keepAudio: false, microphoneId: 'default', formatting: 'rules', removeFillers: true,
-  voiceCommands: true,
+  voiceCommands: true, meetingOffers: true, meetingIgnore: [],
 };
 const MODEL_IDS = ['gigaam', 'small', 'turbo', 'large-v3'];
 const RUSSIAN_ONLY = ['gigaam'];
@@ -20,13 +20,18 @@ function validateSettings(input) {
     if (!values.includes(input[key] ?? result[key])) throw new Error('Некорректное значение: ' + key);
     result[key] = input[key] ?? result[key];
   }
-  for (const key of ['autoCopy', 'autoPaste', 'keepAudio', 'removeFillers', 'voiceCommands']) {
+  for (const key of ['autoCopy', 'autoPaste', 'keepAudio', 'removeFillers', 'voiceCommands', 'meetingOffers']) {
     if (key in input && typeof input[key] !== 'boolean') throw new Error('Некорректное значение: ' + key);
     result[key] = input[key] ?? result[key];
   }
   if (RUSSIAN_ONLY.includes(result.model) && result.language !== 'ru') {
     throw new Error('GigaAM распознаёт только русский. Для других языков выбери Whisper в разделе «Модели».');
   }
+  // Apps whose microphone use should not suggest recording a call (games, voice notes).
+  const ignore = input.meetingIgnore ?? [];
+  if (!Array.isArray(ignore) || ignore.length > 50) throw new Error('Некорректное значение: meetingIgnore');
+  result.meetingIgnore = ignore.map(app => ({id: String(app?.id ?? '').toLowerCase().slice(0, 300), name: String(app?.name ?? '').slice(0, 80)}))
+    .filter((app, index, all) => app.id && all.findIndex(other => other.id === app.id) === index);
   result.context = String(input.context ?? '').slice(0, 200);
   result.microphoneId = String(input.microphoneId ?? 'default').slice(0, 256);
   return result;

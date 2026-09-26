@@ -7,13 +7,62 @@ const WINDOWS_APP_NAMES = {
   'powerpnt.exe': 'PowerPoint', 'outlook.exe': 'Outlook', 'olk.exe': 'Outlook', 'slack.exe': 'Slack', 'discord.exe': 'Discord',
   'notion.exe': 'Notion', 'obsidian.exe': 'Obsidian', 'notepad.exe': 'Блокнот', 'explorer.exe': 'Проводник',
   'windowsterminal.exe': 'Терминал', 'claude.exe': 'Claude', 'chatgpt.exe': 'ChatGPT', 'figma.exe': 'Figma',
+  'zoom.exe': 'Zoom', 'ms-teams.exe': 'Microsoft Teams', 'teams.exe': 'Microsoft Teams', 'skype.exe': 'Skype', 'ayugram.exe': 'AyuGram',
+  'whatsapp.exe': 'WhatsApp', 'yandex.exe': 'Яндекс Телемост',
 };
+// Store apps are known by package family name.
+const PACKAGED_APP_NAMES = [['MSTeams_', 'Microsoft Teams'], ['5319275A.WhatsAppDesktop', 'WhatsApp'], ['Microsoft.SkypeApp', 'Skype'],
+  ['TelegramMessengerLLP.TelegramDesktop', 'Telegram'], ['Microsoft.WindowsCamera', 'Камера']];
+const MICROPHONE_KEY = 'Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\microphone';
 function windowsBackend(koffi) {
   const lib = koffi.load('user32.dll');
   const kernel = koffi.load('kernel32.dll');
   const openProcess = kernel.func('uintptr_t __stdcall OpenProcess(uint32_t access, int inherit, uint32_t pid)');
   const closeHandle = kernel.func('int __stdcall CloseHandle(uintptr_t handle)');
   const imageName = kernel.func('int __stdcall QueryFullProcessImageNameW(uintptr_t process, uint32_t flags, _Out_ uint16_t *name, _Inout_ uint32_t *size)');
+  const advapi = koffi.load('advapi32.dll');
+  const openKey = advapi.func('int32_t __stdcall RegOpenKeyExW(intptr_t key, const char16_t *subKey, uint32_t options, uint32_t access, _Out_ intptr_t *result)');
+  const enumKey = advapi.func('int32_t __stdcall RegEnumKeyExW(intptr_t key, uint32_t index, _Out_ uint16_t *name, _Inout_ uint32_t *length, void *reserved, void *cls, void *clsLength, void *lastWrite)');
+  const getValue = advapi.func('int32_t __stdcall RegGetValueW(intptr_t key, const char16_t *subKey, const char16_t *value, uint32_t flags, void *type, void *data, _Inout_ uint32_t *size)');
+  const closeKey = advapi.func('int32_t __stdcall RegCloseKey(intptr_t key)');
+  const CURRENT_USER = -2147483647; // HKEY_CURRENT_USER, sign-extended like the Windows headers do
+  function subkeys(path) {
+    const handle = [0];
+    if (openKey(CURRENT_USER, path, 0, 0x20019 /* KEY_READ */, handle) !== 0) return [];
+    try {
+      const names = [];
+      for (let index = 0; index < 2000; index++) {
+        const buffer = new Uint16Array(512), length = [buffer.length];
+        if (enumKey(handle[0], index, buffer, length, null, null, null, null) !== 0) break;
+        names.push(String.fromCharCode(...buffer.subarray(0, length[0])));
+      }
+      return names;
+    } finally { closeKey(handle[0]); }
+  }
+  function lastUse(path, name, value) {
+    const data = Buffer.alloc(8), size = [8];
+    return getValue(CURRENT_USER, `${path}\\${name}`, value, 0x40 /* RRF_RT_REG_QWORD */, null, data, size) === 0 ? data.readBigUInt64LE(0) : null;
+  }
+  // Apps holding the microphone right now, as Windows tracks them for its privacy indicator:
+  // a started use without a stop time. Shopot's own dictation is left out.
+  function micUsers() {
+    const self = process.execPath.toLowerCase(), users = [];
+    for (const packaged of [true, false]) {
+      const path = packaged ? MICROPHONE_KEY : `${MICROPHONE_KEY}\\NonPackaged`;
+      for (const key of subkeys(path)) {
+        if (packaged && key === 'NonPackaged') continue;
+        const start = lastUse(path, key, 'LastUsedTimeStart');
+        if (!start || lastUse(path, key, 'LastUsedTimeStop') !== 0n) continue;
+        const file = packaged ? key : key.replace(/#/g, '\\');
+        if (file.toLowerCase() === self) continue;
+        const base = file.split('\\').pop();
+        const name = packaged ? (PACKAGED_APP_NAMES.find(([prefix]) => key.startsWith(prefix))?.[1] || key.split('_')[0])
+          : WINDOWS_APP_NAMES[base.toLowerCase()] || base.replace(/\.exe$/i, '');
+        users.push({id: packaged ? key.toLowerCase() : base.toLowerCase(), name, since: Number(start / 10000n - 11644473600000n)});
+      }
+    }
+    return users;
+  }
   // The program behind a window, for per-app text settings. Unknown (null) is always acceptable.
   function appFor(pid) {
     try {
@@ -49,7 +98,7 @@ function windowsBackend(koffi) {
   }
   const key = (wVk, up = false) => ({type: 1, u: {ki: {wVk, wScan: 0, dwFlags: up ? 2 : 0, time: 0, dwExtraInfo: 0}}});
   return {
-    capture, appFor, release() {}, permitted: () => true,
+    capture, appFor, micUsers, release() {}, permitted: () => true,
     sameTarget(target) {
       const now = capture();
       if (!now || now.hwnd !== target.hwnd || now.pid !== target.pid) return false;

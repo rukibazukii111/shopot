@@ -23,6 +23,7 @@
   <main class="app-main">
     <div class="banners">
       <div id="error-banner" class="banner banner-error" role="alert" hidden><span class="banner-icon" data-icon="alert"></span><span id="error-text" class="banner-text"></span><button id="dismiss-error" class="icon-button" aria-label="Закрыть сообщение"><span data-icon="x"></span></button></div>
+      <div id="meeting-banner" class="banner banner-meeting" role="status" hidden><span class="banner-icon"><span class="rec-dot"></span></span><div class="banner-text"><strong id="meeting-title">Идёт запись созвона</strong><p id="meeting-detail"></p></div><div class="banner-actions"><button id="meeting-stop" class="button">Остановить запись</button></div></div>
       <div id="recovery-banner" class="banner" role="status" hidden><span class="banner-icon" data-icon="refresh"></span><div class="banner-text"><strong id="recovery-title"></strong><p id="recovery-detail"></p></div><div class="banner-actions"><button id="retry-recording" class="button">Повторить</button><button id="delete-recording" class="button-ghost danger">Удалить</button></div></div>
     </div>
 
@@ -38,6 +39,7 @@
           <div class="recorder-actions">
             <button id="record-button" class="button-primary"><span data-icon="mic"></span><span id="record-label">Начать диктовку</span></button>
             <button id="import-button" class="button"><span data-icon="upload"></span>Открыть запись</button>
+            <button id="meeting-button" class="button" hidden><span data-icon="users"></span>Записать созвон</button>
             <button id="cancel-button" class="button" hidden>Отменить<kbd>Esc</kbd></button>
             <span id="record-hint" class="recorder-hint">Аудио или видео, до 100 МБ</span>
           </div>
@@ -161,6 +163,10 @@
           <div class="settings-row">
             <label class="setting-label" for="remove-fillers">Убирать звуки-заполнители</label>
             <div class="setting-control inline"><span class="switch"><input type="checkbox" id="remove-fillers" role="switch"><span></span></span><p class="help">Протяжные «ааа», «э-э», «мм» из речи не попадают в текст. Слова, сокращения и единицы измерения остаются. В режиме «Исходный результат» не применяется.</p></div>
+          </div>
+          <div class="settings-row" id="meeting-row" hidden>
+            <label class="setting-label" for="meeting-offers">Предлагать запись созвонов</label>
+            <div class="setting-control"><div class="setting-control inline"><span class="switch"><input type="checkbox" id="meeting-offers" role="switch"><span></span></span><p class="help">Когда Discord, Zoom, Telegram или браузер займут микрофон, Шёпот предложит записать созвон. Твой голос и голоса собеседников пишутся отдельно, расшифровка появится в истории. Предупреждай собеседников о записи.</p></div><div id="meeting-ignore" class="chips meeting-ignore" hidden></div></div>
           </div>
           <div class="settings-row">
             <label class="setting-label" for="keep-audio">Хранить аудио в истории</label>
