@@ -390,6 +390,9 @@ textarea.input { height: auto; padding: 10px 12px 26px; resize: none; line-heigh
 .badge-info { padding: 2px 8px; border-radius: 4px; background: var(--blue-soft); font-size: 12px; letter-spacing: .4px; color: var(--blue); }
 .model-sub { font-size: 13px; color: var(--mute); }
 .model-desc { margin: 8px 0 0; line-height: 1.6; color: var(--body); text-wrap: pretty; }
+.model-warning { margin: 10px 0 0; display: flex; align-items: flex-start; gap: 8px; font-size: 13px; line-height: 1.5; color: var(--yellow); text-wrap: pretty; }
+.model-warning svg { width: 14px; height: 14px; flex-shrink: 0; margin-top: 3px; }
+.button-outline.confirm, .button-outline.confirm:hover:enabled { border-color: var(--yellow); color: var(--yellow); }
 .model-meta { margin-top: 10px; display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--mute); }
 .model-meta b { font-family: var(--mono); font-weight: 400; color: var(--body); }
 .model-progress { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }

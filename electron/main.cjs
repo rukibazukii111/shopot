@@ -1,5 +1,6 @@
 const {app, BrowserWindow, ipcMain, dialog, clipboard, globalShortcut, session, Tray, Menu, nativeImage, nativeTheme, powerSaveBlocker, screen, systemPreferences} = require('electron');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const {pathToFileURL} = require('node:url');
 const crypto = require('node:crypto');
@@ -27,7 +28,7 @@ function trusted(event) {
 }
 function ipc(name, handler) { ipcMain.handle(name, (event, value) => { trusted(event); return handler(value); }); }
 function pastePermission() { return process.platform !== 'darwin' || systemPreferences.isTrustedAccessibilityClient(false); }
-function snapshot() { return {...store.data, engine: worker.status, engineError, busy, hotkeyRegistered, nativeAvailable, pastePermission: pastePermission(), platform: process.platform}; }
+function snapshot() { return {...store.data, engine: worker.status, engineError, busy, hotkeyRegistered, nativeAvailable, pastePermission: pastePermission(), platform: process.platform, totalMemory: os.totalmem()}; }
 function modelId(id) { if (!MODEL_IDS.includes(id)) throw new Error('Неизвестная модель'); return id; }
 function textValue(value) { if (typeof value !== 'string' || value.length > 200000) throw new Error('Недопустимый текст'); return value; }
 function entryFor(id) { const entry = store.data.history.find(e => e.id === id); if (!entry) throw new Error('Запись не найдена'); return entry; }

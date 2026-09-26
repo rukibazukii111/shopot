@@ -1,5 +1,7 @@
 // Isolated UI harness: production IPC/controller, fake ASR, actual OS input backend.
 const {globalShortcut} = require('electron');
+// Tests pick the machine size: warnings for heavy models depend on it.
+if (process.env.SHOPOT_TEST_TOTAL_MEMORY) require('node:os').totalmem = () => Number(process.env.SHOPOT_TEST_TOTAL_MEMORY);
 const {Worker} = require('../../electron/worker.cjs');
 const status = {formatter: {name: 'Qwen3-4B', size: '2,4 ГБ', supported: true, installed: false}, models: [{id: 'gigaam', installed: true, languages: ['ru']}, {id: 'turbo', installed: true, languages: ['ru', 'en', 'auto']}], device: 'cpu', computeType: 'int8'};
 globalThis.__test = {requests: [], notifications: [], nativeCalls: []};

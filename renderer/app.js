@@ -43,7 +43,9 @@ const modelInfo = {
   turbo: {title: 'Точная', icon: 'target', subtitle: 'Whisper large-v3 turbo', size: '1,6 ГБ', text: 'Лучше со сленгом и терминами, понимает английский. Медленнее: несколько секунд даже на короткую фразу.'},
   'large-v3': {title: 'Полная', icon: 'database', subtitle: 'Whisper large-v3', size: '3,1 ГБ', text: 'Полная модель для сравнения качества. Нужно больше памяти и времени.'},
 };
-const state = {settings: {}, dictionary: [], history: [], pendingRecordings: [], engine: null, page: 'dictation', phase: 'idle', operation: 0, hotkeyRegistered: false, selected: null, download: null, flash: null};
+// Measured peaks of the Whisper models; on an 8 GB machine they compete with the browser and the system.
+const heavyModels = {turbo: 'При загрузке модели нужно до 1,9 ГБ, остальные программы могут тормозить.', 'large-v3': 'Модели нужно около 3,3 ГБ, система может зависать.'};
+const state = {settings: {}, dictionary: [], history: [], pendingRecordings: [], engine: null, page: 'dictation', phase: 'idle', operation: 0, hotkeyRegistered: false, selected: null, download: null, flash: null, confirmModel: null, totalMemory: 0};
 let recorder, stream, audioContext, analyser, raf, recordingTimer, startedAt, recordingCanceled = false;
 let editingWord = null, wordAliases = [], toastTimer, flashTimer, blobUrls = [], contextDirty = false, captureId = null;
 const drafts = new Map();
@@ -63,7 +65,7 @@ function showError(error) { $('#error-text').textContent = (error.message || Str
 async function guard(action) { try { return await action(); } catch (error) { showError(error); } }
 function page(name) {
   if (!(name in names)) return;
-  if (name !== state.page) { clearTimeout(toastTimer); $('#toast').hidden = true; }
+  if (name !== state.page) { clearTimeout(toastTimer); $('#toast').hidden = true; state.confirmModel = null; }
   state.page = name;
   $$('.page').forEach(el => el.hidden = el.id !== `page-${name}`);
   $$('.nav-item').forEach(el => {
@@ -76,6 +78,14 @@ function page(name) {
   if (name === 'models') renderModels();
 }
 function isBusy() { return state.phase !== 'idle'; }
+function formatBytes(bytes) {
+  const gb = bytes / 1024 ** 3;
+  return gb >= 1 ? `${(Math.round(gb * 10) / 10).toLocaleString('ru-RU')} ГБ` : `${Math.round(bytes / 1024 ** 2)} МБ`;
+}
+function memoryRisk(id) {
+  const small = state.totalMemory > 0 && state.totalMemory < 9e9;
+  return small && heavyModels[id] ? `На этом компьютере ${formatBytes(state.totalMemory)} памяти. ${heavyModels[id]}` : '';
+}
 function installed() { return Boolean(state.engine?.models?.find(m => m.id === state.settings.model)?.installed); }
 function modelSize(id) { return state.engine?.models?.find(m => m.id === id)?.size || modelInfo[id]?.size || ''; }
 function duration(seconds) { const s = Math.max(0, Math.round(seconds || 0)); return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; }
@@ -100,8 +110,10 @@ function updateEngine() {
   const id = state.settings.model, info = modelInfo[id] || modelInfo.gigaam, ready = installed();
   $('#active-model').textContent = modelNames[id] || modelNames.gigaam;
   $('#active-model-icon').innerHTML = icon(info.icon);
-  $('#active-model-state').textContent = !state.engine ? 'Проверяем модель' : ready ? `${info.title}, на компьютере` : ['Нужно скачать', modelSize(id)].filter(Boolean).join(', ');
-  $('#active-model-state').classList.toggle('warn', Boolean(state.engine) && !ready);
+  const heavy = Boolean(memoryRisk(id));
+  $('#active-model-state').textContent = !state.engine ? 'Проверяем модель' : !ready ? ['Нужно скачать', modelSize(id)].filter(Boolean).join(', ')
+    : heavy ? `${info.title}, тяжёлая для ${formatBytes(state.totalMemory)} памяти` : `${info.title}, на компьютере`;
+  $('#active-model-state').classList.toggle('warn', Boolean(state.engine) && (!ready || heavy));
   refreshControls(); renderModels();
 }
 const phaseText = {
@@ -341,6 +353,13 @@ function rawHtml(entry) {
     return `${space}<mark class="uncertain" title="Оценка модели ${Math.round(w.probability*100)}%. Это не вероятность правильного слова.">${escapeHtml(word)}</mark>`;
   }).join('') : escapeHtml(entry.rawText);
 }
+function recognitionLabel(entry) {
+  return secondsLabel(entry.elapsed) + (entry.loadElapsed >= 0.1 ? `, из них загрузка модели ${secondsLabel(entry.loadElapsed)}` : '');
+}
+// Peak RAM of the engine for this dictation (Windows: working set, macOS: the Activity Monitor footprint).
+function memoryLabel(entry) {
+  return `пик ${formatBytes(entry.memoryPeak)}` + (state.totalMemory ? ` из ${formatBytes(state.totalMemory)}` : '');
+}
 function rawNote(entry) { return doubtsOf(entry) ? 'Жёлтым отмечены слова, в которых модель не уверена. Исходный результат сохранён без правок.' : 'Исходный результат сохранён без правок. Пунктуацию расставила сама модель.'; }
 function replacementsHtml(entry) {
   if (!entry.replacements?.length) return '';
@@ -401,7 +420,7 @@ function renderHistoryDetail() {
     <div class="detail-head"><h1>${escapeHtml(dateLabel(entry.createdAt))}</h1><span class="detail-source">${escapeHtml(entry.source)}</span>${tabsHtml('detail', entry)}</div>
     <div class="detail-body"><div class="detail-panel" data-detail-panel="text"><textarea class="history-editor" data-entry="${id}" aria-label="Текст диктовки" spellcheck="false">${escapeHtml(text)}</textarea>${replacementsHtml(entry)}</div>
     <div class="detail-panel" data-detail-panel="raw" hidden><p class="history-raw">${rawHtml(entry)}</p><p class="review-note">${rawNote(entry)}</p></div><div class="audio-slot"></div>
-    <dl class="meta-list"><dt>Длительность</dt><dd class="mono">${duration(entry.duration)}</dd><dt>Текст</dt><dd>${count} ${pluralWords(count)}</dd><dt>Распознавание</dt><dd>${secondsLabel(entry.elapsed)}</dd><dt>Модель</dt><dd>${escapeHtml(modelNames[entry.model] || entry.model)}</dd><dt>Режим</dt><dd>${escapeHtml(modes[entry.mode] || '')}</dd><dt>Источник</dt><dd>${escapeHtml(entry.source)}</dd></dl></div>
+    <dl class="meta-list"><dt>Длительность</dt><dd class="mono">${duration(entry.duration)}</dd><dt>Текст</dt><dd>${count} ${pluralWords(count)}</dd><dt>Распознавание</dt><dd>${recognitionLabel(entry)}</dd>${entry.memoryPeak ? `<dt>Память</dt><dd>${memoryLabel(entry)}</dd>` : ''}<dt>Модель</dt><dd>${escapeHtml(modelNames[entry.model] || entry.model)}</dd><dt>Режим</dt><dd>${escapeHtml(modes[entry.mode] || '')}</dd><dt>Источник</dt><dd>${escapeHtml(entry.source)}</dd></dl></div>
     <div class="action-bar"><span class="action-note">${icon('edit')}Правки в тексте сохраняются сами</span><span class="spacer"></span>${entryActions(entry, true)}</div></div>`;
 }
 function selectEntry(id, focus = false) {
@@ -484,20 +503,24 @@ function addAliases(text) {
 }
 
 function modelCard(card) {
+  // A heavy model on a small machine takes a second click: the first one only asks.
+  const label = card.confirm ? (card.installed ? 'Всё равно выбрать' : 'Всё равно скачать') : card.installed ? card.selectLabel : `${icon('download')}Скачать`;
   const action = card.downloading ? '<button class="button-outline" id="cancel-download">Остановить</button>'
     : card.installed && card.selected ? `<span class="badge-success" ${card.attr}>${icon('check')}Используется</span>`
-    : `<button class="button-outline" ${card.attr} ${card.busy ? 'disabled' : ''}>${card.installed ? card.selectLabel : `${icon('download')}Скачать`}</button>`;
+    : `<button class="button-outline${card.confirm ? ' confirm' : ''}" ${card.attr} ${card.busy ? 'disabled' : ''}>${label}</button>`;
   const meta = card.downloading
     ? '<div class="model-progress"><progress id="download-progress"></progress><div class="model-progress-text"><span id="download-detail">Подключаемся…</span><span id="download-percent"></span></div></div>'
     : `<div class="model-meta">${card.note ? `<span>${card.note}</span>` : `<b>${escapeHtml(card.size)}</b><span>${card.installed ? 'на компьютере' : card.source}</span>`}</div>`;
-  return `<article class="model-card${card.installed && card.selected ? ' selected' : ''}"><span class="tile">${icon(card.icon)}</span><div class="model-card-text"><div class="model-title"><h2>${card.title}</h2>${card.tag ? `<span class="badge-info">${card.tag}</span>` : ''}</div><span class="model-sub">${card.subtitle}</span><p class="model-desc">${card.text}</p>${meta}</div><div class="model-action">${action}</div></article>`;
+  const warning = card.warning ? `<p class="model-warning">${icon('alert')}<span>${escapeHtml(card.warning)}</span></p>` : '';
+  return `<article class="model-card${card.installed && card.selected ? ' selected' : ''}"><span class="tile">${icon(card.icon)}</span><div class="model-card-text"><div class="model-title"><h2>${card.title}</h2>${card.tag ? `<span class="badge-info">${card.tag}</span>` : ''}</div><span class="model-sub">${card.subtitle}</span><p class="model-desc">${card.text}</p>${warning}${meta}</div><div class="model-action">${action}</div></article>`;
 }
 function renderModels() {
   const busy = isBusy() || !state.engine;
   $('#models-list').innerHTML = ['gigaam', 'small', 'turbo', 'large-v3'].map(id => {
     const model = state.engine?.models?.find(m => m.id === id);
     return modelCard({...modelInfo[id], size: model?.size || modelInfo[id].size, installed: Boolean(model?.installed), selected: state.settings.model === id,
-      downloading: state.download?.id === id, busy, attr: `data-model="${id}"`, selectLabel: 'Выбрать', source: 'загрузка с Hugging Face'});
+      downloading: state.download?.id === id, busy, attr: `data-model="${id}"`, selectLabel: 'Выбрать', source: 'загрузка с Hugging Face',
+      warning: memoryRisk(id), confirm: state.confirmModel === id});
   }).join('');
   const formatter = state.engine?.formatter, unsupported = formatter?.supported === false;
   $('#formatter-list').innerHTML = modelCard({icon: 'sparkles', title: 'Умное оформление', subtitle: 'Qwen3-4B, локальная нейросеть',
@@ -531,6 +554,8 @@ async function selectFormatter() {
 }
 async function selectModel(id) {
   if (isBusy()) return;
+  if (memoryRisk(id) && state.confirmModel !== id) { state.confirmModel = id; renderModels(); return; }
+  state.confirmModel = null;
   const model = state.engine.models.find(m => m.id === id);
   // Russian-only models switch the language along with the model.
   const changes = {model: id, ...(model.languages?.includes(state.settings.language) === false ? {language: 'ru'} : {})};

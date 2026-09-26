@@ -27,6 +27,7 @@ os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 import llm
+import memory
 from text_processing import (format_transcript, join_segments, layout_text, pause_sentences, split_sentences,
                              strip_hesitations, vocabulary_prompt)
 
@@ -72,6 +73,12 @@ FORMATTER = {
 # Measured: above 4 threads Whisper gains <15% but starves the rest of the system (laptops freeze).
 THREADS = max(1, min(4, (os.cpu_count() or 4) // 2))
 IDLE_UNLOAD_SECONDS = 10 * 60
+# 8 GB machines get the RAM back sooner; the hotkey preloads the model again while the user speaks.
+LOW_MEMORY_IDLE_UNLOAD_SECONDS = 3 * 60
+# An idle model is also dropped as soon as the machine runs short of memory, checked this often,
+IDLE_CHECK_SECONDS = 15
+# starting this long after the last dictation, so back-to-back dictations keep the model loaded.
+PRESSURE_GRACE_SECONDS = 30
 _output_lock = threading.Lock()
 
 
@@ -107,6 +114,10 @@ class Engine:
         # Requests with id <= this value were canceled, including ones still queued.
         self.canceled_through = 0
         self.idle_timer = None
+        self.idle_since = 0.0
+        self.idle_unload_seconds = LOW_MEMORY_IDLE_UNLOAD_SECONDS if memory.is_low_memory() else IDLE_UNLOAD_SECONDS
+        # Peak RAM of the last model load; it counts toward the dictation the model was loaded for.
+        self.load_peak = 0
         self.formatter_dir = self.data_dir / "formatter"
         self.formatter = None
 
@@ -293,7 +304,12 @@ class Engine:
         with self.model_lock:
             self.cancel_idle_unload()
             try:
-                return self._transcribe(request, key, audio_path, language, entries, mode, request_id)
+                with memory.PeakSampler() as sampler:
+                    result = self._transcribe(request, key, audio_path, language, entries, mode, request_id)
+                # Shown in history: what this dictation cost in RAM, including a load at the hotkey (preload).
+                result["memoryPeak"] = max(sampler.peak, self.load_peak) or None
+                self.load_peak = 0
+                return result
             finally:
                 self.schedule_idle_unload()
 
@@ -308,18 +324,22 @@ class Engine:
             emit({"event": "progress", "id": request_id, "stage": "loading",
                   "message": "Загружаем модель в память…"})
             self.unload()
-            if MODELS[key]["engine"] == "gigaam":
-                import onnx_asr
-                import onnxruntime
-                options = onnxruntime.SessionOptions()
-                options.intra_op_num_threads = THREADS
-                options.inter_op_num_threads = 1
-                self.model = onnx_asr.load_model("gigaam-v3-e2e-rnnt", self.model_path(key),
-                                                 quantization="int8", sess_options=options)
-            else:
-                from faster_whisper import WhisperModel
-                self.model = WhisperModel(str(self.model_path(key)), device="cpu", compute_type="int8",
-                                          cpu_threads=THREADS, local_files_only=True)
+            with memory.PeakSampler() as sampler:
+                if MODELS[key]["engine"] == "gigaam":
+                    import onnx_asr
+                    import onnxruntime
+                    # Measured: turning off the CPU arena or memory patterns lowers the peak by under 3%
+                    # and slows long recordings by 15%, so the defaults stay.
+                    options = onnxruntime.SessionOptions()
+                    options.intra_op_num_threads = THREADS
+                    options.inter_op_num_threads = 1
+                    self.model = onnx_asr.load_model("gigaam-v3-e2e-rnnt", self.model_path(key),
+                                                     quantization="int8", sess_options=options)
+                else:
+                    from faster_whisper import WhisperModel
+                    self.model = WhisperModel(str(self.model_path(key)), device="cpu", compute_type="int8",
+                                              cpu_threads=THREADS, local_files_only=True)
+            self.load_peak = max(self.load_peak, sampler.peak)
             self.loaded_key = key
             return time.monotonic() - started
 
@@ -354,12 +374,31 @@ class Engine:
             self.idle_timer = None
 
     def schedule_idle_unload(self):
-        # Free RAM between dictations; preload on the hotkey hides the reload cost.
+        # Free RAM between dictations: after a while, or at once when the machine runs short of memory.
+        # Unloading gives the memory back to the system (measured), and the hotkey preload hides the reload.
         self.cancel_idle_unload()
-        timer = threading.Timer(IDLE_UNLOAD_SECONDS, lambda: self._idle_unload(timer))
+        self.idle_since = time.monotonic()
+        self._arm_idle_check(min(PRESSURE_GRACE_SECONDS, self.idle_unload_seconds))
+
+    def _arm_idle_check(self, delay):
+        timer = threading.Timer(delay, lambda: self._idle_check(timer))
         timer.daemon = True
         self.idle_timer = timer
         timer.start()
+
+    def _idle_check(self, timer):
+        with self.model_lock:
+            # A request may have run while this timer waited for the lock.
+            if self.idle_timer is not timer:
+                return
+            if self.model is None and self.formatter is None:
+                self.idle_timer = None
+                return
+            idle = time.monotonic() - self.idle_since
+            if idle >= self.idle_unload_seconds or memory.memory_pressure() in ("warn", "critical"):
+                self._idle_unload(timer)
+            else:
+                self._arm_idle_check(min(IDLE_CHECK_SECONDS, self.idle_unload_seconds - idle))
 
     def _idle_unload(self, timer):
         with self.model_lock:
