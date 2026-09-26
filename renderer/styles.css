@@ -214,6 +214,13 @@ mark.uncertain { padding: 0 3px; border-radius: 4px; background: var(--yellow-so
 .review-note { margin: 0; font-size: 12px; line-height: 1.5; letter-spacing: .4px; color: var(--mute); }
 .replacements { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; letter-spacing: .4px; color: var(--mute); }
 .chip-static { padding: 2px 6px; border-radius: 4px; border: 1px solid var(--line); background: var(--card); color: var(--body); }
+.suggestions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 6px 6px 6px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); font-size: 13px; color: var(--body); }
+.suggestions-label { display: inline-flex; align-items: center; gap: 6px; color: var(--blue); }
+.suggestions-label svg { width: 14px; height: 14px; }
+.suggestion { display: inline-flex; align-items: center; gap: 2px; }
+.suggestion b { font-weight: 500; color: var(--ink); }
+.suggestion .link-button { height: 28px; color: var(--blue); }
+.suggestions .icon-button { margin-left: auto; }
 .result-foot { height: 52px; flex-shrink: 0; display: flex; align-items: center; gap: 16px; padding: 0 12px 0 20px; border-top: 1px solid var(--line-soft); }
 .metric { font-size: 13px; color: var(--mute); white-space: nowrap; }
 .metric b { font-family: var(--mono); font-weight: 400; color: var(--body); }

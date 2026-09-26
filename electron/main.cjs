@@ -8,6 +8,7 @@ const {Store, MODEL_IDS, settingsFor} = require('./store.cjs');
 const {Worker} = require('./worker.cjs');
 const {PasteService, clipboardText} = require('./paste.cjs');
 const {createNativeBackend} = require('./native-input.cjs');
+const {suggestCorrections} = require('./corrections.cjs');
 
 const root = path.resolve(__dirname, '..');
 const dataDir = path.resolve(process.env.SHOPOT_DATA_DIR || (app.isPackaged ? path.join(app.getPath('appData'), 'Shopot') : path.join(root, '.local')));
@@ -338,7 +339,12 @@ else {
       if (result.canceled) return false;
       fs.writeFileSync(result.filePath, text, 'utf8'); return true;
     });
-    ipc('update-entry', value => { const entry = entryFor(value.id); entry.text = textValue(value.text); store.save(); return entry; });
+    ipc('update-entry', value => {
+      const entry = entryFor(value.id), before = entry.text;
+      entry.text = textValue(value.text); store.save();
+      // The user's own fix of a misheard word is a dictionary entry waiting to happen.
+      return {entry, suggestions: suggestCorrections(before, entry.text, store.data.dictionary)};
+    });
     ipc('delete-entry', async id => {
       const entry = entryFor(id);
       const answer = await dialog.showMessageBox(window, {type: 'question', message: 'Удалить эту диктовку?',

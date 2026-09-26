@@ -45,6 +45,8 @@ npm run test:packaged             # smoke-tests the packaged app
 4. `runTranscription()` writes the audio to `audioDir` and **journals it in `pendingRecordings` before inference**, so a crash leaves it available to retry.
 5. The result is added to history and handed to `PasteService.deliver()`.
 
+When the user edits a transcript (`update-entry`), `electron/corrections.cjs` diffs the words before and after and returns up to three dictionary suggestions (a 1–3 word substitution becomes a replacement; a case-only fix with an inner capital, such as iPhone, becomes a word; punctuation, numbers, insertions and what the dictionary already knows are skipped). The renderer shows them under the text, and nothing is added without a click.
+
 A monotonically increasing `job` counter invalidates stale results after a cancel or restart. Late events must not reopen the widget or paste. On startup, any orphaned audio files are recovered into `pendingRecordings`.
 
 **UI.** The interface is dark only (`nativeTheme.themeSource = 'dark'`). `renderer/styles.css` holds the colour and font tokens on `:root`: colour appears only for state (red recording, green done, yellow attention, blue recommendation). The main window has top tabs (`data-page`), and history and dictionary are list-plus-detail panes; the dictionary page switches between words and snippets (`data-dictionary-tab`). On machines under 9 GB of RAM (`totalMemory` in the snapshot), the Whisper turbo and large-v3 cards warn about memory and need a second click to select or download. The page CSP (`style-src 'self'`) blocks inline `style` attributes, so dynamic sizes such as waveform bars and progress are set through the CSSOM.

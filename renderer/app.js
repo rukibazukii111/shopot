@@ -45,7 +45,7 @@ const modelInfo = {
 };
 // Measured peaks of the Whisper models; on an 8 GB machine they compete with the browser and the system.
 const heavyModels = {turbo: 'При загрузке модели нужно до 1,9 ГБ, остальные программы могут тормозить.', 'large-v3': 'Модели нужно около 3,3 ГБ, система может зависать.'};
-const state = {settings: {}, dictionary: [], snippets: [], profiles: [], dictionaryTab: 'words', history: [], pendingRecordings: [], engine: null, page: 'dictation', phase: 'idle', operation: 0, hotkeyRegistered: false, selected: null, download: null, flash: null, confirmModel: null, totalMemory: 0};
+const state = {settings: {}, dictionary: [], snippets: [], profiles: [], suggestions: new Map(), dictionaryTab: 'words', history: [], pendingRecordings: [], engine: null, page: 'dictation', phase: 'idle', operation: 0, hotkeyRegistered: false, selected: null, download: null, flash: null, confirmModel: null, totalMemory: 0};
 let recorder, stream, audioContext, analyser, raf, recordingTimer, startedAt, recordingCanceled = false;
 let editingWord = null, editingSnippet = null, wordAliases = [], toastTimer, flashTimer, blobUrls = [], contextDirty = false, captureId = null;
 const drafts = new Map();
@@ -404,6 +404,33 @@ function replacementsHtml(entry) {
     + group(snippets, 'Сниппет', 'Сниппеты', escapeHtml) + group(commands, 'Команда', 'Команды', escapeHtml);
   return html ? `<div class="replacements">${html}</div>` : '';
 }
+// Offers to remember the user's fixes: «гитхаб» → «GitHub» becomes a dictionary replacement.
+function suggestionsHtml(id) {
+  const suggestions = state.suggestions.get(id) || [];
+  if (!suggestions.length) return '';
+  return `<span class="suggestions-label">${icon('book')}В словарь?</span>${suggestions.map((s, i) => `<span class="suggestion"><span>${s.alias ? `${escapeHtml(s.alias)} → ` : ''}<b>${escapeHtml(s.word)}</b></span><button type="button" class="link-button" data-add-suggestion="${i}">Добавить</button></span>`).join('')}<button type="button" class="icon-button" data-dismiss-suggestions aria-label="Не добавлять" title="Не добавлять">${icon('x')}</button>`;
+}
+function suggestionsSlot(entry) {
+  const html = suggestionsHtml(entry.id);
+  return `<div class="suggestions" data-suggestions="${escapeHtml(entry.id)}"${html ? '' : ' hidden'}>${html}</div>`;
+}
+function renderSuggestions(id) {
+  $$(`[data-suggestions="${CSS.escape(id)}"]`).forEach(el => { el.innerHTML = suggestionsHtml(id); el.hidden = !el.innerHTML; });
+}
+async function addSuggestion(id, index) {
+  const suggestion = state.suggestions.get(id)?.[index];
+  if (!suggestion) return;
+  const fold = value => value.toLocaleLowerCase('ru').replace(/ё/g, 'е');
+  const known = state.dictionary.find(e => fold(e.word) === fold(suggestion.word));
+  const entries = known
+    ? state.dictionary.map(e => e === known ? {...e, aliases: suggestion.alias ? [...e.aliases, suggestion.alias] : e.aliases} : e)
+    : [...state.dictionary, {id: crypto.randomUUID(), word: suggestion.word, aliases: suggestion.alias ? [suggestion.alias] : []}];
+  state.dictionary = await api.dictionary(entries);
+  const rest = state.suggestions.get(id).filter((_, i) => i !== index);
+  if (rest.length) state.suggestions.set(id, rest); else state.suggestions.delete(id);
+  renderSuggestions(id); renderDictionary();
+  toast(`«${suggestion.word}» теперь в словаре`);
+}
 function tabsHtml(kind, entry) {
   const doubts = doubtsOf(entry);
   return `<div class="pill-tabs"><button class="pill-tab active" data-${kind}-tab="text">Текст</button><button class="pill-tab" data-${kind}-tab="raw">Исходник${doubts ? `<span class="doubt-count">${doubts}</span>` : ''}</button></div>`;
@@ -418,7 +445,7 @@ function latestCard(entry) {
   const text = entryText(entry), count = wordCount(text), id = escapeHtml(entry.id);
   return `<article class="result-card" data-entry="${id}">
     <div class="latest-head"><h2>Последняя диктовка</h2><span class="latest-date">${escapeHtml(dateLabel(entry.createdAt))}</span>${tabsHtml('result', entry)}<span class="head-divider"></span><button class="link-button" id="all-history">Вся история${icon('arrow')}</button></div>
-    <div class="result-body"><div class="result-panel" data-result-panel="text"><textarea class="transcript-editor" data-entry="${id}" aria-label="Текст диктовки" spellcheck="false">${escapeHtml(text)}</textarea>${replacementsHtml(entry)}</div>
+    <div class="result-body"><div class="result-panel" data-result-panel="text"><textarea class="transcript-editor" data-entry="${id}" aria-label="Текст диктовки" spellcheck="false">${escapeHtml(text)}</textarea>${replacementsHtml(entry)}${suggestionsSlot(entry)}</div>
     <div class="result-panel" data-result-panel="raw" hidden><p class="raw-text">${rawHtml(entry)}</p><p class="review-note">${rawNote(entry)}</p></div><div class="audio-slot"></div></div>
     <div class="result-foot"><span class="metric"><b>${duration(entry.duration)}</b> аудио</span><span class="metric"><b>${count}</b> ${pluralWords(count)}</span><span class="metric"><b>${secondsLabel(entry.elapsed)}</b> на распознавание</span><div class="result-actions">${entryActions(entry, false)}</div></div></article>`;
 }
@@ -457,7 +484,7 @@ function renderHistoryDetail() {
   const text = entryText(entry), count = wordCount(text), id = escapeHtml(entry.id);
   $('#history-detail').innerHTML = `<div class="detail" data-entry="${id}">
     <div class="detail-head"><h1>${escapeHtml(dateLabel(entry.createdAt))}</h1><span class="detail-source">${escapeHtml(entry.source)}</span>${tabsHtml('detail', entry)}</div>
-    <div class="detail-body"><div class="detail-panel" data-detail-panel="text"><textarea class="history-editor" data-entry="${id}" aria-label="Текст диктовки" spellcheck="false">${escapeHtml(text)}</textarea>${replacementsHtml(entry)}</div>
+    <div class="detail-body"><div class="detail-panel" data-detail-panel="text"><textarea class="history-editor" data-entry="${id}" aria-label="Текст диктовки" spellcheck="false">${escapeHtml(text)}</textarea>${replacementsHtml(entry)}${suggestionsSlot(entry)}</div>
     <div class="detail-panel" data-detail-panel="raw" hidden><p class="history-raw">${rawHtml(entry)}</p><p class="review-note">${rawNote(entry)}</p></div><div class="audio-slot"></div>
     <dl class="meta-list"><dt>Длительность</dt><dd class="mono">${duration(entry.duration)}</dd><dt>Текст</dt><dd>${count} ${pluralWords(count)}</dd><dt>Распознавание</dt><dd>${recognitionLabel(entry)}</dd>${entry.memoryPeak ? `<dt>Память</dt><dd>${memoryLabel(entry)}</dd>` : ''}<dt>Модель</dt><dd>${escapeHtml(modelNames[entry.model] || entry.model)}</dd><dt>Режим</dt><dd>${escapeHtml(modes[entry.mode] || '')}</dd><dt>Источник</dt><dd>${escapeHtml(entry.source)}</dd>${entry.app ? `<dt>Приложение</dt><dd>${escapeHtml(entry.app.name)}${entry.app.profile ? ' · свои настройки' : ''}</dd>` : ''}</dl></div>
     <div class="action-bar"><span class="action-note">${icon('edit')}Правки в тексте сохраняются сами</span><span class="spacer"></span>${entryActions(entry, true)}</div></div>`;
@@ -663,6 +690,10 @@ document.addEventListener('click', event => {
   const word = target.closest('[data-word-id]'); if (word) { openWord(state.dictionary.find(e => e.id === word.dataset.wordId)); return; }
   const snippet = target.closest('[data-snippet-id]'); if (snippet) { openSnippet(state.snippets.find(e => e.id === snippet.dataset.snippetId)); return; }
   const dictionaryTabButton = target.closest('[data-dictionary-tab]'); if (dictionaryTabButton) { dictionaryTab(dictionaryTabButton.dataset.dictionaryTab); return; }
+  const addButton = target.closest('[data-add-suggestion]');
+  if (addButton) { const id = addButton.closest('[data-suggestions]').dataset.suggestions; guard(() => addSuggestion(id, Number(addButton.dataset.addSuggestion))); return; }
+  const dismiss = target.closest('[data-dismiss-suggestions]');
+  if (dismiss) { const id = dismiss.closest('[data-suggestions]').dataset.suggestions; state.suggestions.delete(id); renderSuggestions(id); return; }
   const removeProfile = target.closest('[data-remove-profile]');
   if (removeProfile) { const app = removeProfile.closest('.profile-row').dataset.profile; guard(() => saveProfiles(state.profiles.filter(p => p.app !== app))); return; }
   const remove = target.closest('[data-remove-alias]');
@@ -675,12 +706,13 @@ document.addEventListener('change', event => {
   const target = event.target;
   if (target.matches('.transcript-editor, .history-editor')) guard(async () => {
     const id = target.dataset.entry, text = target.value;
-    const entry = await api.updateEntry(id, text);
+    const {entry, suggestions} = await api.updateEntry(id, text);
     if (drafts.get(id) === text) drafts.delete(id);
     state.history = state.history.map(e => e.id === id ? entry : e);
     $$('.transcript-editor, .history-editor').filter(el => el.dataset.entry === id && el !== target).forEach(el => el.value = text);
     const title = $(`[data-select-entry="${CSS.escape(id)}"] .row-title`);
     if (title) title.textContent = text.replace(/\s+/g, ' ').trim() || 'Пустая диктовка';
+    if (suggestions.length) { state.suggestions.set(id, suggestions); renderSuggestions(id); }
   });
   if (target.matches('input[name="mode"]')) guard(() => saveSettings({mode: target.value}));
   const profileField = target.closest('[data-profile-field]');
