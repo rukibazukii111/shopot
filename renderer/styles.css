@@ -414,6 +414,16 @@ textarea.input { height: auto; padding: 10px 12px 26px; resize: none; line-heigh
 .hardware-note strong { font-weight: 500; letter-spacing: .2px; color: var(--ink); }
 .hardware-note p { margin: 4px 0 0; max-width: 720px; font-size: 13px; line-height: 1.5; color: var(--mute); }
 
+/* Per-app profiles */
+.profiles-head { display: grid; grid-template-columns: minmax(0, 1fr) 220px; align-items: start; gap: 32px; padding: 16px 24px; }
+.profiles-head .help { margin-top: 6px; font-size: 13px; letter-spacing: .1px; }
+.profiles { display: flex; flex-direction: column; }
+.profiles-empty { margin: 0; padding: 12px 24px 18px; font-size: 13px; color: var(--ash); }
+.profile-row { display: grid; grid-template-columns: minmax(0, 1fr) 190px 180px 160px 32px; align-items: center; gap: 12px; padding: 10px 16px 10px 24px; border-top: 1px solid var(--line-soft); }
+.profile-columns { padding-top: 8px; padding-bottom: 8px; font-size: 12px; letter-spacing: .4px; color: var(--mute); }
+.profile-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 500; letter-spacing: .2px; color: var(--ink); }
+.profile-check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--body); white-space: nowrap; cursor: pointer; }
+
 /* Settings */
 .settings { width: min(820px, calc(100% - 48px)); margin: 0 auto; padding: 20px 0 24px; display: flex; flex-direction: column; gap: 16px; }
 .settings-row { display: grid; grid-template-columns: 240px minmax(0, 1fr); column-gap: 32px; padding: 16px 24px; }

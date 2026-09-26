@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('shopot', {
   settings: value => ipcRenderer.invoke('settings', value),
   dictionary: value => ipcRenderer.invoke('dictionary', value),
   snippets: value => ipcRenderer.invoke('snippets', value),
+  profiles: value => ipcRenderer.invoke('profiles', value),
   download: model => ipcRenderer.invoke('download', model),
   beginRecording: () => ipcRenderer.invoke('begin-recording'),
   transcribe: (id, audio) => ipcRenderer.invoke('transcribe', {id, audio}),

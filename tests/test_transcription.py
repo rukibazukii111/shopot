@@ -492,5 +492,16 @@ def test_pipeline_applies_commands_then_snippets_and_leaves_raw_mode_alone(tmp_p
         assert result['rawText'] == spoken
         assert engine.transcribe({**request, 'voiceCommands': False})['text'] == 'Привет. Новый абзац. Пиши на ivan@example.com.'
         assert engine.transcribe({**request, 'mode': 'raw'})['text'] == spoken
+        # A messenger profile: no period after the spoken text.
+        assert engine.transcribe({**request, 'dropFinalPeriod': True})['text'] == 'Привет.\n\nПиши на ivan@example.com'
     finally:
         engine.cancel_idle_unload()
+
+
+@pytest.mark.parametrize('text, expected', [
+    ('Готово.', 'Готово'), ('Раз.\n\n2. Два.', 'Раз.\n\n2. Два'), ('Ждём...', 'Ждём...'),
+    ('Правда?', 'Правда?'), ('Ура!', 'Ура!'), ('', ''), ('Без точки', 'Без точки'),
+])
+def test_drop_final_period_keeps_ellipsis_and_other_marks(text, expected):
+    from text_processing import drop_final_period
+    assert drop_final_period(text) == expected

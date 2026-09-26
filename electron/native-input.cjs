@@ -1,7 +1,33 @@
 // Only OS window identity and the standard paste shortcut cross this boundary.
 // No text is typed as commands and Enter is never generated.
+// Readable names for common Windows programs; anything else shows its executable name.
+const WINDOWS_APP_NAMES = {
+  'chrome.exe': 'Google Chrome', 'msedge.exe': 'Microsoft Edge', 'firefox.exe': 'Firefox', 'browser.exe': 'Яндекс Браузер',
+  'telegram.exe': 'Telegram', 'code.exe': 'VS Code', 'cursor.exe': 'Cursor', 'winword.exe': 'Word', 'excel.exe': 'Excel',
+  'powerpnt.exe': 'PowerPoint', 'outlook.exe': 'Outlook', 'olk.exe': 'Outlook', 'slack.exe': 'Slack', 'discord.exe': 'Discord',
+  'notion.exe': 'Notion', 'obsidian.exe': 'Obsidian', 'notepad.exe': 'Блокнот', 'explorer.exe': 'Проводник',
+  'windowsterminal.exe': 'Терминал', 'claude.exe': 'Claude', 'chatgpt.exe': 'ChatGPT', 'figma.exe': 'Figma',
+};
 function windowsBackend(koffi) {
   const lib = koffi.load('user32.dll');
+  const kernel = koffi.load('kernel32.dll');
+  const openProcess = kernel.func('uintptr_t __stdcall OpenProcess(uint32_t access, int inherit, uint32_t pid)');
+  const closeHandle = kernel.func('int __stdcall CloseHandle(uintptr_t handle)');
+  const imageName = kernel.func('int __stdcall QueryFullProcessImageNameW(uintptr_t process, uint32_t flags, _Out_ uint16_t *name, _Inout_ uint32_t *size)');
+  // The program behind a window, for per-app text settings. Unknown (null) is always acceptable.
+  function appFor(pid) {
+    try {
+      const handle = openProcess(0x1000 /* PROCESS_QUERY_LIMITED_INFORMATION */, 0, pid);
+      if (!handle) return null;
+      try {
+        const buffer = new Uint16Array(1024), size = [buffer.length];
+        if (!imageName(handle, 0, buffer, size)) return null;
+        const file = String.fromCharCode(...buffer.subarray(0, size[0])).split('\\').pop();
+        const id = file.toLowerCase();
+        return {id, name: WINDOWS_APP_NAMES[id] || file.replace(/\.exe$/i, '')};
+      } finally { closeHandle(handle); }
+    } catch { return null; }
+  }
   const foreground = lib.func('uintptr_t __stdcall GetForegroundWindow()');
   const windowThread = lib.func('uint32_t __stdcall GetWindowThreadProcessId(uintptr_t hwnd, _Out_ uint32_t *pid)');
   const Rect = koffi.struct({left: 'int32_t', top: 'int32_t', right: 'int32_t', bottom: 'int32_t'});
@@ -19,11 +45,11 @@ function windowsBackend(koffi) {
     const pid = [0]; const thread = windowThread(hwnd, pid);
     if (!hwnd || !thread || pid[0] === process.pid) return null;
     const info = {cbSize: koffi.sizeof(Gui)};
-    return {hwnd, pid: pid[0], focus: guiInfo(thread, info) ? info.hwndFocus : 0};
+    return {hwnd, pid: pid[0], focus: guiInfo(thread, info) ? info.hwndFocus : 0, app: appFor(pid[0])};
   }
   const key = (wVk, up = false) => ({type: 1, u: {ki: {wVk, wScan: 0, dwFlags: up ? 2 : 0, time: 0, dwExtraInfo: 0}}});
   return {
-    capture, release() {}, permitted: () => true,
+    capture, appFor, release() {}, permitted: () => true,
     sameTarget(target) {
       const now = capture();
       if (!now || now.hwnd !== target.hwnd || now.pid !== target.pid) return false;
@@ -56,9 +82,18 @@ function macBackend(koffi) {
   const setFlags = services.func('void CGEventSetFlags(void *event, uint64_t flags)');
   const post = services.func('void CGEventPost(uint32_t tap, void *event)');
   const focusedAttribute = string(null, 'AXFocusedUIElement', 0x08000100);
-  function frontPid() {
-    const workspace = msg(cls('NSWorkspace'), sel('sharedWorkspace'));
-    return msgInt(msg(workspace, sel('frontmostApplication')), sel('processIdentifier'));
+  // Per-app text settings are optional: if this lookup fails, the app is unknown and paste still works.
+  let msgText = null;
+  try { msgText = objc.func('objc_msgSend', 'const char *', ['void *', 'void *']); } catch { msgText = null; }
+  const frontApp = () => msg(msg(cls('NSWorkspace'), sel('sharedWorkspace')), sel('frontmostApplication'));
+  function frontPid() { return msgInt(frontApp(), sel('processIdentifier')); }
+  function appInfo() {
+    try {
+      const application = frontApp();
+      const text = name => msgText(msg(application, sel(name)), sel('UTF8String'));
+      const id = text('bundleIdentifier');
+      return id ? {id: id.toLowerCase(), name: text('localizedName') || id} : null;
+    } catch { return null; }
   }
   function focused(pid) {
     const application = axApp(pid); const out = [null];
@@ -69,7 +104,7 @@ function macBackend(koffi) {
     // Retain AppKit's library wrapper for the lifetime of this backend.
     appKit,
     permitted: trusted,
-    capture() { const pid = frontPid(); return pid && pid !== process.pid ? {pid, focus: trusted() ? focused(pid) : null} : null; },
+    capture() { const pid = frontPid(); return pid && pid !== process.pid ? {pid, focus: trusted() ? focused(pid) : null, app: msgText ? appInfo() : null} : null; },
     release(target) { if (target?.focus) release(target.focus); },
     sameTarget(target) {
       if (frontPid() !== target.pid) return false;

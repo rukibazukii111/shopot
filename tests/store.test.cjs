@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const {Store, validateDictionary, validateSettings, validateSnippets} = require('../electron/store.cjs');
+const {Store, validateDictionary, validateSettings, validateSnippets, validateProfiles, settingsFor} = require('../electron/store.cjs');
 
 test('saved corrections and original transcription survive reopening', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shopot-store-'));
@@ -73,4 +73,19 @@ test('stores from older versions open with an empty snippet list', () => {
     store.setSnippets([{trigger: 'моя почта', text: 'ivan@example.com'}]);
     assert.equal(new Store(root).data.snippets[0].text, 'ivan@example.com');
   } finally { fs.rmSync(root, {recursive: true, force: true}); }
+});
+test('per-app profiles override only what they set, for the app that had focus', () => {
+  const profiles = validateProfiles([{app: 'Telegram.exe', name: 'Telegram', mode: 'minimal', dropFinalPeriod: true}, {app: 'code.exe', name: 'VS Code', formatting: 'off'}]);
+  assert.deepEqual(profiles[0], {app: 'telegram.exe', name: 'Telegram', mode: 'minimal', formatting: null, dropFinalPeriod: true});
+  const settings = validateSettings({});
+  assert.deepEqual(settingsFor(settings, profiles, {id: 'telegram.exe', name: 'Telegram'}), {...settings, mode: 'minimal', dropFinalPeriod: true});
+  assert.deepEqual(settingsFor(settings, profiles, {id: 'code.exe'}), {...settings, formatting: 'off', dropFinalPeriod: false});
+  assert.equal(settingsFor(settings, profiles, {id: 'chrome.exe'}), settings);
+  assert.equal(settingsFor(settings, profiles, null), settings);
+  assert.throws(() => validateProfiles([{app: 'a.exe'}, {app: 'A.EXE'}]), /уже настроено/);
+  assert.throws(() => validateProfiles([{app: 'a.exe', mode: 'rewrite'}]), /режим/);
+  assert.throws(() => validateProfiles([{app: 'a.exe', formatting: 'fancy'}]), /оформление/);
+  assert.throws(() => validateProfiles([{app: 'a.exe', dropFinalPeriod: 'yes'}]));
+  assert.throws(() => validateProfiles([{app: ''}]), /приложение/);
+  assert.throws(() => validateProfiles(Array.from({length: 31}, (_, i) => ({app: `app${i}.exe`}))), /30/);
 });

@@ -14,6 +14,8 @@ nativeModule.createNativeBackend = () => {
   for (const method of ['capture', 'sameTarget', 'paste']) {
     const original = native[method];
     native[method] = (...args) => {
+      // Tests can pretend another app had focus; such a target never receives real input.
+      if (method === 'capture' && globalThis.__test.fakeTarget) return globalThis.__test.fakeTarget;
       if (method === 'paste' && native.capture()?.pid !== globalThis.__test.targetPid) return false;
       const result = original(...args); globalThis.__test.nativeCalls.push({method, args, result}); return result;
     };

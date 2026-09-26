@@ -28,8 +28,9 @@ os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 import llm
 import memory
-from text_processing import (apply_voice_commands, expand_snippets, format_transcript, join_segments, layout_text,
-                             pause_sentences, split_sentences, strip_hesitations, vocabulary_prompt)
+from text_processing import (apply_voice_commands, drop_final_period, expand_snippets, format_transcript,
+                             join_segments, layout_text, pause_sentences, split_sentences, strip_hesitations,
+                             vocabulary_prompt)
 
 WHISPER_FILES = ["model.bin", "config.json", "tokenizer.json", "vocabulary.json", "preprocessor_config.json"]
 GIGAAM_FILES = ["config.json", "v3_e2e_rnnt_encoder.int8.onnx", "v3_e2e_rnnt_decoder.int8.onnx",
@@ -464,6 +465,9 @@ class Engine:
         commands = []
         if mode != "raw" and request.get("voiceCommands", True):
             text, commands = apply_voice_commands(text)
+        # A per-app choice (messengers): the spoken text ends without a period; a snippet keeps its own.
+        if mode != "raw" and request.get("dropFinalPeriod"):
+            text = drop_final_period(text)
         # Last, so the saved text goes in exactly as written: no dictionary, cleanup or layout touches it.
         text, expanded = expand_snippets(text, request["snippets"], entries) if mode != "raw" else (text, [])
         return {"formatting": formatting, "formatElapsed": finite(time.monotonic() - format_started),"text": text, "rawText": raw, "words": words, "segments": parsed,

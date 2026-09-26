@@ -67,6 +67,31 @@ function validateSnippets(input) {
   });
 }
 
+// Per-app text settings: null means "as in the general settings".
+function validateProfiles(input) {
+  if (!Array.isArray(input) || input.length > 30) throw new Error('Можно настроить до 30 приложений');
+  const apps = new Set();
+  return input.map(entry => {
+    const app = String(entry?.app ?? '').trim().toLowerCase();
+    if (!app || app.length > 200 || /[\r\n]/.test(app)) throw new Error('Некорректное приложение');
+    if (apps.has(app)) throw new Error('Это приложение уже настроено');
+    apps.add(app);
+    const mode = entry.mode ?? null, formatting = entry.formatting ?? null;
+    if (mode !== null && !['natural', 'minimal', 'raw'].includes(mode)) throw new Error('Некорректный режим текста');
+    if (formatting !== null && !FORMATTING.includes(formatting)) throw new Error('Некорректное оформление');
+    if ('dropFinalPeriod' in entry && typeof entry.dropFinalPeriod !== 'boolean') throw new Error('Некорректное значение: dropFinalPeriod');
+    return {app, name: String(entry.name ?? '').trim().slice(0, 80) || app, mode, formatting, dropFinalPeriod: Boolean(entry.dropFinalPeriod)};
+  });
+}
+
+// Settings for one dictation into `app`: that app's own choices win over the general ones.
+function settingsFor(settings, profiles, app) {
+  const profile = app?.id && profiles.find(p => p.app === app.id);
+  if (!profile) return settings;
+  return {...settings, ...(profile.mode && {mode: profile.mode}), ...(profile.formatting && {formatting: profile.formatting}),
+    dropFinalPeriod: profile.dropFinalPeriod};
+}
+
 class Store {
   constructor(root) {
     this.root = root;
@@ -81,6 +106,7 @@ class Store {
     this.data.settings = validateSettings(this.data.settings);
     this.data.dictionary = validateDictionary(this.data.dictionary);
     this.data.snippets = validateSnippets(this.data.snippets ?? []);
+    this.data.profiles = validateProfiles(this.data.profiles ?? []);
     if (!Array.isArray(this.data.history)) throw new Error('Повреждён формат истории');
     this.data.pendingRecordings ??= [];
     if (!Array.isArray(this.data.pendingRecordings)) throw new Error('Повреждён список незавершённых записей');
@@ -93,7 +119,8 @@ class Store {
   setSettings(settings) { this.data.settings = validateSettings(settings); this.save(); return this.data.settings; }
   setDictionary(entries) { this.data.dictionary = validateDictionary(entries); this.save(); return this.data.dictionary; }
   setSnippets(entries) { this.data.snippets = validateSnippets(entries); this.save(); return this.data.snippets; }
+  setProfiles(entries) { this.data.profiles = validateProfiles(entries); this.save(); return this.data.profiles; }
   addHistory(entry) { this.data.history.unshift(entry); this.save(); return entry; }
 }
 
-module.exports = {Store, validateSettings, validateDictionary, validateSnippets, DEFAULT_SETTINGS, MODEL_IDS};
+module.exports = {Store, validateSettings, validateDictionary, validateSnippets, validateProfiles, settingsFor, DEFAULT_SETTINGS, MODEL_IDS};

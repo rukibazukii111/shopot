@@ -4,7 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const {pathToFileURL} = require('node:url');
 const crypto = require('node:crypto');
-const {Store, MODEL_IDS} = require('./store.cjs');
+const {Store, MODEL_IDS, settingsFor} = require('./store.cjs');
 const {Worker} = require('./worker.cjs');
 const {PasteService, clipboardText} = require('./paste.cjs');
 const {createNativeBackend} = require('./native-input.cjs');
@@ -77,9 +77,12 @@ function beginCapture(global = false) {
   if (busy || capture) throw new Error('Дождись завершения текущей операции');
   if (!worker.status) throw new Error('Движок ещё запускается. Попробуй через несколько секунд.');
   if (!worker.status.models?.find(m => m.id === store.data.settings.model)?.installed) throw new Error('Сначала скачай модель в Шёпоте');
-  capture = {id: crypto.randomUUID(), global, target: global ? paste.capture() : null, phase: 'requesting',
-    settings: structuredClone(store.data.settings), dictionary: structuredClone(store.data.dictionary),
-    snippets: structuredClone(store.data.snippets)};
+  const target = global ? paste.capture() : null;
+  // The app that had focus decides this dictation's text settings (its profile, if any).
+  capture = {id: crypto.randomUUID(), global, target, phase: 'requesting',
+    settings: settingsFor(structuredClone(store.data.settings), store.data.profiles, target?.app),
+    dictionary: structuredClone(store.data.dictionary), snippets: structuredClone(store.data.snippets),
+    app: target?.app ? {id: target.app.id, name: target.app.name, profile: store.data.profiles.some(p => p.app === target.app.id)} : null};
   // Load the model while the user speaks instead of after they stop.
   worker.notify('preload', {model: capture.settings.model, formatting: capture.settings.formatting});
   if (blocker === undefined) blocker = powerSaveBlocker.start('prevent-app-suspension');
@@ -161,7 +164,7 @@ async function runTranscription(filePath, source, recordingSession = null, retry
       return {noSpeech: true};
     }
     const entry = {id: crypto.randomUUID(), createdAt: new Date().toISOString(), source,
-      mode: settings.mode, ...result, audioFile: settings.keepAudio ? path.basename(filePath) : null};
+      mode: settings.mode, ...result, audioFile: settings.keepAudio ? path.basename(filePath) : null, app: recordingSession?.app ?? null};
     store.addHistory(entry);
     completed = true;
     const delivery = await paste.deliver(entry.text, {autoCopy: settings.autoCopy,
@@ -264,6 +267,7 @@ else {
     ipc('settings', value => store.setSettings(value));
     ipc('dictionary', value => store.setDictionary(value));
     ipc('snippets', value => store.setSnippets(value));
+    ipc('profiles', value => store.setProfiles(value));
     ipc('download', async id => {
       if (busy || capture) throw new Error('Дождись завершения текущей операции');
       const currentJob = ++job;

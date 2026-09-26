@@ -350,6 +350,11 @@ def apply_voice_commands(text):
     return _capitalize(result) if not parts[0].strip() else result, used
 
 
+def drop_final_period(text):
+    """Messenger style: no period after the last sentence. An ellipsis, «?» and «!» stay."""
+    return re.sub(r"(?<=[^.\s])\.\s*$", "", text)
+
+
 def format_transcript(text, entries=None, mode="natural"):
     text = text.strip()
     if mode == "raw":

@@ -45,7 +45,7 @@ const modelInfo = {
 };
 // Measured peaks of the Whisper models; on an 8 GB machine they compete with the browser and the system.
 const heavyModels = {turbo: 'При загрузке модели нужно до 1,9 ГБ, остальные программы могут тормозить.', 'large-v3': 'Модели нужно около 3,3 ГБ, система может зависать.'};
-const state = {settings: {}, dictionary: [], snippets: [], dictionaryTab: 'words', history: [], pendingRecordings: [], engine: null, page: 'dictation', phase: 'idle', operation: 0, hotkeyRegistered: false, selected: null, download: null, flash: null, confirmModel: null, totalMemory: 0};
+const state = {settings: {}, dictionary: [], snippets: [], profiles: [], dictionaryTab: 'words', history: [], pendingRecordings: [], engine: null, page: 'dictation', phase: 'idle', operation: 0, hotkeyRegistered: false, selected: null, download: null, flash: null, confirmModel: null, totalMemory: 0};
 let recorder, stream, audioContext, analyser, raf, recordingTimer, startedAt, recordingCanceled = false;
 let editingWord = null, editingSnippet = null, wordAliases = [], toastTimer, flashTimer, blobUrls = [], contextDirty = false, captureId = null;
 const drafts = new Map();
@@ -114,7 +114,7 @@ function updateEngine() {
   $('#active-model-state').textContent = !state.engine ? 'Проверяем модель' : !ready ? ['Нужно скачать', modelSize(id)].filter(Boolean).join(', ')
     : heavy ? `${info.title}, тяжёлая для ${formatBytes(state.totalMemory)} памяти` : `${info.title}, на компьютере`;
   $('#active-model-state').classList.toggle('warn', Boolean(state.engine) && (!ready || heavy));
-  refreshControls(); renderModels();
+  refreshControls(); renderModels(); renderProfiles();
 }
 const phaseText = {
   recording: {status: 'Идёт запись', heading: 'Слушаю тебя', text: 'Говори свободно. Нажми сочетание ещё раз, когда закончишь.', label: 'Закончить запись'},
@@ -199,7 +199,40 @@ function syncSettings() {
   $('#hotkey-state').className = 'hotkey-state ' + (state.hotkeyRegistered ? 'ok' : 'warn');
   $('#hotkey-state').innerHTML = state.hotkeyRegistered ? `${icon('check')}Работает` : `${icon('alert')}Занято`;
   $('#hero-keys').classList.toggle('unavailable', !state.hotkeyRegistered);
+  renderProfiles();
 }
+
+// Apps that dictation was pasted into, newest first: the candidates for a per-app profile.
+function recentApps() {
+  const seen = new Map();
+  for (const entry of state.history) if (entry.app?.id && !seen.has(entry.app.id)) seen.set(entry.app.id, entry.app.name || entry.app.id);
+  return [...seen].map(([id, name]) => ({id, name}));
+}
+function profileRow(profile) {
+  const name = escapeHtml(profile.name), llm = state.engine?.formatter?.installed;
+  return `<div class="profile-row" data-profile="${escapeHtml(profile.app)}"><span class="profile-name" title="${escapeHtml(profile.app)}">${name}</span>
+    <div class="select"><select data-profile-field="mode" aria-label="Как записывать в ${name}"><option value="">Как обычно</option><option value="natural">Естественно</option><option value="minimal">Минимум знаков</option><option value="raw">Исходный результат</option></select><span data-icon="chevron-down"></span></div>
+    <div class="select"><select data-profile-field="formatting" aria-label="Оформление в ${name}"><option value="">Как обычно</option><option value="rules">Абзацы и списки</option><option value="off">Одним абзацем</option><option value="llm"${llm ? '' : ' disabled'}>Умное (нейросеть)</option></select><span data-icon="chevron-down"></span></div>
+    <label class="profile-check"><span class="switch"><input type="checkbox" role="switch" data-profile-field="dropFinalPeriod"><span></span></span>Без точки в конце</label>
+    <button type="button" class="icon-button" data-remove-profile aria-label="Убрать настройки для ${name}" title="Убрать">${icon('x')}</button></div>`;
+}
+function renderProfiles() {
+  $('#profiles-list').innerHTML = state.profiles.length
+    ? '<div class="profile-row profile-columns" aria-hidden="true"><span>Приложение</span><span>Как записывать</span><span>Оформление</span><span></span><span></span></div>' + state.profiles.map(profileRow).join('')
+    : '<p class="profiles-empty">Пока все приложения получают текст по общим настройкам.</p>';
+  paintIcons($('#profiles-list'));
+  for (const row of $$('.profile-row[data-profile]')) {
+    const profile = state.profiles.find(p => p.app === row.dataset.profile);
+    row.querySelector('[data-profile-field="mode"]').value = profile.mode || '';
+    row.querySelector('[data-profile-field="formatting"]').value = profile.formatting || '';
+    row.querySelector('[data-profile-field="dropFinalPeriod"]').checked = profile.dropFinalPeriod;
+  }
+  const available = recentApps().filter(app => !state.profiles.some(p => p.app === app.id));
+  $('#profile-app').innerHTML = `<option value="">${available.length ? 'Добавить приложение…' : 'Новых приложений нет'}</option>`
+    + available.map(app => `<option value="${escapeHtml(app.id)}">${escapeHtml(app.name)}</option>`).join('');
+  $('#profile-app').disabled = !available.length;
+}
+async function saveProfiles(profiles) { state.profiles = await api.profiles(profiles); renderProfiles(); }
 
 // Styles on waveform bars are generated locally; use the CSSOM rather than inline HTML.
 const BAR_COUNT = 96;
@@ -426,7 +459,7 @@ function renderHistoryDetail() {
     <div class="detail-head"><h1>${escapeHtml(dateLabel(entry.createdAt))}</h1><span class="detail-source">${escapeHtml(entry.source)}</span>${tabsHtml('detail', entry)}</div>
     <div class="detail-body"><div class="detail-panel" data-detail-panel="text"><textarea class="history-editor" data-entry="${id}" aria-label="Текст диктовки" spellcheck="false">${escapeHtml(text)}</textarea>${replacementsHtml(entry)}</div>
     <div class="detail-panel" data-detail-panel="raw" hidden><p class="history-raw">${rawHtml(entry)}</p><p class="review-note">${rawNote(entry)}</p></div><div class="audio-slot"></div>
-    <dl class="meta-list"><dt>Длительность</dt><dd class="mono">${duration(entry.duration)}</dd><dt>Текст</dt><dd>${count} ${pluralWords(count)}</dd><dt>Распознавание</dt><dd>${recognitionLabel(entry)}</dd>${entry.memoryPeak ? `<dt>Память</dt><dd>${memoryLabel(entry)}</dd>` : ''}<dt>Модель</dt><dd>${escapeHtml(modelNames[entry.model] || entry.model)}</dd><dt>Режим</dt><dd>${escapeHtml(modes[entry.mode] || '')}</dd><dt>Источник</dt><dd>${escapeHtml(entry.source)}</dd></dl></div>
+    <dl class="meta-list"><dt>Длительность</dt><dd class="mono">${duration(entry.duration)}</dd><dt>Текст</dt><dd>${count} ${pluralWords(count)}</dd><dt>Распознавание</dt><dd>${recognitionLabel(entry)}</dd>${entry.memoryPeak ? `<dt>Память</dt><dd>${memoryLabel(entry)}</dd>` : ''}<dt>Модель</dt><dd>${escapeHtml(modelNames[entry.model] || entry.model)}</dd><dt>Режим</dt><dd>${escapeHtml(modes[entry.mode] || '')}</dd><dt>Источник</dt><dd>${escapeHtml(entry.source)}</dd>${entry.app ? `<dt>Приложение</dt><dd>${escapeHtml(entry.app.name)}${entry.app.profile ? ' · свои настройки' : ''}</dd>` : ''}</dl></div>
     <div class="action-bar"><span class="action-note">${icon('edit')}Правки в тексте сохраняются сами</span><span class="spacer"></span>${entryActions(entry, true)}</div></div>`;
 }
 function selectEntry(id, focus = false) {
@@ -630,6 +663,8 @@ document.addEventListener('click', event => {
   const word = target.closest('[data-word-id]'); if (word) { openWord(state.dictionary.find(e => e.id === word.dataset.wordId)); return; }
   const snippet = target.closest('[data-snippet-id]'); if (snippet) { openSnippet(state.snippets.find(e => e.id === snippet.dataset.snippetId)); return; }
   const dictionaryTabButton = target.closest('[data-dictionary-tab]'); if (dictionaryTabButton) { dictionaryTab(dictionaryTabButton.dataset.dictionaryTab); return; }
+  const removeProfile = target.closest('[data-remove-profile]');
+  if (removeProfile) { const app = removeProfile.closest('.profile-row').dataset.profile; guard(() => saveProfiles(state.profiles.filter(p => p.app !== app))); return; }
   const remove = target.closest('[data-remove-alias]');
   if (remove) { wordAliases.splice(Number(remove.dataset.removeAlias), 1); renderAliases(); $('#alias-input').focus(); return; }
   if (target.closest('#alias-box') && !target.closest('input')) { $('#alias-input').focus(); return; }
@@ -648,6 +683,16 @@ document.addEventListener('change', event => {
     if (title) title.textContent = text.replace(/\s+/g, ' ').trim() || 'Пустая диктовка';
   });
   if (target.matches('input[name="mode"]')) guard(() => saveSettings({mode: target.value}));
+  const profileField = target.closest('[data-profile-field]');
+  if (profileField) guard(() => {
+    const app = profileField.closest('.profile-row').dataset.profile, field = profileField.dataset.profileField;
+    const value = field === 'dropFinalPeriod' ? profileField.checked : profileField.value || null;
+    return saveProfiles(state.profiles.map(p => p.app === app ? {...p, [field]: value} : p));
+  });
+  if (target === $('#profile-app') && target.value) guard(() => {
+    const app = recentApps().find(a => a.id === target.value);
+    return saveProfiles([...state.profiles, {app: app.id, name: app.name, mode: null, formatting: null, dropFinalPeriod: false}]);
+  });
 });
 document.addEventListener('input', event => {
   if (event.target.matches('.transcript-editor, .history-editor')) drafts.set(event.target.dataset.entry, event.target.value);
@@ -740,7 +785,7 @@ $('#dictionary-form').addEventListener('submit', async event => {
 });
 api.onToggle(toggleRecording); api.onCancel(() => guard(cancelOperation));
 api.onEngine(({status, error}) => { state.engine = status || null; state.engineError = error; updateEngine(); if (error) showError(new Error(error)); });
-api.onSnapshot(snapshot => { state.history = snapshot.history; state.pendingRecordings = snapshot.pendingRecordings; renderResults(); renderRecovery(); });
+api.onSnapshot(snapshot => { state.history = snapshot.history; state.pendingRecordings = snapshot.pendingRecordings; renderResults(); renderRecovery(); renderProfiles(); });
 api.onProgress(progress => {
   if (state.phase === 'opening') { state.phase = 'transcribing'; refreshControls(); }
   if (state.phase === 'transcribing') {
