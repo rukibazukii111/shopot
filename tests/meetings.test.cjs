@@ -16,6 +16,19 @@ test('the watcher reports apps that start and stop using the microphone', () => 
   assert.equal(broken.active.size, 0);
 });
 
+test('a call already going on when Shopot starts is not offered, but its end and later calls are noticed', () => {
+  const reads = [[{id: 'discord.exe', name: 'Discord'}], [{id: 'discord.exe', name: 'Discord'}], [], [{id: 'discord.exe', name: 'Discord'}]];
+  const watcher = new MicWatcher(() => reads.shift(), 60000);
+  const events = [];
+  watcher.on('start', user => events.push(['start', user.id]));
+  watcher.on('stop', user => events.push(['stop', user.id]));
+  watcher.start();
+  try {
+    for (let i = 0; i < 3; i++) watcher.poll();
+    assert.deepEqual(events, [['stop', 'discord.exe'], ['start', 'discord.exe']]);
+  } finally { watcher.stop(); }
+});
+
 test('two channels become a dialog in time order, and the microphone echo of the other side is dropped', () => {
   const mine = [{start: 4, end: 6, text: 'Да, слышно отлично.'}, {start: 7, end: 9, text: 'Начнём с бюджета.'},
     // Played through speakers, the other side's words reach the microphone too.

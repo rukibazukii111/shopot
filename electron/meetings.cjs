@@ -5,14 +5,17 @@ const {EventEmitter} = require('node:events');
 // Emits 'start' when an app begins using the microphone and 'stop' when it lets go.
 class MicWatcher extends EventEmitter {
   constructor(read, interval = 4000) { super(); this.read = read; this.interval = interval; this.active = new Map(); this.timer = null; }
-  start() { this.poll(); this.timer = setInterval(() => this.poll(), this.interval); }
+  // Calls already going on when Shopot starts are taken as given, not offered: only a call that starts later is news.
+  start() { this.poll(true); this.timer = setInterval(() => this.poll(), this.interval); }
   stop() { clearInterval(this.timer); this.timer = null; }
-  poll() {
+  poll(quiet = false) {
     let users;
     try { users = this.read() || []; } catch { return; }
     const now = new Map(users.map(user => [user.id, user]));
-    for (const user of users) if (!this.active.has(user.id)) this.emit('start', user);
-    for (const [id, user] of this.active) if (!now.has(id)) this.emit('stop', user);
+    if (!quiet) {
+      for (const user of users) if (!this.active.has(user.id)) this.emit('start', user);
+      for (const [id, user] of this.active) if (!now.has(id)) this.emit('stop', user);
+    }
     this.active = now;
   }
 }

@@ -19,6 +19,8 @@ const audioDir = path.join(dataDir, 'audio');
 const uiUrl = pathToFileURL(path.join(root, 'renderer', 'index.html')).href;
 const widgetUrl = pathToFileURL(path.join(root, 'renderer', 'widget.html')).href;
 const shortcut = 'CommandOrControl+Shift+Space';
+// `--hidden` starts in the tray without opening the window: for autostart and for smoke tests on a desktop in use.
+const startHidden = process.argv.includes('--hidden');
 let window, widget, tray, worker, store, paste, capture, busy = false, blocker, quitting = false, engineError = null;
 let hotkeyRegistered = false;
 let nativeAvailable = false, nativeBackend = null;
@@ -259,7 +261,7 @@ function createWindow() {
     finishCapture({phase: 'error', message: 'Окно записи перезапустилось', hint: 'Повтори диктовку'});
     window.reload();
   });
-  window.once('ready-to-show', () => window.show());
+  window.once('ready-to-show', () => { if (!startHidden) window.show(); });
   window.on('close', event => { if (!quitting && tray) { event.preventDefault(); window.hide(); } });
   window.webContents.once('did-finish-load', createWidget);
   window.loadURL(uiUrl);
