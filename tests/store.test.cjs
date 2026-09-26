@@ -36,6 +36,11 @@ test('model ids and modes cannot be arbitrary strings', () => {
   assert.equal(validateSettings({}).removeFillers, true);
   assert.throws(() => validateSettings({voiceCommands: 'yes'}));
   assert.equal(validateSettings({}).voiceCommands, true);
+  // Only Whisper small and large-v3 translate into English.
+  assert.equal(validateSettings({}).translate, false);
+  assert.equal(validateSettings({model: 'small', translate: true}).translate, true);
+  assert.throws(() => validateSettings({model: 'turbo', translate: true}), /Лёгкая/);
+  assert.throws(() => validateSettings({model: 'gigaam', translate: true}), /Лёгкая/);
   assert.equal(validateSettings({}).formatting, 'rules');
   assert.equal(validateSettings({formatting: 'llm'}).formatting, 'llm');
   assert.equal(validateSettings({model: 'large-v3', autoCopy: false}).autoPaste, true);

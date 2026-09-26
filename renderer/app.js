@@ -105,7 +105,7 @@ function timeLabel(iso) { return new Intl.DateTimeFormat('ru', {hour: '2-digit',
 function dateLabel(iso) { return `${dayLabel(iso)}, ${timeLabel(iso)}`; }
 function pluralWords(number) { return number % 10 === 1 && number % 100 !== 11 ? 'слово' : [2, 3, 4].includes(number % 10) && ![12,13,14].includes(number % 100) ? 'слова' : 'слов'; }
 function updateEngine() {
-  syncLanguages(); syncFormatting();
+  syncLanguages(); syncFormatting(); syncTranslate();
   $('#engine-dot').className = 'status-dot' + (state.engine ? '' : state.engineError ? ' error' : ' starting');
   $('#engine-label').textContent = state.engine ? 'Локальный движок' : state.engineError ? 'Движок недоступен' : 'Запускаем движок';
   const id = state.settings.model, info = modelInfo[id] || modelInfo.gigaam, ready = installed();
@@ -158,6 +158,7 @@ function refreshControls() {
     : ready ? 'Аудио или видео, до 100 МБ'
     : state.engine ? [modelNames[state.settings.model], modelSize(state.settings.model)].filter(Boolean).join(', ') : '';
   $('#quick-language').disabled = isBusy();
+  syncTranslate();
   $$('input[name="mode"]').forEach(input => input.disabled = isBusy());
   $('#record-progress').hidden = !processing;
   if (!processing) $('#transcribe-progress').removeAttribute('value');
@@ -180,6 +181,15 @@ function syncLanguages() {
   $('#language-note').textContent = languages.length === 1
     ? `${modelNames[state.settings.model] || 'Эта модель'} понимает только русский. Для английского выбери Whisper.`
     : 'Автоопределение подойдёт, если ты переключаешься между языками.';
+}
+// Whisper small and large-v3 translate into English; GigaAM and turbo cannot.
+function canTranslate(id) { return Boolean(state.engine?.models?.find(m => m.id === id)?.translates); }
+function syncTranslate() {
+  const can = canTranslate(state.settings.model);
+  $('#translate').checked = Boolean(state.settings.translate);
+  $('#translate').disabled = !can || isBusy();
+  $('#translate-note').textContent = can ? 'Говоришь по-русски, вставляется по-английски. Медленнее обычного, голосовые команды не работают.'
+    : 'Доступно с моделями «Лёгкая» и «Полная». «Быстрая» и «Точная» переводить не умеют.';
 }
 function updateContextCount() { $('#context-count').textContent = `${$('#context-input').value.length}/200`; }
 function syncSettings() {
@@ -565,7 +575,7 @@ function renderHistoryDetail() {
     <div class="detail-head"><h1>${escapeHtml(dateLabel(entry.createdAt))}</h1><span class="detail-source">${escapeHtml(entry.source)}</span>${tabsHtml('detail', entry)}</div>
     <div class="detail-body"><div class="detail-panel" data-detail-panel="text"><textarea class="history-editor" data-entry="${id}" aria-label="Текст диктовки" spellcheck="false">${escapeHtml(text)}</textarea>${replacementsHtml(entry)}${suggestionsSlot(entry)}</div>
     <div class="detail-panel" data-detail-panel="raw" hidden><p class="history-raw">${rawHtml(entry)}</p><p class="review-note">${rawNote(entry)}</p></div><div class="audio-slot"></div>
-    <dl class="meta-list"><dt>Длительность</dt><dd class="mono">${duration(entry.duration)}</dd><dt>Текст</dt><dd>${count} ${pluralWords(count)}</dd><dt>Распознавание</dt><dd>${recognitionLabel(entry)}</dd>${entry.memoryPeak ? `<dt>Память</dt><dd>${memoryLabel(entry)}</dd>` : ''}<dt>Модель</dt><dd>${escapeHtml(modelNames[entry.model] || entry.model)}</dd><dt>Режим</dt><dd>${escapeHtml(modes[entry.mode] || '')}</dd><dt>Источник</dt><dd>${escapeHtml(entry.source)}</dd>${entry.app ? `<dt>Приложение</dt><dd>${escapeHtml(entry.app.name)}${entry.app.profile ? ' · свои настройки' : ''}</dd>` : ''}</dl></div>
+    <dl class="meta-list"><dt>Длительность</dt><dd class="mono">${duration(entry.duration)}</dd><dt>Текст</dt><dd>${count} ${pluralWords(count)}</dd><dt>Распознавание</dt><dd>${recognitionLabel(entry)}</dd>${entry.memoryPeak ? `<dt>Память</dt><dd>${memoryLabel(entry)}</dd>` : ''}<dt>Модель</dt><dd>${escapeHtml(modelNames[entry.model] || entry.model)}</dd><dt>Режим</dt><dd>${escapeHtml(modes[entry.mode] || '')}${entry.translated ? ' · перевод на английский' : ''}</dd><dt>Источник</dt><dd>${escapeHtml(entry.source)}</dd>${entry.app ? `<dt>Приложение</dt><dd>${escapeHtml(entry.app.name)}${entry.app.profile ? ' · свои настройки' : ''}</dd>` : ''}</dl></div>
     <div class="action-bar"><span class="action-note">${icon('edit')}Правки в тексте сохраняются сами</span><span class="spacer"></span>${entryActions(entry, true)}</div></div>`;
 }
 function selectEntry(id, focus = false) {
@@ -747,7 +757,8 @@ async function selectModel(id) {
   state.confirmModel = null;
   const model = state.engine.models.find(m => m.id === id);
   // Russian-only models switch the language along with the model.
-  const changes = {model: id, ...(model.languages?.includes(state.settings.language) === false ? {language: 'ru'} : {})};
+  const changes = {model: id, ...(model.languages?.includes(state.settings.language) === false ? {language: 'ru'} : {}),
+    ...(state.settings.translate && !model.translates ? {translate: false} : {})};
   if (model.installed) { await saveSettings(changes); renderModels(); toast('Модель выбрана'); return; }
   const operation = ++state.operation;
   state.phase = 'downloading'; state.download = {id, completed: 0, total: 0}; refreshControls(); renderModels();
@@ -841,6 +852,7 @@ $('#accessibility-button').addEventListener('click', () => guard(async () => { s
 $('#context-input').addEventListener('input', () => { contextDirty = true; updateContextCount(); });
 $('#formatting-select').addEventListener('change', event => guard(() => saveSettings({formatting: event.target.value})));
 $('#remove-fillers').addEventListener('change', event => guard(() => saveSettings({removeFillers: event.target.checked})));
+$('#translate').addEventListener('change', event => guard(() => saveSettings({translate: event.target.checked})));
 $('#voice-commands').addEventListener('change', event => guard(() => saveSettings({voiceCommands: event.target.checked})));
 $('#meeting-offers').addEventListener('change', event => guard(() => saveSettings({meetingOffers: event.target.checked})));
 $('#meeting-button').addEventListener('click', () => guard(async () => { state.meeting = await api.startMeeting(); renderMeeting(); }));

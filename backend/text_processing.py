@@ -320,8 +320,9 @@ def expand_snippets(text, snippets, entries=()):
     return "".join(parts), used
 
 
+# English forms serve English dictation with Whisper.
 VOICE_COMMANDS = {"новый абзац": "\n\n", "с нового абзаца": "\n\n", "новый параграф": "\n\n",
-                  "новая строка": "\n", "с новой строки": "\n"}
+                  "новая строка": "\n", "с новой строки": "\n", "new paragraph": "\n\n", "new line": "\n"}
 _COMMAND_PATTERN = re.compile(
     # Commas and dashes the model put around the spoken command go with it; a colon before it stays («Список:»).
     r"[\s,;\-–—]*(?<![^\W_])(?P<command>"

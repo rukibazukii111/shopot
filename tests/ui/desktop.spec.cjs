@@ -128,3 +128,29 @@ test('smart formatting downloads through the engine and becomes selectable', asy
     await expect(page.locator('#formatting-select')).toHaveValue('llm');
   } finally { await app.close(); }
 });
+
+test('translation into English is offered only with models that can translate', async () => {
+  const dataDir = path.join(testRoot, `translate-${Date.now()}`);
+  fs.mkdirSync(dataDir, {recursive: true});
+  const app = await electron.launch({args: [path.join(root, 'tests/fixtures/harness.cjs')], env: {...cleanEnv, SHOPOT_DATA_DIR: dataDir}});
+  const settings = page => page.evaluate(async () => (await window.shopot.boot()).settings);
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('#engine-label')).toHaveText('Локальный движок');
+    // GigaAM cannot translate.
+    await expect(page.locator('#translate')).toBeDisabled();
+    await expect(page.locator('#translate-note')).toContainText('«Лёгкая» и «Полная»');
+    await page.locator('[data-page="models"]').click();
+    await page.locator('[data-model="small"]').click();
+    await expect(page.locator('[data-model="small"]')).toHaveText('Используется');
+    await page.locator('[data-page="dictation"]').click();
+    await expect(page.locator('#translate')).toBeEnabled();
+    await page.locator('#translate').check();
+    await expect.poll(async () => (await settings(page)).translate).toBe(true);
+    // Moving to a model that cannot translate turns translation off instead of failing.
+    await page.locator('[data-page="models"]').click();
+    await page.locator('[data-model="gigaam"]').click();
+    await expect(page.locator('[data-model="gigaam"]')).toHaveText('Используется');
+    expect(await settings(page)).toMatchObject({model: 'gigaam', translate: false});
+  } finally { await app.close(); }
+});

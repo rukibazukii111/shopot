@@ -458,6 +458,8 @@ def test_engine_rejects_malformed_snippets(tmp_path):
     ('Новый абзац. Привет. С новой строки.', 'Привет.'),
     ('НОВЫЙ, АБЗАЦ ещё текст', 'Ещё текст'),
     ('с нового абзаца продолжим', 'Продолжим'),
+    # English dictation with Whisper.
+    ('First point. New paragraph. Second point.', 'First point.\n\nSecond point.'),
     # Whole words only.
     ('Новый абзацный отступ.', 'Новый абзацный отступ.'),
 ])
@@ -570,5 +572,50 @@ def test_meeting_channels_are_recognized_separately(tmp_path, monkeypatch):
         assert engine.transcribe({**request, 'channel': 'right'})['noSpeech'] is True
         with pytest.raises(ValueError, match='канал'):
             engine.transcribe({**request, 'channel': 'center'})
+    finally:
+        engine.cancel_idle_unload()
+
+
+def test_translation_asks_whisper_to_translate_without_a_russian_prompt(tmp_path, monkeypatch):
+    import json
+    import math
+    import struct
+    import wave
+    from types import SimpleNamespace
+    from engine import MODELS, WHISPER_FILES
+    engine = Engine(tmp_path)
+    for key in ('small', 'turbo'):
+        folder = engine.model_path(key)
+        folder.mkdir(parents=True)
+        (folder / 'shopot-ready.json').write_text(json.dumps({'revision': MODELS[key]['revision']}), 'utf-8')
+        for name in WHISPER_FILES:
+            (folder / name).write_bytes(b'x')
+    with wave.open(str(engine.audio_dir / 'ab12.wav'), 'wb') as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(16000)
+        out.writeframes(b''.join(struct.pack('<h', int(12000 * math.sin(i / 8))) for i in range(16000)))
+    calls = []
+
+    class FakeWhisper:
+        def transcribe(self, audio, **options):
+            calls.append(options)
+            segment = SimpleNamespace(start=0.0, end=1.0, text=' Hello, how are you?', no_speech_prob=0.0, words=[])
+            return iter([segment]), SimpleNamespace(language='ru')
+
+    def load(key, request_id=None):
+        engine.model, engine.loaded_key = FakeWhisper(), key
+        return 0.0
+    monkeypatch.setattr(engine, 'load', load)
+    request = {'model': 'small', 'audioFile': 'ab12.wav', 'language': 'ru', 'context': 'Монтаж видео',
+               'dictionary': [{'word': 'GitHub', 'aliases': []}], 'formatting': 'off'}
+    try:
+        result = engine.transcribe({**request, 'translate': True})
+        assert result['text'] == 'Hello, how are you?' and result['translated'] is True
+        assert calls[-1]['task'] == 'translate' and calls[-1]['initial_prompt'] is None and calls[-1]['hotwords'] is None
+        engine.transcribe(request)
+        assert calls[-1]['task'] == 'transcribe' and 'Монтаж' in calls[-1]['initial_prompt']
+        with pytest.raises(ValueError, match='small и large-v3'):
+            engine.transcribe({**request, 'model': 'turbo', 'translate': True})
     finally:
         engine.cancel_idle_unload()

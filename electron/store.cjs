@@ -5,10 +5,12 @@ const crypto = require('node:crypto');
 const DEFAULT_SETTINGS = {
   model: 'gigaam', language: 'ru', mode: 'natural', context: '',
   autoCopy: true, autoPaste: true, keepAudio: false, microphoneId: 'default', formatting: 'rules', removeFillers: true,
-  voiceCommands: true, meetingOffers: true, meetingIgnore: [],
+  voiceCommands: true, meetingOffers: true, meetingIgnore: [], translate: false,
 };
 const MODEL_IDS = ['gigaam', 'small', 'turbo', 'large-v3'];
 const RUSSIAN_ONLY = ['gigaam'];
+// Whisper models that can translate speech into English (turbo cannot).
+const TRANSLATING = ['small', 'large-v3'];
 const FORMATTING = ['rules', 'off', 'llm'];
 const INITIAL_DICTIONARY = ['Whisper', 'GitHub', 'iOS', 'iPhone', 'Reels', 'TikTok', 'YouTube', 'VPN']
   .map(word => ({id: crypto.randomUUID(), word, aliases: []}));
@@ -20,12 +22,15 @@ function validateSettings(input) {
     if (!values.includes(input[key] ?? result[key])) throw new Error('Некорректное значение: ' + key);
     result[key] = input[key] ?? result[key];
   }
-  for (const key of ['autoCopy', 'autoPaste', 'keepAudio', 'removeFillers', 'voiceCommands', 'meetingOffers']) {
+  for (const key of ['autoCopy', 'autoPaste', 'keepAudio', 'removeFillers', 'voiceCommands', 'meetingOffers', 'translate']) {
     if (key in input && typeof input[key] !== 'boolean') throw new Error('Некорректное значение: ' + key);
     result[key] = input[key] ?? result[key];
   }
   if (RUSSIAN_ONLY.includes(result.model) && result.language !== 'ru') {
     throw new Error('GigaAM распознаёт только русский. Для других языков выбери Whisper в разделе «Модели».');
+  }
+  if (result.translate && !TRANSLATING.includes(result.model)) {
+    throw new Error('Перевод на английский работает с моделями «Лёгкая» и «Полная».');
   }
   // Apps whose microphone use should not suggest recording a call (games, voice notes).
   const ignore = input.meetingIgnore ?? [];

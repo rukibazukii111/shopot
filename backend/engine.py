@@ -42,10 +42,11 @@ MODELS = {
                "languages": ["ru"], "files": GIGAAM_FILES, "required": GIGAAM_FILES},
     "turbo": {"name": "Whisper large-v3 turbo", "repo": "dropbox-dash/faster-whisper-large-v3-turbo",
               "revision": "0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf", "size": "1,6 ГБ"},
+    # Whisper translates speech into English; turbo was trained without translation and keeps the source language.
     "small": {"name": "Whisper small", "repo": "Systran/faster-whisper-small",
-              "revision": "536b0662742c02347bc0e980a01041f333bce120", "size": "484 МБ"},
+              "revision": "536b0662742c02347bc0e980a01041f333bce120", "size": "484 МБ", "translates": True},
     "large-v3": {"name": "Whisper large-v3", "repo": "Systran/faster-whisper-large-v3",
-                 "revision": "edaa852ec7e145841d8ffdb056a99866b5f0a478", "size": "3,1 ГБ"},
+                 "revision": "edaa852ec7e145841d8ffdb056a99866b5f0a478", "size": "3,1 ГБ", "translates": True},
 }
 for _model in MODELS.values():
     _model.setdefault("engine", "whisper")
@@ -151,7 +152,8 @@ class Engine:
 
     def status(self):
         return {"models": [{"id": key, "name": value["name"], "size": value["size"], "engine": value["engine"],
-                            "languages": value["languages"], "installed": self.is_installed(key)}
+                            "languages": value["languages"], "translates": bool(value.get("translates")),
+                            "installed": self.is_installed(key)}
                            for key, value in MODELS.items()],
                 "device": "cpu", "computeType": "int8", "loadedModel": self.loaded_key,
                 "threads": THREADS, "formatter": self.formatter_status()}
@@ -305,6 +307,8 @@ class Engine:
         # Meeting recordings are stereo: the microphone on the left, the other side of the call on the right.
         if request.get("channel") not in (None, "left", "right"):
             raise ValueError("Неизвестный канал записи")
+        if request.get("translate") and not MODELS[key].get("translates"):
+            raise ValueError("Перевод на английский работает с моделями Whisper small и large-v3.")
         mode = request.get("mode", "natural")
         if mode not in ("natural", "minimal", "raw"):
             raise ValueError("Неизвестный режим текста")
@@ -494,7 +498,7 @@ class Engine:
                 "replacements": replacements, "snippets": expanded, "commands": commands, "cues": cues,
                 "duration": finite(duration),
                 "elapsed": finite(time.monotonic() - started), "language": detected,
-                "model": key, "noSpeech": not bool(raw), "device": "cpu",
+                "model": key, "noSpeech": not bool(raw), "device": "cpu", "translated": bool(request.get("translate")),
                 "loadElapsed": finite(load_elapsed)}
 
     def clean(self, text, mode, remove_fillers):
@@ -525,11 +529,13 @@ class Engine:
         return parsed
 
     def _whisper_segments(self, audio, duration, language, entries, request, request_id):
-        prompt = vocabulary_prompt(entries, request.get("context", ""))
+        translate = bool(request.get("translate"))
+        # A Russian prompt would pull a translation back into Russian, so translation goes without one.
+        prompt = None if translate else vocabulary_prompt(entries, request.get("context", ""))
         segments, info = self.model.transcribe(
-            audio, language=None if language == "auto" else language, task="transcribe",
+            audio, language=None if language == "auto" else language, task="translate" if translate else "transcribe",
             beam_size=5, temperature=0.0,
-            initial_prompt=prompt or None, hotwords=", ".join(e["word"] for e in entries)[:500] or None,
+            initial_prompt=prompt or None, hotwords=None if translate else ", ".join(e["word"] for e in entries)[:500] or None,
             condition_on_previous_text=False, word_timestamps=True,
             vad_filter=True, vad_parameters=VAD_OPTIONS,
             hallucination_silence_threshold=2.0,

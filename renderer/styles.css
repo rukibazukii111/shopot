@@ -282,6 +282,12 @@ mark.uncertain { padding: 0 3px; border-radius: 4px; background: var(--yellow-so
 .model-link-text small { font-size: 12px; letter-spacing: .2px; color: var(--mute); }
 .model-link-text small.warn { color: var(--yellow); }
 .chevron { color: var(--mute); }
+.toggle-row { margin-top: 4px; display: flex; align-items: flex-start; gap: 12px; cursor: pointer; }
+.toggle-row:has(input:disabled) { cursor: default; }
+.toggle-row:has(input:disabled) strong { color: var(--mute); }
+.toggle-text { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.toggle-text strong { font-size: 14px; font-weight: 500; letter-spacing: .2px; color: var(--ink); }
+.toggle-text small { font-size: 12px; line-height: 1.5; letter-spacing: .2px; color: var(--mute); }
 .privacy-note { margin: auto 0 0; padding-top: 16px; display: flex; gap: 10px; border-top: 1px solid var(--line-soft); font-size: 12px; line-height: 1.5; letter-spacing: .2px; color: var(--mute); }
 .privacy-note > [data-icon] { padding-top: 1px; color: var(--body); }
 
