@@ -47,6 +47,25 @@ function validateDictionary(input) {
   });
 }
 
+// Spoken phrases are compared without case, «ё» and punctuation, as the engine matches them.
+function foldPhrase(text) { return text.toLocaleLowerCase('ru').replace(/ё/g, 'е').replace(/[^\p{L}\p{N}]+/gu, ' ').trim(); }
+
+function validateSnippets(input) {
+  if (!Array.isArray(input) || input.length > 50) throw new Error('Можно сохранить до 50 сниппетов');
+  const triggers = new Set();
+  return input.map(entry => {
+    const trigger = String(entry?.trigger ?? '').trim().replace(/\s+/g, ' ');
+    if (trigger.length < 2 || trigger.length > 60) throw new Error('Фраза должна содержать от 2 до 60 символов');
+    const folded = foldPhrase(trigger);
+    if (!folded) throw new Error('Во фразе должны быть слова');
+    if (triggers.has(folded)) throw new Error('Такая фраза уже есть');
+    triggers.add(folded);
+    const text = String(entry?.text ?? '').replace(/\r\n?/g, '\n');
+    if (!text.trim() || text.length > 4000) throw new Error('Текст сниппета должен содержать от 1 до 4000 символов');
+    return {id: /^[a-zA-Z0-9-]{1,64}$/.test(entry.id ?? '') ? entry.id : crypto.randomUUID(), trigger, text};
+  });
+}
+
 class Store {
   constructor(root) {
     this.root = root;
@@ -60,6 +79,7 @@ class Store {
     this.data = state ?? {version: 1, settings: DEFAULT_SETTINGS, dictionary: INITIAL_DICTIONARY, history: []};
     this.data.settings = validateSettings(this.data.settings);
     this.data.dictionary = validateDictionary(this.data.dictionary);
+    this.data.snippets = validateSnippets(this.data.snippets ?? []);
     if (!Array.isArray(this.data.history)) throw new Error('Повреждён формат истории');
     this.data.pendingRecordings ??= [];
     if (!Array.isArray(this.data.pendingRecordings)) throw new Error('Повреждён список незавершённых записей');
@@ -71,7 +91,8 @@ class Store {
   }
   setSettings(settings) { this.data.settings = validateSettings(settings); this.save(); return this.data.settings; }
   setDictionary(entries) { this.data.dictionary = validateDictionary(entries); this.save(); return this.data.dictionary; }
+  setSnippets(entries) { this.data.snippets = validateSnippets(entries); this.save(); return this.data.snippets; }
   addHistory(entry) { this.data.history.unshift(entry); this.save(); return entry; }
 }
 
-module.exports = {Store, validateSettings, validateDictionary, DEFAULT_SETTINGS, MODEL_IDS};
+module.exports = {Store, validateSettings, validateDictionary, validateSnippets, DEFAULT_SETTINGS, MODEL_IDS};

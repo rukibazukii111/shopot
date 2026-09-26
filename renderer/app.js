@@ -45,9 +45,9 @@ const modelInfo = {
 };
 // Measured peaks of the Whisper models; on an 8 GB machine they compete with the browser and the system.
 const heavyModels = {turbo: 'При загрузке модели нужно до 1,9 ГБ, остальные программы могут тормозить.', 'large-v3': 'Модели нужно около 3,3 ГБ, система может зависать.'};
-const state = {settings: {}, dictionary: [], history: [], pendingRecordings: [], engine: null, page: 'dictation', phase: 'idle', operation: 0, hotkeyRegistered: false, selected: null, download: null, flash: null, confirmModel: null, totalMemory: 0};
+const state = {settings: {}, dictionary: [], snippets: [], dictionaryTab: 'words', history: [], pendingRecordings: [], engine: null, page: 'dictation', phase: 'idle', operation: 0, hotkeyRegistered: false, selected: null, download: null, flash: null, confirmModel: null, totalMemory: 0};
 let recorder, stream, audioContext, analyser, raf, recordingTimer, startedAt, recordingCanceled = false;
-let editingWord = null, wordAliases = [], toastTimer, flashTimer, blobUrls = [], contextDirty = false, captureId = null;
+let editingWord = null, editingSnippet = null, wordAliases = [], toastTimer, flashTimer, blobUrls = [], contextDirty = false, captureId = null;
 const drafts = new Map();
 
 function toast(message, tone = 'ok') {
@@ -362,8 +362,9 @@ function memoryLabel(entry) {
 }
 function rawNote(entry) { return doubtsOf(entry) ? 'Жёлтым отмечены слова, в которых модель не уверена. Исходный результат сохранён без правок.' : 'Исходный результат сохранён без правок. Пунктуацию расставила сама модель.'; }
 function replacementsHtml(entry) {
-  if (!entry.replacements?.length) return '';
-  return `<div class="replacements"><span>${entry.replacements.length === 1 ? 'Замена из словаря' : 'Замены из словаря'}</span>${entry.replacements.map(r => `<span class="chip-static">${escapeHtml(r.from)} → ${escapeHtml(r.to)}</span>`).join('')}</div>`;
+  const replacements = entry.replacements || [], snippets = entry.snippets || [];
+  if (!replacements.length && !snippets.length) return '';
+  return `<div class="replacements">${replacements.length ? `<span>${replacements.length === 1 ? 'Замена из словаря' : 'Замены из словаря'}</span>${replacements.map(r => `<span class="chip-static">${escapeHtml(r.from)} → ${escapeHtml(r.to)}</span>`).join('')}` : ''}${snippets.length ? `<span>${snippets.length === 1 ? 'Сниппет' : 'Сниппеты'}</span>${snippets.map(trigger => `<span class="chip-static">${escapeHtml(trigger)}</span>`).join('')}` : ''}</div>`;
 }
 function tabsHtml(kind, entry) {
   const doubts = doubtsOf(entry);
@@ -468,7 +469,50 @@ function switchTab(tab) {
   holder.querySelectorAll(`[data-${kind}-panel]`).forEach(el => el.hidden = el.dataset[`${kind}Panel`] !== value);
 }
 
+const dictionaryTabs = {
+  words: {add: 'Добавить слово', columns: ['Как писать', 'Что заменять'], info: 'Замены работают с любой моделью. Подсказки для распознавания понимает только Whisper.', foot: 'До 100 слов. В подсказку Whisper попадают первые 500 символов словаря.'},
+  snippets: {add: 'Добавить сниппет', columns: ['Фраза', 'Текст'], info: 'Скажи фразу во время диктовки, и вместо неё вставится сохранённый текст: почта, реквизиты, шаблон ответа.', foot: 'До 50 сниппетов по 4000 символов. Работают с любой моделью, кроме режима «Исходный результат».'},
+};
+function dictionaryTab(name, focus = false) {
+  state.dictionaryTab = name;
+  const tab = dictionaryTabs[name];
+  $$('[data-dictionary-tab]').forEach(el => { const active = el.dataset.dictionaryTab === name; el.classList.toggle('active', active); el.setAttribute('aria-selected', active); });
+  $('#add-label').textContent = tab.add; $('#dictionary-info').textContent = tab.info; $('#dictionary-foot').textContent = tab.foot;
+  [$('#dictionary-column-a').textContent, $('#dictionary-column-b').textContent] = tab.columns;
+  $('#dictionary-form').hidden = name !== 'words'; $('#snippet-form').hidden = name !== 'snippets';
+  if (name === 'words') openWord(state.dictionary.find(e => e.id === editingWord) || state.dictionary[0] || null, focus);
+  else openSnippet(state.snippets.find(e => e.id === editingSnippet) || state.snippets[0] || null, focus);
+}
+function renderSnippets() {
+  $('#dictionary-count').textContent = `${state.snippets.length} из 50`;
+  $('#dictionary-list').innerHTML = state.snippets.length ? state.snippets.map(entry => {
+    const selected = entry.id === editingSnippet;
+    return `<button type="button" class="dictionary-row${selected ? ' selected' : ''}" data-snippet-id="${escapeHtml(entry.id)}" aria-pressed="${selected}"><span class="dictionary-word">${escapeHtml(entry.trigger)}</span><span class="dictionary-aliases">${escapeHtml(entry.text.replace(/\s+/g, ' '))}</span><span class="chevron">${icon('chevron')}</span></button>`;
+  }).join('') : '<div class="list-empty"><strong>Сниппетов пока нет</strong><span>Добавь фразу для почты, реквизитов или частого ответа.</span></div>';
+}
+function openSnippet(entry, focus = false) {
+  editingSnippet = entry?.id ?? null;
+  $('#snippet-title').textContent = entry ? 'Изменить сниппет' : 'Новый сниппет';
+  $('#snippet-trigger').value = entry?.trigger ?? ''; $('#snippet-text').value = entry?.text ?? '';
+  $('#delete-snippet').hidden = !entry;
+  validateSnippet(); renderSnippets();
+  if (focus) $('#snippet-trigger').focus();
+}
+// Same folding as the store: case, «ё» and punctuation between words do not make a new phrase.
+function foldPhrase(text) { return text.toLocaleLowerCase('ru').replace(/ё/g, 'е').replace(/[^\p{L}\p{N}]+/gu, ' ').trim(); }
+function validateSnippet(serverError = '') {
+  const trigger = foldPhrase($('#snippet-trigger').value), text = $('#snippet-text').value;
+  const duplicate = Boolean(trigger) && state.snippets.some(e => e.id !== editingSnippet && foldPhrase(e.trigger) === trigger);
+  const message = serverError || (duplicate ? 'Такая фраза уже есть' : '');
+  $('#snippet-error').innerHTML = message ? `${icon('alert')}<span>${escapeHtml(message)}</span>` : '';
+  $('#snippet-trigger').classList.toggle('invalid', duplicate);
+  $('#snippet-count').textContent = `${text.length}/4000`;
+  const valid = $('#snippet-trigger').value.trim().length >= 2 && Boolean(trigger) && Boolean(text.trim()) && !duplicate;
+  $('#save-snippet').disabled = !valid;
+  return valid;
+}
 function renderDictionary() {
+  if (state.dictionaryTab === 'snippets') { renderSnippets(); return; }
   $('#dictionary-count').textContent = `${state.dictionary.length} из 100`;
   $('#dictionary-list').innerHTML = state.dictionary.length ? state.dictionary.map(entry => {
     const selected = entry.id === editingWord;
@@ -579,6 +623,8 @@ document.addEventListener('click', event => {
   if (target.closest('button[data-formatter]')) { guard(selectFormatter); return; }
   const row = target.closest('[data-select-entry]'); if (row) { selectEntry(row.dataset.selectEntry); return; }
   const word = target.closest('[data-word-id]'); if (word) { openWord(state.dictionary.find(e => e.id === word.dataset.wordId)); return; }
+  const snippet = target.closest('[data-snippet-id]'); if (snippet) { openSnippet(state.snippets.find(e => e.id === snippet.dataset.snippetId)); return; }
+  const dictionaryTabButton = target.closest('[data-dictionary-tab]'); if (dictionaryTabButton) { dictionaryTab(dictionaryTabButton.dataset.dictionaryTab); return; }
   const remove = target.closest('[data-remove-alias]');
   if (remove) { wordAliases.splice(Number(remove.dataset.removeAlias), 1); renderAliases(); $('#alias-input').focus(); return; }
   if (target.closest('#alias-box') && !target.closest('input')) { $('#alias-input').focus(); return; }
@@ -606,7 +652,8 @@ document.addEventListener('keydown', event => {
   const typing = event.target.closest?.('input, textarea, select');
   // Physical key codes keep the shortcuts working on the Russian layout.
   if (mod && event.code === 'KeyF' && state.page === 'history') { event.preventDefault(); $('#history-search').focus(); $('#history-search').select(); return; }
-  if (mod && event.code === 'KeyN' && state.page === 'dictionary') { event.preventDefault(); openWord(null, true); return; }
+  if (mod && event.code === 'KeyN' && state.page === 'dictionary') { event.preventDefault(); newDictionaryItem(); return; }
+  if (mod && event.key === 'Enter' && event.target === $('#snippet-text')) { event.preventDefault(); $('#snippet-form').requestSubmit(); return; }
   if (event.key === 'Escape' && !typing && ['requesting', 'transcribing'].includes(state.phase)) { guard(cancelOperation); return; }
   if (state.page !== 'history' || mod || event.altKey) return;
   const fromSearch = event.target === $('#history-search');
@@ -640,7 +687,27 @@ $('#save-context').addEventListener('click', () => guard(async () => {
   button.doneTimer = setTimeout(() => { button.classList.remove('done'); button.textContent = 'Сохранить контекст'; }, 1800);
 }));
 $('#history-search').addEventListener('input', renderHistory);
-$('#add-word').addEventListener('click', () => openWord(null, true));
+function newDictionaryItem() { if (state.dictionaryTab === 'snippets') openSnippet(null, true); else openWord(null, true); }
+$('#add-word').addEventListener('click', newDictionaryItem);
+$('#snippet-trigger').addEventListener('input', () => validateSnippet());
+$('#snippet-text').addEventListener('input', () => validateSnippet());
+$('#cancel-snippet').addEventListener('click', () => openSnippet(state.snippets.find(e => e.id === editingSnippet) || null));
+$('#delete-snippet').addEventListener('click', () => guard(async () => {
+  if (!editingSnippet) return;
+  state.snippets = await api.snippets(state.snippets.filter(e => e.id !== editingSnippet));
+  openSnippet(state.snippets[0] || null); toast('Сниппет удалён');
+}));
+$('#snippet-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  if (!validateSnippet()) return;
+  const entry = {id: editingSnippet || crypto.randomUUID(), trigger: $('#snippet-trigger').value.trim(), text: $('#snippet-text').value};
+  const entries = editingSnippet ? state.snippets.map(e => e.id === editingSnippet ? entry : e) : [...state.snippets, entry];
+  try {
+    state.snippets = await api.snippets(entries);
+    openSnippet(state.snippets.find(e => e.id === entry.id) || null);
+    toast('Сниппет сохранён');
+  } catch (error) { validateSnippet((error.message || String(error)).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '')); }
+});
 $('#word-input').addEventListener('input', () => validateWord());
 $('#alias-input').addEventListener('keydown', event => {
   const input = event.target;

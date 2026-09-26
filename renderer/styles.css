@@ -343,8 +343,10 @@ mark.uncertain { padding: 0 3px; border-radius: 4px; background: var(--yellow-so
 .dictionary-aliases.none { color: var(--ash); }
 .dictionary-row .chevron { color: var(--ash); }
 .pane-foot { flex-shrink: 0; margin: 0; padding: 12px 24px; border-top: 1px solid var(--line-soft); font-size: 12px; line-height: 1.5; letter-spacing: .2px; color: var(--mute); }
-#dictionary-form .detail-body { gap: 24px; }
-#dictionary-form .field { max-width: 520px; }
+#dictionary-form .detail-body, #snippet-form .detail-body { gap: 24px; }
+#dictionary-form .field, #snippet-form .field { max-width: 520px; }
+.dictionary-tabs { margin-left: 0; }
+#snippet-text { height: auto; min-height: 168px; padding: 10px 12px 28px; line-height: 1.5; resize: vertical; }
 .input {
   height: 36px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--elevated);
   color: var(--ink); outline: none; transition: border-color .15s;

@@ -78,7 +78,8 @@ function beginCapture(global = false) {
   if (!worker.status) throw new Error('Движок ещё запускается. Попробуй через несколько секунд.');
   if (!worker.status.models?.find(m => m.id === store.data.settings.model)?.installed) throw new Error('Сначала скачай модель в Шёпоте');
   capture = {id: crypto.randomUUID(), global, target: global ? paste.capture() : null, phase: 'requesting',
-    settings: structuredClone(store.data.settings), dictionary: structuredClone(store.data.dictionary)};
+    settings: structuredClone(store.data.settings), dictionary: structuredClone(store.data.dictionary),
+    snippets: structuredClone(store.data.snippets)};
   // Load the model while the user speaks instead of after they stop.
   worker.notify('preload', {model: capture.settings.model, formatting: capture.settings.formatting});
   if (blocker === undefined) blocker = powerSaveBlocker.start('prevent-app-suspension');
@@ -141,6 +142,7 @@ async function runTranscription(filePath, source, recordingSession = null, retry
   setBusy(true);
   const settings = recordingSession?.settings || structuredClone(store.data.settings);
   const dictionary = recordingSession?.dictionary || structuredClone(store.data.dictionary);
+  const snippets = (recordingSession?.snippets || structuredClone(store.data.snippets)).map(({trigger, text}) => ({trigger, text}));
   if (recordingSession) {
     recordingSession.phase = 'transcribing';
     if (recordingSession.global) { hideWidget(); showWidget({phase: 'transcribing', message: '', level: 0}, false); }
@@ -151,7 +153,7 @@ async function runTranscription(filePath, source, recordingSession = null, retry
       store.data.pendingRecordings.push({id: crypto.randomUUID(), audioFile, source, createdAt: new Date().toISOString()});
       store.save();
     }
-    const result = await worker.request('transcribe', {audioFile, ...settings, dictionary});
+    const result = await worker.request('transcribe', {audioFile, ...settings, dictionary, snippets});
     if (currentJob !== job) { canceled = task.canceled; return {canceled: true}; }
     if (result.noSpeech) {
       completed = true;
@@ -261,6 +263,7 @@ else {
     });
     ipc('settings', value => store.setSettings(value));
     ipc('dictionary', value => store.setDictionary(value));
+    ipc('snippets', value => store.setSnippets(value));
     ipc('download', async id => {
       if (busy || capture) throw new Error('Дождись завершения текущей операции');
       const currentJob = ++job;

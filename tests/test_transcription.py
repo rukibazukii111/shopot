@@ -373,3 +373,68 @@ def test_raw_mode_keeps_hesitations(tmp_path):
     assert engine.clean(spoken, 'raw', True) == spoken
     assert engine.clean(spoken, 'natural', False) == spoken
     assert engine.clean(spoken, 'natural', True) == 'Видосы готовы.'
+
+
+SNIPPETS = [{'trigger': 'моя почта', 'text': 'ivan@example.com'},
+            {'trigger': 'моя рабочая почта', 'text': 'ivan@work.example'},
+            {'trigger': 'моя подпись', 'text': 'С уважением,\nИван Петров'},
+            {'trigger': 'быстрый ответ', 'text': 'Спасибо, получил. Посмотрю вечером.'},
+            {'trigger': 'ещё ссылка', 'text': 'https://example.com'}]
+
+
+@pytest.mark.parametrize('spoken, expected', [
+    # Inside a sentence the punctuation around the phrase stays; case, «ё» and commas between words do not matter.
+    ('Пиши на моя почта, если что.', 'Пиши на ivan@example.com, если что.'),
+    ('Пиши на Моя, почта.', 'Пиши на ivan@example.com.'),
+    ('Вот еще ссылка.', 'Вот https://example.com.'),
+    # The longer phrase wins.
+    ('Пиши на моя рабочая почта.', 'Пиши на ivan@work.example.'),
+    # A whole sentence at the end loses its period: an address is pasted clean.
+    ('Напиши мне. Моя почта.', 'Напиши мне. ivan@example.com'),
+    # In the middle it keeps the period, so the next sentence does not run into it.
+    ('Моя почта. Жду ответа.', 'ivan@example.com. Жду ответа.'),
+    # A multi-line snippet stands as its own paragraph.
+    ('Спасибо за встречу. Моя подпись.', 'Спасибо за встречу.\n\nС уважением,\nИван Петров'),
+    ('Привет. Моя подпись. Пока.', 'Привет.\n\nС уважением,\nИван Петров\n\nПока.'),
+    # Saved text with its own end punctuation does not get a second one.
+    ('Отвечу так: быстрый ответ.', 'Отвечу так: Спасибо, получил. Посмотрю вечером.'),
+    # Whole words only.
+    ('Моя почтальонша пришла.', 'Моя почтальонша пришла.'),
+])
+def test_snippets_replace_spoken_phrases_with_saved_text(spoken, expected):
+    from text_processing import expand_snippets
+    text, used = expand_snippets(spoken, SNIPPETS)
+    assert text == expected
+    assert bool(used) == (spoken != expected)
+
+
+def test_snippets_do_not_chain_and_survive_dictionary_replacements():
+    from text_processing import expand_snippets
+    chained = [{'trigger': 'адрес', 'text': 'моя почта'}, {'trigger': 'моя почта', 'text': 'x@y.z'}]
+    assert expand_snippets('Пиши на адрес.', chained) == ('Пиши на моя почта.', ['адрес'])
+    # The dictionary already turned «гитхаб» into «GitHub»; the spoken phrase still matches.
+    terms = [{'word': 'GitHub', 'aliases': ['гитхаб']}]
+    assert expand_snippets('Смотри мой GitHub.', [{'trigger': 'мой гитхаб', 'text': 'github.com/ivan'}], terms) == (
+        'Смотри github.com/ivan.', ['мой гитхаб'])
+    assert expand_snippets('Текст.', []) == ('Текст.', [])
+
+
+def installed_engine(tmp_path):
+    """An engine whose GigaAM counts as downloaded, with one recording in the audio folder."""
+    import json
+    from engine import GIGAAM_FILES, MODELS
+    engine = Engine(tmp_path)
+    folder = engine.model_path('gigaam')
+    folder.mkdir(parents=True)
+    (folder / 'shopot-ready.json').write_text(json.dumps({'revision': MODELS['gigaam']['revision']}), 'utf-8')
+    for name in GIGAAM_FILES:
+        (folder / name).write_bytes(b'x')
+    (engine.audio_dir / 'abc.wav').write_bytes(b'x')
+    return engine
+
+
+def test_engine_rejects_malformed_snippets(tmp_path):
+    engine = installed_engine(tmp_path)
+    for snippets in ('текст', [{'trigger': 'а' * 61, 'text': 'x'}], [{'trigger': 'фраза'}], [{'trigger': 'ф', 'text': 'x'}] * 51):
+        with pytest.raises(ValueError, match='сниппеты'):
+            engine.transcribe({'model': 'gigaam', 'audioFile': 'abc.wav', 'snippets': snippets})

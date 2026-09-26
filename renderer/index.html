@@ -83,12 +83,13 @@
     <section id="page-dictionary" class="page split dictionary" hidden>
       <div class="pane list-pane">
         <div class="pane-head">
-          <div class="pane-title"><h1>Мой словарь</h1><span id="dictionary-count" class="count-badge">0 из 100</span><button id="add-word" class="button"><span data-icon="plus"></span>Добавить слово<span class="keys"><kbd class="modifier-key">Ctrl</kbd><kbd>N</kbd></span></button></div>
-          <p class="info-line"><span data-icon="info"></span><span>Замены работают с любой моделью. Подсказки для распознавания понимает только Whisper.</span></p>
+          <div class="pane-title"><h1>Мой словарь</h1><span id="dictionary-count" class="count-badge">0 из 100</span><button id="add-word" class="button"><span data-icon="plus"></span><span id="add-label">Добавить слово</span><span class="keys"><kbd class="modifier-key">Ctrl</kbd><kbd>N</kbd></span></button></div>
+          <div class="pill-tabs dictionary-tabs" role="tablist" aria-label="Словарь"><button type="button" class="pill-tab active" role="tab" aria-selected="true" data-dictionary-tab="words">Слова</button><button type="button" class="pill-tab" role="tab" aria-selected="false" data-dictionary-tab="snippets">Сниппеты</button></div>
+          <p class="info-line"><span data-icon="info"></span><span id="dictionary-info">Замены работают с любой моделью. Подсказки для распознавания понимает только Whisper.</span></p>
         </div>
-        <div class="dictionary-columns" aria-hidden="true"><span>Как писать</span><span>Что заменять</span><span></span></div>
+        <div class="dictionary-columns" aria-hidden="true"><span id="dictionary-column-a">Как писать</span><span id="dictionary-column-b">Что заменять</span><span></span></div>
         <div id="dictionary-list" class="list-scroll"></div>
-        <p class="pane-foot">До 100 слов. В подсказку Whisper попадают первые 500 символов словаря.</p>
+        <p id="dictionary-foot" class="pane-foot">До 100 слов. В подсказку Whisper попадают первые 500 символов словаря.</p>
       </div>
       <form id="dictionary-form" class="pane detail-pane" novalidate>
         <div class="detail-head"><h2 id="word-dialog-title">Новое слово</h2></div>
@@ -109,6 +110,28 @@
           <span class="spacer"></span>
           <button type="button" id="cancel-word" class="button-ghost">Отмена</button>
           <button type="submit" id="save-word" class="button-primary">Сохранить слово<kbd>Enter</kbd></button>
+        </div>
+      </form>
+      <form id="snippet-form" class="pane detail-pane" novalidate hidden>
+        <div class="detail-head"><h2 id="snippet-title">Новый сниппет</h2></div>
+        <div class="detail-body">
+          <div class="field">
+            <label for="snippet-trigger">Фраза</label>
+            <input id="snippet-trigger" class="input" maxlength="60" placeholder="Например, моя почта" autocomplete="off">
+            <p id="snippet-error" class="inline-error" role="alert"></p>
+            <p class="help">Скажи её во время диктовки, и вместо неё вставится текст ниже. Регистр и знаки между словами не важны.</p>
+          </div>
+          <div class="field">
+            <label for="snippet-text">Текст</label>
+            <div class="textarea-wrap"><textarea id="snippet-text" class="input" rows="8" maxlength="4000" placeholder="ivan@example.com"></textarea><span id="snippet-count" class="counter">0/4000</span></div>
+            <p class="help">Вставляется ровно так, как написан: словарь и оформление его не трогают. Текст в несколько строк встанет отдельным абзацем.</p>
+          </div>
+        </div>
+        <div class="action-bar">
+          <button type="button" id="delete-snippet" class="button-ghost danger"><span data-icon="trash"></span>Удалить сниппет</button>
+          <span class="spacer"></span>
+          <button type="button" id="cancel-snippet" class="button-ghost">Отмена</button>
+          <button type="submit" id="save-snippet" class="button-primary">Сохранить сниппет<span class="keys"><kbd class="modifier-key">Ctrl</kbd><kbd>Enter</kbd></span></button>
         </div>
       </form>
     </section>

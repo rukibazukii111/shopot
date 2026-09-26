@@ -28,8 +28,8 @@ os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 import llm
 import memory
-from text_processing import (format_transcript, join_segments, layout_text, pause_sentences, split_sentences,
-                             strip_hesitations, vocabulary_prompt)
+from text_processing import (expand_snippets, format_transcript, join_segments, layout_text, pause_sentences,
+                             split_sentences, strip_hesitations, vocabulary_prompt)
 
 WHISPER_FILES = ["model.bin", "config.json", "tokenizer.json", "vocabulary.json", "preprocessor_config.json"]
 GIGAAM_FILES = ["config.json", "v3_e2e_rnnt_encoder.int8.onnx", "v3_e2e_rnnt_decoder.int8.onnx",
@@ -295,6 +295,12 @@ class Engine:
             raise ValueError(f"{MODELS[key]['name']} распознаёт только русский. "
                              "Для других языков выбери Whisper в разделе «Модели».")
         entries = request.get("dictionary", [])
+        snippets = request.get("snippets") or []
+        if not isinstance(snippets, list) or len(snippets) > 50 or not all(
+                isinstance(s, dict) and isinstance(s.get("trigger"), str) and isinstance(s.get("text"), str)
+                and len(s["trigger"]) <= 60 and len(s["text"]) <= 4000 for s in snippets):
+            raise ValueError("Некорректные сниппеты")
+        request = {**request, "snippets": snippets}
         mode = request.get("mode", "natural")
         if mode not in ("natural", "minimal", "raw"):
             raise ValueError("Неизвестный режим текста")
@@ -454,8 +460,10 @@ class Engine:
             text, formatting = self.layout(text, pause_sentences(chunks, gaps, names), formatting, request_id)
         else:
             formatting = "off"
+        # Last, so the saved text goes in exactly as written: no dictionary, cleanup or layout touches it.
+        text, expanded = expand_snippets(text, request["snippets"], entries) if mode != "raw" else (text, [])
         return {"formatting": formatting, "formatElapsed": finite(time.monotonic() - format_started),"text": text, "rawText": raw, "words": words, "segments": parsed,
-                "replacements": replacements, "duration": finite(duration),
+                "replacements": replacements, "snippets": expanded, "duration": finite(duration),
                 "elapsed": finite(time.monotonic() - started), "language": detected,
                 "model": key, "noSpeech": not bool(raw), "device": "cpu",
                 "loadElapsed": finite(load_elapsed)}

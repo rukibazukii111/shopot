@@ -237,6 +237,68 @@ def layout_text(text, pauses=(), tags=None):
     return render_layout(sentences, tags)
 
 
+SNIPPET_SEPARATOR = r"[\s,;:\-–—]+"
+
+
+def _spoken_words(phrase):
+    return re.findall(r"[^\W_]+", phrase)
+
+
+def _word_pattern(word):
+    # «е» and «ё» are the same letter in speech recognition output.
+    return "".join("[её]" if c in "её" else "[ЕЁ]" if c in "ЕЁ" else re.escape(c) for c in word)
+
+
+def expand_snippets(text, snippets, entries=()):
+    """Replace spoken trigger phrases with the user's saved text. Returns (text, triggers used).
+
+    The saved text goes in exactly as written and is never matched again. Punctuation and hyphens
+    between the spoken words do not matter, and a dictionary replacement inside the phrase still matches.
+    A trigger that is a whole sentence takes the sentence's end punctuation with it, and a
+    multi-line snippet then stands as its own paragraph.
+    """
+    alternatives = []
+    for index, snippet in enumerate(snippets or []):
+        trigger = str(snippet.get("trigger", ""))
+        for variant in {trigger, format_transcript(trigger, entries)[0]}:
+            words = _spoken_words(variant)
+            if words:
+                alternatives.append((sum(map(len, words)), index, SNIPPET_SEPARATOR.join(map(_word_pattern, words))))
+    if not alternatives:
+        return text, []
+    # One pass over the text, longer phrases first, so «моя рабочая почта» wins over «моя почта».
+    alternatives.sort(key=lambda item: -item[0])
+    body = "|".join(f"(?P<s{n}_{index}>{words})" for n, (_, index, words) in enumerate(alternatives))
+    pattern = re.compile(r"(?<![^\W_])(?:" + body + r")(?![^\W_])", re.IGNORECASE)
+    parts, position, used = [], 0, []
+    for match in pattern.finditer(text):
+        snippet = snippets[int(match.lastgroup.split("_")[1])]
+        saved = str(snippet.get("text", "")).replace("\r\n", "\n").strip("\n")
+        start, end = match.span()
+        tail = re.match(r"[.!?…]+", text[end:])
+        after = end + (tail.end() if tail else 0)
+        rest = text[after:]
+        whole = bool(start == 0 or re.search(r"(?:[.!?…]\s+|\n\s*)$", text[:start])) and \
+            bool(tail or not rest or rest[0] == "\n")
+        block = whole and "\n" in saved
+        head = text[position:start]
+        # The spoken end punctuation goes when the saved text brings its own, or when nothing follows
+        # (an address or a link at the end is pasted without a stray period).
+        if tail and (block or re.search(r"[.!?…]$", saved) or (whole and not rest.strip())):
+            end = after
+        if block:
+            head = head.rstrip()
+            saved = ("\n\n" if head or parts else "") + saved
+            if text[end:].strip():
+                saved += "\n\n"
+                end += len(text[end:]) - len(text[end:].lstrip())
+        parts += [head, saved]
+        position = end
+        used.append(str(snippet.get("trigger", "")))
+    parts.append(text[position:])
+    return "".join(parts), used
+
+
 def format_transcript(text, entries=None, mode="natural"):
     text = text.strip()
     if mode == "raw":
