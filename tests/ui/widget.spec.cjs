@@ -179,8 +179,11 @@ test('Windows: native paste reaches the original external input exactly once wit
       const saved = [];
       for (const item of await clipboard.read()) {
         const data = {};
-        for (const type of item.types) data[type] = await item.getType(type);
-        saved.push(new ClipboardItem(data));
+        for (const type of item.types) {
+          // An unreadable flavour (a stale or app-private one) must not lose the rest of the clipboard.
+          try { data[type] = await item.getType(type); } catch {}
+        }
+        if (Object.keys(data).length) saved.push(new ClipboardItem(data));
       }
       globalThis.__test.clipboardSnapshot = saved;
     });
@@ -202,6 +205,14 @@ test('Windows: native paste reaches the original external input exactly once wit
     await expect(page.locator('#record-time')).not.toHaveText('00:00');
     await app.evaluate(() => globalThis.__test.toggle());
     await expect.poll(() => app.evaluate(() => globalThis.__test.requests.length)).toBe(1);
+    // Windows does not let a window opened by a background process hold the foreground while someone
+    // works in another app, and the app then refuses to paste on purpose. Say so instead of failing
+    // on an empty field: the run needs an idle desktop with the test window in front.
+    await target.evaluate(({BrowserWindow}) => { const window = BrowserWindow.getAllWindows()[0]; window.show(); window.focus(); });
+    const foreground = await app.evaluate(() => globalThis.__test.foregroundPid());
+    test.skip(foreground !== targetPid,
+      `Рабочий стол потерял фокус: впереди процесс ${foreground}, а не тестовое окно ${targetPid}. ` +
+      'Запусти на свободном рабочем столе: сверни другие окна, нажми на окно «Shopot — тест вставки» и не трогай мышь и клавиатуру.');
     await app.evaluate(() => globalThis.__test.finish());
     await expect(page.locator('#record-label')).toHaveText('Начать диктовку');
     await expect(fieldPage.locator('textarea')).toHaveValue('Видосы для GitHub готовы.');
