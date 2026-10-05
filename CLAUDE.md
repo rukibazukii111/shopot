@@ -56,7 +56,7 @@ Data dir: `SHOPOT_DATA_DIR`, else `.local/` from source, else `%APPDATA%/Shopot`
 
 ## Invariants (keep them)
 
-- **Security model.** Renderers are sandboxed, with contextIsolation and without Node. Navigation and window.open are denied. All `http(s)/ws(s)` requests from the session are cancelled; only the Python worker touches the network, and only for an explicit download. Every `ipcMain.handle` goes through `ipc()`/`trusted()`, which checks the sender and frame URL. Inputs are validated in main. A new IPC channel is registered via `ipc()` and exposed in `preload.cjs`.
+- **Security model.** Renderers are sandboxed, with contextIsolation and without Node. Navigation and window.open are denied. All `http(s)/ws(s)` requests from the session are cancelled; only the Python worker touches the network, and only for an explicit download. The one other way out: `report-problem` opens a GitHub link built in `report.cjs` in the user's browser (`shell.openExternal`); the renderer passes nothing into it. Every `ipcMain.handle` goes through `ipc()`/`trusted()`, which checks the sender and frame URL. Inputs are validated in main. A new IPC channel is registered via `ipc()` and exposed in `preload.cjs`.
 - **Words never change.** Layout (rules or LLM) only tags sentences and rebuilds the text from the original sentences; the LLM never writes text. Tests check that the word sequence is unchanged.
 - **Nothing is lost.** `runTranscription()` journals audio in `pendingRecordings` before inference; orphaned audio is recovered on startup.
 - **No stale results.** A monotonically increasing `job` counter invalidates results after a cancel or restart. Late events must not reopen the widget or paste.

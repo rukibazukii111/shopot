@@ -866,6 +866,12 @@ $('#save-context').addEventListener('click', () => guard(async () => {
   clearTimeout(button.doneTimer);
   button.doneTimer = setTimeout(() => { button.classList.remove('done'); button.textContent = 'Сохранить контекст'; }, 1800);
 }));
+$('#journal-open').addEventListener('click', () => guard(() => api.openJournal()));
+$('#journal-save').addEventListener('click', () => guard(async () => { if (await api.saveJournal()) toast('Журнал сохранён'); }));
+$('#report-problem').addEventListener('click', () => guard(async () => {
+  if (await api.reportProblem()) toast('Открыл страницу в браузере');
+  else toast('Не удалось открыть браузер. Ссылка скопирована, вставь её в адресную строку', 'muted');
+}));
 $('#history-search').addEventListener('input', renderHistory);
 function newDictionaryItem() { if (state.dictionaryTab === 'snippets') openSnippet(null, true); else openWord(null, true); }
 $('#add-word').addEventListener('click', newDictionaryItem);

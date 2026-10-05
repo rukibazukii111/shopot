@@ -1,4 +1,4 @@
-const {app, BrowserWindow, ipcMain, dialog, clipboard, desktopCapturer, globalShortcut, session, Tray, Menu, nativeImage, nativeTheme, powerSaveBlocker, screen, systemPreferences} = require('electron');
+const {app, BrowserWindow, ipcMain, dialog, clipboard, desktopCapturer, globalShortcut, session, shell, Tray, Menu, nativeImage, nativeTheme, powerSaveBlocker, screen, systemPreferences} = require('electron');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -11,9 +11,12 @@ const {createNativeBackend} = require('./native-input.cjs');
 const {suggestCorrections} = require('./corrections.cjs');
 const {exportText} = require('./export.cjs');
 const {MicWatcher, meetingTurns, meetingText, summaryPrompt} = require('./meetings.cjs');
-const {createJournal, errorFields} = require('./log.cjs');
+const {createJournal, errorFields, timestamp} = require('./log.cjs');
+const {systemName, issueUrl} = require('./report.cjs');
 
 const root = path.resolve(__dirname, '..');
+// From package.json rather than app.getVersion(), which reports Electron's version when main.cjs is loaded by a test harness.
+const appVersion = require('../package.json').version;
 const dataDir = path.resolve(process.env.SHOPOT_DATA_DIR || (app.isPackaged ? path.join(app.getPath('appData'), 'Shopot') : path.join(root, '.local')));
 app.setPath('userData', dataDir);
 // Diagnostics for bug reports. Only named fields go in (log.cjs): never pass it text, a file name or a whole object.
@@ -81,6 +84,8 @@ function snapshot() { return {...store.data, engine: worker.status, engineError,
 function modelId(id) { if (!MODEL_IDS.includes(id)) throw new Error('Неизвестная модель'); return id; }
 function textValue(value) { if (typeof value !== 'string' || value.length > 200000) throw new Error('Недопустимый текст'); return value; }
 function entryFor(id) { const entry = store.data.history.find(e => e.id === id); if (!entry) throw new Error('Запись не найдена'); return entry; }
+// A file system failure as a plain message for the window; its code still reaches the journal through ipc().
+function fileError(message, error) { return Object.assign(new Error(message), {code: error?.code}); }
 function audioFor(entry) {
   if (!entry.audioFile || !/^[a-f0-9-]+\.(wav|webm|mp3|m4a|ogg|flac|mp4)$/i.test(entry.audioFile)) return null;
   return path.join(audioDir, entry.audioFile);
@@ -373,8 +378,7 @@ async function runTranscription(filePath, source, recordingSession = null, retry
 
 if (!app.requestSingleInstanceLock()) { app.quit(); }
 else {
-  // From package.json rather than app.getVersion(), which reports Electron's version when main.cjs is loaded by a test harness.
-  journal.write('app-start', {version: require('../package.json').version, electron: process.versions.electron, os: os.release(), platform: process.platform,
+  journal.write('app-start', {version: appVersion, electron: process.versions.electron, os: os.release(), platform: process.platform,
     arch: process.arch, memoryGb: Math.round(os.totalmem() / 2 ** 30), packaged: app.isPackaged, hidden: startHidden,
     // A non-ASCII or spaced path to the data folder is a common cause of install-specific failures; the path itself stays out.
     dataDirNonAscii: /[^\x20-\x7e]/.test(dataDir), dataDirSpace: /\s/.test(dataDir)});
@@ -592,6 +596,26 @@ else {
       const entry = entryFor(id);
       await clipboard.writeText(clipboardText(summaryPrompt(entry.text, entry.meeting?.app)));
       return true;
+    });
+    // The journal and «Сообщить о проблеме» (PRD 6.27). The window passes nothing: main knows the folder and builds the link.
+    ipc('journal-open', async () => {
+      try { fs.mkdirSync(journal.dir, {recursive: true}); } catch (error) { throw fileError('Не удалось открыть папку журнала', error); }
+      if (await shell.openPath(journal.dir)) throw new Error('Не удалось открыть папку журнала');
+      return true;
+    });
+    ipc('journal-save', async () => {
+      const name = `Шёпот-журнал-${timestamp(new Date()).slice(0, 10)}.txt`;
+      const result = await dialog.showSaveDialog(window, {defaultPath: path.join(app.getPath('downloads'), name), filters: [{name: 'Текст', extensions: ['txt']}]});
+      if (result.canceled) return false;
+      let text;
+      try { text = journal.read(); } catch (error) { throw fileError('Не удалось прочитать журнал', error); }
+      try { fs.writeFileSync(result.filePath, text, 'utf8'); } catch (error) { throw fileError('Не удалось сохранить журнал. Выбери другую папку', error); }
+      return true;
+    });
+    ipc('report-problem', async () => {
+      const link = issueUrl({version: appVersion, system: systemName(process.platform, process.getSystemVersion()), arch: process.arch});
+      try { await shell.openExternal(link); return true; }
+      catch { clipboard.writeText(link); return false; }
     });
     if (MEETINGS) {
       // System audio for a call being recorded, and only for the main window: Chromium needs a screen source
