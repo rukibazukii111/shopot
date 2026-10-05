@@ -41,6 +41,15 @@ test('app names with spaces and Cyrillic are kept in quotes', t => {
   assert.match(f.read(), / app="Яндекс Браузер" appId=browser\.exe$/m);
 });
 
+test('a list is written comma-separated, and an empty one as none', t => {
+  const f = fixture(t);
+  f.journal.write('engine-ready', {models: ['gigaam@322c3b294926', 'turbo@abc']});
+  f.journal.write('engine-ready', {models: []});
+  f.journal.write('engine-ready', {models: ['слово из диктовки']});
+  assert.deepEqual(f.read().trim().split('\n').map(line => line.split(' ').slice(1).join(' ')),
+    ['engine-ready models=gigaam@322c3b294926,turbo@abc', 'engine-ready models=none', 'engine-ready rejected=models']);
+});
+
 test('an error message is written only for expected errors, with the home folder hidden', t => {
   const f = fixture(t, {home: 'C:\\Users\\Ivan', platform: 'win32'});
   f.journal.write('ipc-error', {channel: 'transcribe', kind: 'KeyError', expected: false, message: 'слово из диктовки'});

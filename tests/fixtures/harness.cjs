@@ -4,7 +4,7 @@ const {globalShortcut} = require('electron');
 // Tests pick the machine size: warnings for heavy models depend on it.
 if (process.env.SHOPOT_TEST_TOTAL_MEMORY) require('node:os').totalmem = () => Number(process.env.SHOPOT_TEST_TOTAL_MEMORY);
 const {Worker} = require('../../electron/worker.cjs');
-const status = {formatter: {name: 'Qwen3-4B', size: '2,4 ГБ', supported: true, installed: false}, models: [{id: 'gigaam', installed: true, languages: ['ru']}, {id: 'turbo', installed: true, languages: ['ru', 'en', 'auto']}, {id: 'small', installed: true, languages: ['ru', 'en', 'auto'], translates: true}], device: 'cpu', computeType: 'int8'};
+const status = {formatter: {name: 'Qwen3-4B', size: '2,4 ГБ', supported: true, installed: false}, models: [{id: 'gigaam', installed: true, languages: ['ru'], revision: '322c3b294926a5c8'}, {id: 'turbo', installed: true, languages: ['ru', 'en', 'auto']}, {id: 'small', installed: true, languages: ['ru', 'en', 'auto'], translates: true}], device: 'cpu', computeType: 'int8'};
 globalThis.__test = {requests: [], notifications: [], nativeCalls: []};
 globalThis.__test.status = status;
 const nativeModule = require('../../electron/native-input.cjs');
@@ -41,6 +41,8 @@ Worker.prototype.request = function (command, payload) {
     globalThis.__test.resolve = value => resolve(value);
     globalThis.__test.finish = () => resolve({text: 'Видосы для GitHub готовы.', rawText: 'Видосы для GitHub готовы.', duration: 2, elapsed: .1, model: 'turbo', words: []});
     globalThis.__test.fail = () => reject(new Error('Тестовая ошибка распознавания'));
+    // An engine error as worker.cjs builds it from the reply: its type and whether the engine worded it itself.
+    globalThis.__test.failWith = ({message, kind, expected}) => reject(Object.assign(new Error(message), {engine: true, kind, expected, canceled: false}));
     globalThis.__test.progress = () => this.emit('progress', {stage: 'transcribe', fraction: .5, message: 'Тестовый прогресс'});
     this.testReject = reject;
   });

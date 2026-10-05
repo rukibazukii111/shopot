@@ -74,4 +74,11 @@ test('a call is offered, recorded as two channels while it goes on and saved as 
     await expect(page.locator('#meeting-ignore')).toContainText('deadlock');
     answering = false; await answers;
   } finally { answering = false; await app.close(); }
+  // The journal follows the call part by part, without a word of what was said.
+  const journal = fs.readFileSync(path.join(dataDir, 'logs', 'shopot.log'), 'utf8');
+  expect(journal).not.toMatch(/реплика|собеседника/i);
+  expect(journal).toMatch(/ meeting-start app=Discord appId=discord\.exe trigger=offer\n/);
+  expect(journal).toMatch(/ meeting-chunk index=0 channel=left result=ok attempts=1 transcribe=\S+\n/);
+  expect(journal).toMatch(/ meeting-chunk index=0 channel=right result=ok attempts=1 transcribe=\S+\n/);
+  expect(journal).toMatch(/ meeting-finish duration=\S+ turns=\d+ chunks=\d+ failed=0 result=saved\n/);
 });

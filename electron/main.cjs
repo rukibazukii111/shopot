@@ -11,10 +11,15 @@ const {createNativeBackend} = require('./native-input.cjs');
 const {suggestCorrections} = require('./corrections.cjs');
 const {exportText} = require('./export.cjs');
 const {MicWatcher, meetingTurns, meetingText, summaryPrompt} = require('./meetings.cjs');
+const {createJournal, errorFields} = require('./log.cjs');
 
 const root = path.resolve(__dirname, '..');
 const dataDir = path.resolve(process.env.SHOPOT_DATA_DIR || (app.isPackaged ? path.join(app.getPath('appData'), 'Shopot') : path.join(root, '.local')));
 app.setPath('userData', dataDir);
+// Diagnostics for bug reports. Only named fields go in (log.cjs): never pass it text, a file name or a whole object.
+const journal = createJournal({dir: path.join(dataDir, 'logs')});
+const launchedAt = Date.now();
+let engineStartedAt = 0;
 const audioDir = path.join(dataDir, 'audio');
 const uiUrl = pathToFileURL(path.join(root, 'renderer', 'index.html')).href;
 const widgetUrl = pathToFileURL(path.join(root, 'renderer', 'widget.html')).href;
@@ -32,6 +37,7 @@ let widgetTimer, activeTranscription, downloading = false, job = 0;
 const MEETINGS = process.platform === 'win32';
 const MEETING_CHUNK_MS = (Number(process.env.SHOPOT_MEETING_CHUNK_SECONDS) || 300) * 1000;
 const MIC_POLL_MS = Number(process.env.SHOPOT_MIC_POLL_MS) || 4000;
+const WINDOW_GONE = 'Окно записи перезапустилось';
 let meeting = null, offer = null, offerTimer, meetingClock, micWatcher = null, meetingQueue = Promise.resolve();
 let widgetState = {phase: 'requesting', shortcut: process.platform === 'darwin' ? '⌘⇧Space' : 'Ctrl⇧Space'};
 
@@ -39,7 +45,36 @@ function send(channel, value) { if (window && !window.isDestroyed()) window.webC
 function trusted(event) {
   if (event.sender !== window?.webContents || event.senderFrame?.url !== uiUrl) throw new Error('Недопустимый источник команды');
 }
-function ipc(name, handler) { ipcMain.handle(name, (event, value) => { trusted(event); return handler(value); }); }
+function ipc(name, handler) {
+  ipcMain.handle(name, async (event, value) => {
+    trusted(event);
+    try { return await handler(value); }
+    catch (error) { if (!error?.journaled) journal.write('ipc-error', {channel: name, ...errorFields(error)}); throw error; }
+  });
+}
+// A cancel reaches main up to three ways (Escape, the widget, the window); the first one, while the work is live, is journaled.
+function journalCancel() {
+  const phase = downloading ? 'download' : activeTranscription ? 'transcribing' : capture?.phase;
+  if (!phase || capture?.cancelJournaled) return;
+  if (capture) capture.cancelJournaled = true;
+  journal.write('cancel', {phase});
+}
+function startEngine() { engineStartedAt = Date.now(); journal.write('engine-start'); worker.start(); }
+function restartEngine(cause) { journal.write('engine-restart', {cause}); engineStartedAt = Date.now(); worker.restart(); }
+function engineFields(status) {
+  const formatter = status?.formatter;
+  return {models: (status?.models || []).filter(m => m.installed).map(m => `${m.id}@${String(m.revision || '').slice(0, 12)}`),
+    threads: status?.threads, device: status?.device, compute: status?.computeType,
+    formatter: !formatter?.supported ? 'unsupported' : formatter.installed ? 'installed' : 'absent', startup: (Date.now() - engineStartedAt) / 1000};
+}
+// Timings and the outcome of one recognition, picked field by field: the result also holds the text.
+function resultFields(result) {
+  const load = Number(result.loadElapsed) || 0, format = Number(result.formatElapsed) || 0;
+  return {model: result.model, device: result.device, formatting: result.formatting, audio: result.duration,
+    load: result.loadElapsed, format: result.formatElapsed, total: result.elapsed,
+    transcribe: Number.isFinite(result.elapsed) ? Math.max(0, result.elapsed - load - format) : undefined,
+    memoryMb: Number.isFinite(result.memoryPeak) ? Math.round(result.memoryPeak / 2 ** 20) : undefined};
+}
 function pastePermission() { return process.platform !== 'darwin' || systemPreferences.isTrustedAccessibilityClient(false); }
 function meetingState() { return meeting ? {app: meeting.app?.name ?? null, startedAt: meeting.startedAt, stopping: meeting.stopping} : null; }
 function snapshot() { return {...store.data, engine: worker.status, engineError, busy, hotkeyRegistered, nativeAvailable, pastePermission: pastePermission(), platform: process.platform, totalMemory: os.totalmem(), meeting: meetingState(), meetingsSupported: MEETINGS}; }
@@ -120,7 +155,7 @@ function beginCapture(global = false) {
   // Load the model while the user speaks instead of after they stop.
   worker.notify('preload', {model: capture.settings.model, formatting: capture.settings.formatting});
   if (blocker === undefined) blocker = powerSaveBlocker.start('prevent-app-suspension');
-  globalShortcut.register('Escape', () => { hideWidget(); send('cancel-recording'); });
+  globalShortcut.register('Escape', () => { journalCancel(); hideWidget(); send('cancel-recording'); });
   if (global) showWidget({phase: 'requesting', elapsed: 0, level: 0, message: '', hint: '', holding: false});
   return {id: capture.id, settings: capture.settings};
 }
@@ -161,6 +196,7 @@ function startMeeting(app) {
   dismissOffer();
   meeting = {id: crypto.randomUUID(), app: app ? {id: app.id, name: app.name} : null, startedAt: Date.now(), stopping: false, hidden: false,
     cues: {left: [], right: []}, files: [], failed: 0, settings: structuredClone(store.data.settings), dictionary: structuredClone(store.data.dictionary)};
+  journal.write('meeting-start', {app: app?.name, appId: app?.id, trigger: app ? 'offer' : 'manual'});
   if (blocker === undefined) blocker = powerSaveBlocker.start('prevent-app-suspension');
   send('meeting-record', {id: meeting.id, chunkMs: MEETING_CHUNK_MS});
   clearInterval(meetingClock); meetingClock = setInterval(meetingWidget, 1000);
@@ -174,18 +210,20 @@ function stopMeeting() {
   meetingWidget(); send('snapshot', snapshot());
 }
 // Each chunk is transcribed channel by channel: left is the microphone (the user), right the other side.
-async function transcribeMeetingChunk(current, file, offset) {
+async function transcribeMeetingChunk(current, file, offset, index) {
   for (const channel of ['left', 'right']) {
+    const started = Date.now();
     for (let attempt = 1; ; attempt++) {
       try {
         const result = await worker.request('transcribe', {audioFile: path.basename(file), channel, model: current.settings.model,
           language: current.settings.language, mode: 'natural', formatting: 'off', voiceCommands: false, removeFillers: current.settings.removeFillers,
           context: current.settings.context, dictionary: current.dictionary, snippets: []});
         current.cues[channel].push(...(result.cues || []).map(cue => ({...cue, start: cue.start + offset, end: cue.end + offset})));
+        journal.write('meeting-chunk', {index, channel, result: 'ok', attempts: attempt, transcribe: (Date.now() - started) / 1000});
         break;
       } catch (error) {
         // A dictation's cancel or an engine restart can take this request down with it: try again, a few times.
-        if (attempt >= 4) { console.error('Кусок созвона не распознан:', error.message); return false; }
+        if (attempt >= 4) { journal.write('meeting-chunk', {index, channel, result: 'fail', attempts: attempt, kind: errorFields(error).kind}); return false; }
         await new Promise(resolve => setTimeout(resolve, 1500 * attempt));
       }
     }
@@ -198,6 +236,8 @@ async function finishMeeting(current, problem) {
   if (meeting === current) meeting = null;
   const turns = meetingTurns(current.cues.left, current.cues.right);
   const duration = (Date.now() - current.startedAt) / 1000;
+  journal.write('meeting-finish', {duration, turns: turns.length, chunks: current.files.length, failed: current.failed,
+    result: turns.length ? 'saved' : 'empty', problem: !problem ? undefined : problem === WINDOW_GONE ? 'window-gone' : 'renderer'});
   if (turns.length) {
     const text = meetingText(turns);
     store.addHistory({id: crypto.randomUUID(), createdAt: new Date(current.startedAt).toISOString(), source: current.app ? `Созвон · ${current.app.name}` : 'Созвон',
@@ -225,6 +265,7 @@ function createWidget() {
   if (process.platform === 'darwin') widget.setVisibleOnAllWorkspaces(true, {visibleOnFullScreen: true});
   widget.webContents.setWindowOpenHandler(() => ({action: 'deny'}));
   widget.webContents.on('will-navigate', (event, url) => { if (url !== widgetUrl) event.preventDefault(); });
+  widget.webContents.on('render-process-gone', (event, details) => journal.write('render-gone', {window: 'widget', reason: details?.reason, exitCode: details?.exitCode}));
   widget.on('close', event => { if (!quitting) { event.preventDefault(); widget.hide(); } });
   widget.loadURL(widgetUrl);
   const trustedWidget = event => event.sender === widget.webContents && event.senderFrame?.url === widgetUrl;
@@ -233,7 +274,7 @@ function createWidget() {
     if (!trustedWidget(event)) return;
     if (action === 'stop' && capture?.phase === 'recording') toggleGlobalRecording();
     if (action === 'stop' && meeting && !capture) stopMeeting();
-    if (action === 'cancel' && capture) { hideWidget(); send('cancel-recording'); }
+    if (action === 'cancel' && capture) { journalCancel(); hideWidget(); send('cancel-recording'); }
     if (action === 'hide' && !capture) { if (meeting) meeting.hidden = true; widget.hide(); }
     if (action === 'meeting-record' && offer) {
       try { startMeeting(offer); } catch (error) { showWidget({phase: 'error', message: error.message, hint: 'Открой Шёпот, чтобы продолжить'}); }
@@ -254,11 +295,12 @@ function createWindow() {
       sandbox: true, backgroundThrottling: false, spellcheck: false}});
   window.webContents.setWindowOpenHandler(() => ({action: 'deny'}));
   window.webContents.on('will-navigate', (event, url) => { if (url !== uiUrl) event.preventDefault(); });
-  window.webContents.on('render-process-gone', () => {
-    ++job; worker?.restart(); busy = false;
+  window.webContents.on('render-process-gone', (event, details) => {
+    journal.write('render-gone', {window: 'main', reason: details?.reason, exitCode: details?.exitCode});
+    ++job; if (worker) restartEngine('window-gone'); busy = false;
     // A call being recorded keeps what reached the engine so far.
-    if (meeting) finishMeeting(meeting, 'Окно записи перезапустилось').catch(() => {});
-    finishCapture({phase: 'error', message: 'Окно записи перезапустилось', hint: 'Повтори диктовку'});
+    if (meeting) finishMeeting(meeting, WINDOW_GONE).catch(() => {});
+    finishCapture({phase: 'error', message: WINDOW_GONE, hint: 'Повтори диктовку'});
     window.reload();
   });
   window.once('ready-to-show', () => { if (!startHidden) window.show(); });
@@ -276,6 +318,11 @@ async function runTranscription(filePath, source, recordingSession = null, retry
   const settings = recordingSession?.settings || structuredClone(store.data.settings);
   const dictionary = recordingSession?.dictionary || structuredClone(store.data.dictionary);
   const snippets = (recordingSession?.snippets || structuredClone(store.data.snippets)).map(({trigger, text}) => ({trigger, text}));
+  // `source` is never journaled: for an imported file it is the user's file name.
+  const report = {result: 'error', model: settings.model, language: settings.language, mode: settings.mode,
+    formattingRequested: settings.formatting, translate: settings.translate};
+  if (recordingSession) Object.assign(report, {trigger: recordingSession.global ? 'hotkey' : 'window', record: recordingSession.record,
+    app: recordingSession.app?.name, appId: recordingSession.app?.id, profile: recordingSession.app?.profile});
   if (recordingSession) {
     recordingSession.phase = 'transcribing';
     if (recordingSession.global) { hideWidget(); showWidget({phase: 'transcribing', message: '', level: 0}, false); }
@@ -287,9 +334,10 @@ async function runTranscription(filePath, source, recordingSession = null, retry
       store.save();
     }
     const result = await worker.request('transcribe', {audioFile, ...settings, dictionary, snippets});
-    if (currentJob !== job) { canceled = task.canceled; return {canceled: true}; }
+    if (currentJob !== job) { canceled = task.canceled; report.result = 'canceled'; return {canceled: true}; }
+    Object.assign(report, resultFields(result));
     if (result.noSpeech) {
-      completed = true;
+      completed = true; report.result = 'no-speech';
       if (recordingSession) finishCapture({phase: 'error', message: 'Речь не обнаружена', hint: 'Попробуй говорить ближе к микрофону'});
       return {noSpeech: true};
     }
@@ -297,18 +345,23 @@ async function runTranscription(filePath, source, recordingSession = null, retry
       mode: settings.mode, ...result, audioFile: settings.keepAudio ? path.basename(filePath) : null, app: recordingSession?.app ?? null};
     store.addHistory(entry);
     completed = true;
+    const pasteStarted = performance.now();
     const delivery = await paste.deliver(entry.text, {autoCopy: settings.autoCopy,
       autoPaste: Boolean(recordingSession?.global && settings.autoPaste), target: recordingSession?.target}, () => currentJob === job);
+    Object.assign(report, {result: 'ok', paste: delivery.code, pasteTime: (performance.now() - pasteStarted) / 1000});
     // Kept for diagnosing why auto-paste did not happen on a user's machine.
     entry.delivery = delivery.code; store.save();
     send('snapshot', snapshot());
     if (recordingSession && currentJob === job) finishCapture({phase: delivery.pasted || ['saved', 'copied'].includes(delivery.code) ? 'success' : 'error', message: delivery.message, hint: delivery.pasted ? 'Можно продолжать писать' : 'Текст доступен в истории'});
     return {entry, ...delivery};
   } catch (error) {
-    if (currentJob !== job) { canceled = task.canceled; return {canceled: true}; }
+    if (currentJob !== job) { canceled = task.canceled; report.result = 'canceled'; return {canceled: true}; }
+    Object.assign(report, errorFields(error));
+    if (error && typeof error === 'object') error.journaled = true;
     if (recordingSession) finishCapture({phase: 'error', message: 'Не удалось распознать запись', hint: 'Аудио сохранено. Повтори распознавание в Шёпоте.'});
     throw error;
   } finally {
+    journal.write(retry ? 'retry' : recordingSession ? 'dictation' : 'file', report);
     if (activeTranscription === task) activeTranscription = null;
     if (completed || (canceled && !retry)) forgetRecording(audioFile);
     const retained = [...store.data.history, ...store.data.pendingRecordings].some(e => e.audioFile === audioFile);
@@ -320,6 +373,18 @@ async function runTranscription(filePath, source, recordingSession = null, retry
 
 if (!app.requestSingleInstanceLock()) { app.quit(); }
 else {
+  // From package.json rather than app.getVersion(), which reports Electron's version when main.cjs is loaded by a test harness.
+  journal.write('app-start', {version: require('../package.json').version, electron: process.versions.electron, os: os.release(), platform: process.platform,
+    arch: process.arch, memoryGb: Math.round(os.totalmem() / 2 ** 30), packaged: app.isPackaged, hidden: startHidden,
+    // A non-ASCII or spaced path to the data folder is a common cause of install-specific failures; the path itself stays out.
+    dataDirNonAscii: /[^\x20-\x7e]/.test(dataDir), dataDirSpace: /\s/.test(dataDir)});
+  // Observers only: Electron keeps its own handling (an exception still ends the app, a rejection only warns).
+  process.on('uncaughtExceptionMonitor', (error, origin) => { const {kind, code, at} = errorFields(error); journal.write('main-error', {origin, kind, code, at}); });
+  process.on('unhandledRejection', reason => {
+    const {kind, code, at} = errorFields(reason);
+    journal.write('main-error', {origin: 'unhandledRejection', kind, code, at});
+    console.error('Unhandled rejection:', reason);
+  });
   app.on('second-instance', () => { window?.show(); window?.focus(); });
   app.whenReady().then(() => {
     // The interface is dark only; this also darkens the native title bar and dialogs.
@@ -353,13 +418,13 @@ else {
     paste = new PasteService({clipboard, native});
     createWindow();
     worker = new Worker({root, dataDir, resourcesPath: process.resourcesPath, packaged: app.isPackaged});
-    worker.on('ready', status => { engineError = null; send('engine', {status}); });
+    worker.on('ready', status => { engineError = null; journal.write('engine-ready', engineFields(status)); send('engine', {status}); });
     worker.on('progress', event => {
       send('progress', event);
       if (capture?.global && capture.phase === 'transcribing') showWidget({phase: 'transcribing', message: event.message || 'Распознаю на устройстве'}, false);
     });
-    worker.on('offline', error => { engineError = error; send('engine', {error}); });
-    try { worker.start(); } catch (error) { engineError = error.message; }
+    worker.on('offline', (error, info = {}) => { engineError = error; journal.write('engine-offline', info); send('engine', {error}); });
+    try { startEngine(); } catch (error) { engineError = error.message; journal.write('engine-offline', {cause: 'missing'}); }
 
     // NativeImage supports PNG reliably on all desktop targets; generated asset is bundled.
     const trayPath = path.join(root, 'renderer', 'tray.png');
@@ -379,10 +444,12 @@ else {
       trusted(event);
       if (!capture || value?.id !== capture.id) return;
       if (['error', 'canceled'].includes(value.phase)) {
+        if (value.phase === 'canceled') journalCancel(); else journal.write('capture-error', {phase: capture.phase});
         finishCapture({phase: value.phase, message: value.phase === 'canceled' ? 'Запись отменена' : 'Микрофон недоступен', hint: String(value.message || '').slice(0, 240)});
       } else if ((value.phase === 'recording' && ['requesting', 'recording'].includes(capture.phase)) ||
                  (value.phase === 'stopping' && ['recording', 'stopping'].includes(capture.phase))) {
         capture.phase = value.phase;
+        capture.record = Math.max(0, Math.min(900, Number(value.elapsed) || 0));
         if (value.phase === 'stopping') { releaseEscape(); hideWidget(); }
         if (capture.global) showWidget({phase: value.phase, message: '', elapsed: Math.max(0, Math.min(900, Number(value.elapsed) || 0)), level: Math.max(0, Math.min(1, Number(value.level) || 0))}, value.phase === 'recording');
         updateTray(value.phase === 'recording' ? 'Шёпот — идёт запись. Escape: отмена' : 'Шёпот — распознаю запись');
@@ -400,20 +467,28 @@ else {
     ipc('profiles', value => store.setProfiles(value));
     ipc('download', async id => {
       if (busy || capture) throw new Error('Дождись завершения текущей операции');
-      const currentJob = ++job;
+      const currentJob = ++job, started = Date.now(), report = {model: id, result: 'error'};
       setBusy(true); downloading = true;
       try {
         // 'formatter' is the optional layout model (llama.cpp runtime + Qwen), downloaded and verified by the engine.
         const status = id === 'formatter' ? await worker.request('download-formatter')
           : await worker.request('download', {model: modelId(id)});
-        worker.status = status; send('engine', {status}); return status;
-      } finally { downloading = false; if (currentJob === job) setBusy(false); }
+        worker.status = status; send('engine', {status}); report.result = 'ok'; return status;
+      } catch (error) {
+        if (currentJob !== job) report.result = 'canceled'; else Object.assign(report, errorFields(error));
+        if (error && typeof error === 'object') error.journaled = true;
+        throw error;
+      } finally {
+        journal.write('download', {...report, elapsed: (Date.now() - started) / 1000});
+        downloading = false; if (currentJob === job) setBusy(false);
+      }
     });
     ipc('cancel', () => {
+      journalCancel();
       if (activeTranscription) activeTranscription.canceled = true;
       ++job;
       // A download can only be interrupted by killing the engine; transcription stops cooperatively.
-      if (downloading) { worker.restart(); send('engine', {status: null}); }
+      if (downloading) { restartEngine('download-canceled'); send('engine', {status: null}); }
       else if (busy) worker.cancel();
       busy = false; finishCapture({phase: 'canceled', message: 'Операция отменена', hint: 'Микрофон выключен'});
       return true;
@@ -500,10 +575,10 @@ else {
       if (!Number.isFinite(offset) || offset < 0 || offset > 24 * 3600) throw new Error('Недопустимое время куска');
       const file = path.join(audioDir, crypto.randomUUID() + '.webm');
       fs.writeFileSync(file, audio, {mode: 0o600});
-      const current = meeting, record = {file, ok: false};
+      const current = meeting, record = {file, ok: false}, index = current.files.length;
       current.files.push(record);
       // One engine request at a time, in recording order, while the call goes on.
-      meetingQueue = meetingQueue.then(async () => { record.ok = await transcribeMeetingChunk(current, file, offset); if (!record.ok) current.failed++; });
+      meetingQueue = meetingQueue.then(async () => { record.ok = await transcribeMeetingChunk(current, file, offset, index); if (!record.ok) current.failed++; });
       return true;
     });
     ipc('meeting-done', value => {
@@ -536,9 +611,10 @@ else {
       });
       micWatcher.start();
     }
+    journal.write('app-ready', {hotkey: hotkeyRegistered, native: nativeAvailable, meetings: MEETINGS});
   });
 }
 app.on('activate', () => { if (window) window.show(); });
 app.on('before-quit', () => { quitting = true; });
-app.on('will-quit', () => { clearTimeout(widgetTimer); micWatcher?.stop(); globalShortcut.unregisterAll(); worker?.stop(); if (capture?.target) paste?.release(capture.target); });
+app.on('will-quit', () => { journal.write('quit', {uptime: (Date.now() - launchedAt) / 1000}); clearTimeout(widgetTimer); micWatcher?.stop(); globalShortcut.unregisterAll(); worker?.stop(); if (capture?.target) paste?.release(capture.target); });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

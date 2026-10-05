@@ -13,7 +13,7 @@ const sec = value => typeof value === 'number' && Number.isFinite(value) && valu
 const int = value => Number.isInteger(value) && Math.abs(value) <= 1e13 ? String(value) : undefined;
 const bool = value => typeof value === 'boolean' ? String(value) : undefined;
 const token = value => typeof value === 'string' && TOKEN.test(value) ? value : undefined;
-const tokens = value => Array.isArray(value) && value.length <= 16 && value.every(item => token(item)) ? value.join(',') || undefined : undefined;
+const tokens = value => Array.isArray(value) && value.length <= 16 && value.every(item => token(item)) ? value.join(',') || 'none' : undefined;
 const name = value => typeof value === 'string' && NAME.test(value) ? value : undefined;
 const oneOf = values => value => values.includes(value) ? value : undefined;
 const MESSAGE = Symbol('message');
