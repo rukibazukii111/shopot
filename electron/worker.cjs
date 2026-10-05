@@ -4,6 +4,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const readline = require('node:readline');
 
+// An engine error keeps its type and whether the engine worded it itself (see error_reply in engine.py).
+function engineError(message) {
+  return Object.assign(new Error(message.error), {engine: true, kind: String(message.kind || 'Error'),
+    expected: message.expected === true, canceled: message.canceled === true});
+}
 class Worker extends EventEmitter {
   constructor({root, dataDir, resourcesPath, packaged}) {
     super(); this.options = {root, dataDir, resourcesPath, packaged};
@@ -31,24 +36,26 @@ class Worker extends EventEmitter {
         if (item) {
           this.pending.delete(message.id);
           clearTimeout(item.timeout);
-          message.error ? item.reject(new Error(message.error)) : item.resolve(message.result);
+          message.error ? item.reject(engineError(message)) : item.resolve(message.result);
         }
       }
     });
-    const fail = reason => {
+    // `reason` is for the user and may quote the engine's stderr; `info` is what the journal may keep.
+    const fail = (reason, info) => {
       if (this.process !== child) return;
       this.status = null; this.process = null;
-      for (const item of this.pending.values()) { clearTimeout(item.timeout); item.reject(new Error(reason)); }
-      this.pending.clear(); this.emit('offline', reason);
+      for (const item of this.pending.values()) { clearTimeout(item.timeout); item.reject(Object.assign(new Error(reason), {kind: 'EngineOffline'})); }
+      this.pending.clear(); this.emit('offline', reason, info);
     };
-    child.on('error', error => fail('Не удалось запустить движок: ' + error.message));
-    child.on('exit', code => fail(code ? 'Движок завершился с ошибкой. ' + errorTail.slice(-400) : 'Движок остановлен.'));
+    child.on('error', error => fail('Не удалось запустить движок: ' + error.message, {cause: 'spawn-error', errno: error.code}));
+    child.on('exit', (code, signal) => fail(code ? 'Движок завершился с ошибкой. ' + errorTail.slice(-400) : 'Движок остановлен.',
+      {cause: 'exit', exitCode: code ?? undefined, signal: signal ?? undefined}));
   }
   request(command, payload = {}) {
     if (!this.process || !this.status) return Promise.reject(new Error('Движок ещё запускается. Попробуй через несколько секунд.'));
     const id = ++this.sequence;
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => { this.stop(); this.emit('offline', 'Превышено время ожидания движка. Перезапусти Шёпот.'); }, 60 * 60 * 1000);
+      const timeout = setTimeout(() => { this.stop(); this.emit('offline', 'Превышено время ожидания движка. Перезапусти Шёпот.', {cause: 'timeout'}); }, 60 * 60 * 1000);
       this.pending.set(id, {resolve, reject, timeout});
       this.process.stdin.write(JSON.stringify({id, command, ...payload}) + '\n', 'utf8', error => {
         if (error) { this.pending.delete(id); clearTimeout(timeout); reject(error); }
