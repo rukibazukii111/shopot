@@ -133,4 +133,4 @@ class Store {
   addHistory(entry) { this.data.history.unshift(entry); this.save(); return entry; }
 }
 
-module.exports = {Store, validateSettings, validateDictionary, validateSnippets, validateProfiles, settingsFor, DEFAULT_SETTINGS, MODEL_IDS};
+module.exports = {Store, validateSettings, validateDictionary, validateSnippets, validateProfiles, settingsFor, DEFAULT_SETTINGS, MODEL_IDS, FORMATTING};
