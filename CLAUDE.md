@@ -37,12 +37,13 @@ npm run test:packaged             # smoke-tests the packaged app
 | File | Owns |
 |---|---|
 | `electron/main.cjs` | Controller: store, global shortcuts and push-to-talk polling, tray, widget window, recording sessions, worker, IPC |
-| `electron/worker.cjs` | Spawns the engine; JSON lines on stdin/stdout (`{id, command, ...}` → `{id, result\|error}`, plus `ready`/`progress` events). No HTTP server |
+| `electron/worker.cjs` | Spawns the engine; JSON lines on stdin/stdout (`{id, command, ...}` → `{id, result\|error, kind, expected}`, plus `ready`/`progress` events). No HTTP server |
 | `electron/paste.cjs`, `native-input.cjs` | `PasteService` and the OS backends (Win32 `SendInput`, macOS Accessibility/CoreGraphics via Koffi), target-app detection |
 | `electron/store.cjs` | `store.json`: settings, dictionary, snippets, per-app profiles, history, `pendingRecordings`; all validation |
 | `electron/meetings.cjs` | Call detection (`MicWatcher`) and merging two channels into speaker turns (Windows) |
 | `electron/corrections.cjs` | Dictionary suggestions from the user's edits in history |
 | `electron/export.cjs` | Saving a transcript as .txt, .md or .srt |
+| `electron/log.cjs` | Diagnostic journal in `<data>/logs`: a field schema per event, rotation, `pruneOlderThan` for history retention, `errorFields` |
 | `renderer/app.js` | Main window, and the actual microphone capture (MediaRecorder), even for hotkey dictation while the window is hidden |
 | `renderer/widget.*`, `widget-preload.cjs` | Non-focusable always-on-top widget with its own narrow IPC |
 | `backend/engine.py` | Commands (`download`, `transcribe`, fire-and-forget `cancel`/`preload`), pinned model revisions in `MODELS`, audio path checks, idle and memory-pressure unload |
@@ -59,6 +60,7 @@ Data dir: `SHOPOT_DATA_DIR`, else `.local/` from source, else `%APPDATA%/Shopot`
 - **Nothing is lost.** `runTranscription()` journals audio in `pendingRecordings` before inference; orphaned audio is recovered on startup.
 - **No stale results.** A monotonically increasing `job` counter invalidates results after a cancel or restart. Late events must not reopen the widget or paste.
 - **Paste never presses Enter.** `PasteService` sends only the standard paste shortcut and refuses with a coded reason (`focus-changed`, `modifiers`, `clipboard-changed`, `permission`, …) when anything changed. Target-app detection failures yield `app: null` and never block paste.
+- **The journal never holds what the user said or typed.** Only main writes it, through `journal.write(event, fields)` with fields picked one by one: never a spread of a result, entry or settings, never `source` (an imported file's name), never `error.message` or the engine's stderr. A message is kept only for the engine's own `UserError`; library errors (some are `ValueError` and quote paths) and V8 errors go in by type and code. `tests/ui/journal.spec.cjs` checks this with marked private text.
 - **No engine outlives the app.** A closed stdin or a failed stdout write makes the engine cancel its work, stop the formatter process and exit.
 - **Unsupported combinations are refused twice**, in `validateSettings` and in the engine: GigaAM with a non-Russian language, translation with anything but Whisper small or large-v3.
 
