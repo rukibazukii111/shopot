@@ -73,6 +73,26 @@ test('rotation keeps three files and the newest line in shopot.log', t => {
   assert.ok(fs.statSync(path.join(f.root, 'logs', 'shopot.log')).size <= 300);
 });
 
+test('reading gives the whole journal as one text, oldest line first', t => {
+  const f = fixture(t, {maxBytes: 300});
+  for (let i = 0; i < 40; i++) f.journal.write('quit', {uptime: i});
+  const lines = f.journal.read().trim().split('\n');
+  for (const line of lines) assert.match(line, LINE);
+  // Consecutive and ending with the newest: no part is missing, repeated or out of order.
+  const uptimes = lines.map(line => Number(line.split('=')[1]));
+  assert.deepEqual(uptimes, Array.from({length: uptimes.length}, (_, i) => 40 - uptimes.length + i));
+  assert.equal(uptimes.length, f.files().reduce((sum, name) => sum + f.read(name).trim().split('\n').length, 0));
+});
+
+test('an absent journal reads as empty text, and a part cut short stays a line of its own', t => {
+  const f = fixture(t);
+  assert.equal(f.journal.read(), '');
+  fs.mkdirSync(path.join(f.root, 'logs'));
+  fs.writeFileSync(path.join(f.root, 'logs', 'shopot.1.log'), 'A');
+  fs.writeFileSync(path.join(f.root, 'logs', 'shopot.log'), 'B\n');
+  assert.equal(f.journal.read(), 'A\nB\n');
+});
+
 test('a journal that cannot write reports false and never throws', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shopot-log-'));
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));

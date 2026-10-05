@@ -128,7 +128,18 @@ function createJournal({dir, home = os.homedir(), now = () => new Date(), platfo
     }
     size = null;
   }
-  return {write, pruneOlderThan, dir};
+  // The whole journal as one text, oldest line first: shopot.2.log, shopot.1.log, then shopot.log.
+  // Synchronous on purpose, so no write or rotation lands between the parts. Unlike write, it throws.
+  function read() {
+    let text = '';
+    for (const file of [...files].reverse()) {
+      if (!fs.existsSync(file)) continue;
+      const part = fs.readFileSync(file, 'utf8');
+      text += part && !part.endsWith('\n') ? `${part}\n` : part;
+    }
+    return text;
+  }
+  return {write, read, pruneOlderThan, dir};
 }
 
 module.exports = {createJournal, timestamp, errorFields, EVENTS};
