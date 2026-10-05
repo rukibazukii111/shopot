@@ -85,7 +85,12 @@ function modelId(id) { if (!MODEL_IDS.includes(id)) throw new Error('Неизв�
 function textValue(value) { if (typeof value !== 'string' || value.length > 200000) throw new Error('Недопустимый текст'); return value; }
 function entryFor(id) { const entry = store.data.history.find(e => e.id === id); if (!entry) throw new Error('Запись не найдена'); return entry; }
 // A file system failure as a plain message for the window; its code still reaches the journal through ipc().
-function fileError(message, error) { return Object.assign(new Error(message), {code: error?.code}); }
+// The stack starts at the caller, so the journal tells a failed read from a failed write.
+function fileError(message, error) {
+  const failure = Object.assign(new Error(message), {code: error?.code});
+  Error.captureStackTrace(failure, fileError);
+  return failure;
+}
 function audioFor(entry) {
   if (!entry.audioFile || !/^[a-f0-9-]+\.(wav|webm|mp3|m4a|ogg|flac|mp4)$/i.test(entry.audioFile)) return null;
   return path.join(audioDir, entry.audioFile);
