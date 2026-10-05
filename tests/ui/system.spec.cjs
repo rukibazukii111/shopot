@@ -49,6 +49,10 @@ test('the System group opens the journal folder, saves the journal as one file a
     await page.locator('#journal-save').click();
     await expect(page.locator('#error-text')).toHaveText('Не удалось сохранить журнал. Выбери другую папку');
     await page.locator('#dismiss-error').click();
+    // The journal learns why the save failed, never where: the folder the user picked stays out.
+    const journal = fs.readFileSync(path.join(logs, 'shopot.log'), 'utf8');
+    expect(journal).toMatch(/ ipc-error channel=journal-save kind=Error code=ENOENT expected=false at=main\.cjs:\d+$/m);
+    expect(journal).not.toContain('нет-такой-папки');
 
     await page.locator('#report-problem').click();
     await expect(page.locator('#toast')).toContainText('Открыл страницу в браузере');
