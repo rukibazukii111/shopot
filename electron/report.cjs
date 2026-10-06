@@ -1,6 +1,7 @@
 // «Сообщить о проблеме» (PRD 6.27): a new GitHub issue in the user's own browser. Shopot sends nothing itself;
 // the link carries a short form and the versions, never the journal, a path or anything the user said or typed.
-const ISSUES = 'https://github.com/rukibazukii111/shopot/issues/new';
+const {repository} = require('../package.json');
+const ISSUES = `${repository.url.replace(/\.git$/, '')}/issues/new`;
 
 // `version` is process.getSystemVersion(): 10.0.26200 on Windows, 14.5.0 on macOS.
 function systemName(platform, version) {

@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const {createJournal, timestamp, errorFields} = require('../electron/log.cjs');
+const {MODEL_IDS, LANGUAGES, MODES, FORMATTING} = require('../electron/store.cjs');
 
 const LINE = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}[+-]\d\d:\d\d [a-z-]+( [A-Za-z]+=("[^"]*"|\S+))*$/;
 function fixture(t, options = {}) {
@@ -33,6 +34,16 @@ test('fields outside the event schema or of the wrong type never reach the file'
   assert.doesNotMatch(line, /секрет|Маш|долго|xxxx/);
   assert.equal(f.journal.write('no-such-event', {result: 'ok'}), false);
   assert.equal(f.read().trim().split('\n').length, 1);
+});
+
+test('every model, language, text mode and layout the settings accept is journaled', t => {
+  const f = fixture(t);
+  for (const model of MODEL_IDS) f.journal.write('dictation', {model});
+  for (const language of LANGUAGES) f.journal.write('dictation', {language});
+  for (const mode of MODES) f.journal.write('dictation', {mode});
+  for (const formatting of FORMATTING) f.journal.write('dictation', {formattingRequested: formatting, formatting});
+  assert.equal(f.read().trim().split('\n').length, MODEL_IDS.length + LANGUAGES.length + MODES.length + FORMATTING.length);
+  assert.doesNotMatch(f.read(), /rejected=/);
 });
 
 test('app names with spaces and Cyrillic are kept in quotes', t => {

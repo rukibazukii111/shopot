@@ -6,8 +6,7 @@ const readline = require('node:readline');
 
 // An engine error keeps its type and whether the engine worded it itself (see error_reply in engine.py).
 function engineError(message) {
-  return Object.assign(new Error(message.error), {engine: true, kind: String(message.kind || 'Error'),
-    expected: message.expected === true, canceled: message.canceled === true});
+  return Object.assign(new Error(message.error), {engine: true, kind: String(message.kind || 'Error'), expected: message.expected === true});
 }
 class Worker extends EventEmitter {
   constructor({root, dataDir, resourcesPath, packaged}) {

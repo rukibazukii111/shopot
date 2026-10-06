@@ -82,7 +82,36 @@ test('the journal records every step of real work and none of what the user said
     await app.evaluate(() => globalThis.__test.toggle());
     await expect(page.locator('#record-time')).not.toHaveText('00:00');
     await app.evaluate(() => globalThis.__test.cancel());
-    await expect(page.locator('#record-label')).not.toHaveText('Закончить запись');
+    await expect(page.locator('#record-label')).toHaveText('Начать диктовку');
+    const journalNow = () => fs.readFileSync(path.join(dataDir, 'logs', 'shopot.log'), 'utf8');
+    // The recorder fails mid-recording: a failure of its type, not the user's cancel, and its message stays out.
+    await app.evaluate(() => globalThis.__test.toggle());
+    await expect(page.locator('#record-time')).not.toHaveText('00:00');
+    await page.evaluate(message => recorder.dispatchEvent(new ErrorEvent('error', {error: new DOMException(message, 'UnknownError')})), mark('Сбой у Маши'));
+    await expect.poll(journalNow).toMatch(/ capture-error phase=recording kind=UnknownError$/m);
+    await expect(page.locator('#record-label')).toHaveText('Начать диктовку');
+    // A recording that holds no audio is not a cancel either.
+    await page.evaluate(() => { window.originalArrayBuffer = Blob.prototype.arrayBuffer; Blob.prototype.arrayBuffer = async () => new ArrayBuffer(0); });
+    await app.evaluate(() => globalThis.__test.toggle());
+    await expect(page.locator('#record-time')).not.toHaveText('00:00');
+    await app.evaluate(() => globalThis.__test.toggle());
+    await expect.poll(journalNow).toMatch(/ capture-error phase=stopping kind=EmptyRecording$/m);
+    await expect(page.locator('#record-label')).toHaveText('Начать диктовку');
+    await page.evaluate(() => { Blob.prototype.arrayBuffer = window.originalArrayBuffer; });
+    // The microphone goes away mid-recording: the stop is journaled with its cause, and what was recorded is still recognized.
+    before = await requests();
+    await app.evaluate(() => globalThis.__test.toggle());
+    await expect(page.locator('#record-time')).not.toHaveText('00:00');
+    await page.evaluate(() => stream.getAudioTracks()[0].dispatchEvent(new Event('ended')));
+    await expect.poll(requests).toBe(before + 1);
+    await app.evaluate(() => globalThis.__test.finish());
+    await idle();
+    await expect(page.locator('#record-label')).toHaveText('Начать диктовку');
+    // A hotkey press main refuses, here because the model in the settings is not downloaded.
+    const settings = (await page.evaluate(() => window.shopot.boot())).settings;
+    await page.evaluate(value => window.shopot.settings(value), {...settings, model: 'large-v3'});
+    await app.evaluate(() => globalThis.__test.toggle());
+    await expect.poll(journalNow).toMatch(/ command-error /);
   } finally { await app.close(); }
 
   const logs = path.join(dataDir, 'logs');
@@ -109,7 +138,17 @@ test('the journal records every step of real work and none of what the user said
   expect(lines.filter(line => / (file|retry) result=ok .*preload=/.test(line))).toEqual([]);
   has(/ capture-error phase=requesting kind=AbortError$/);
   has(/ cancel phase=recording$/);
+  // Only Escape was a cancel: a failed recorder and an empty recording are capture errors.
   expect(lines.filter(line => / cancel /.test(line))).toHaveLength(1);
+  has(/ capture-error phase=recording kind=UnknownError$/);
+  has(/ capture-error phase=stopping kind=EmptyRecording$/);
+  const unplugged = lines.findIndex(line => / capture-error phase=recording kind=TrackEnded$/.test(line));
+  expect(unplugged).toBeGreaterThan(-1);
+  expect(lines.slice(unplugged + 1).find(line => / dictation /.test(line))).toMatch(/ dictation result=ok trigger=hotkey /);
+  // The refusal points at its line in main.cjs: a missing model, not a busy app or a starting engine.
+  const refusal = fs.readFileSync(path.join(root, 'electron', 'main.cjs'), 'utf8').split('\n')
+    .findIndex(line => line.includes("throw new Error('Сначала скачай модель в Шёпоте')")) + 1;
+  has(new RegExp(` command-error command=hotkey kind=Error expected=false at=main\\.cjs:${refusal}$`));
   // A failed dictation is journaled once, as the dictation, not again as a failed window command.
   expect(journal).not.toContain('ipc-error channel=transcribe');
   has(/ app-ready hotkey=true native=(true|false) meetings=(true|false)$/);

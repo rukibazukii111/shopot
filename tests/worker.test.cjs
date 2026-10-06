@@ -34,12 +34,12 @@ function start(t) {
   return {worker, ready};
 }
 
-test('an engine error keeps its type, whether it is expected, and cancellation', async t => {
+test('an engine error keeps its type and whether it is expected', async t => {
   const {worker, ready} = start(t);
   await ready;
-  await assert.rejects(worker.request('refuse'), {message: 'Аудиофайл пуст.', engine: true, kind: 'UserError', expected: true, canceled: false});
+  await assert.rejects(worker.request('refuse'), {message: 'Аудиофайл пуст.', engine: true, kind: 'UserError', expected: true});
   await assert.rejects(worker.request('break'), {engine: true, kind: 'KeyError', expected: false});
-  await assert.rejects(worker.request('cancel-me'), {kind: 'Canceled', expected: true, canceled: true});
+  await assert.rejects(worker.request('cancel-me'), {kind: 'Canceled', expected: true});
 });
 
 test('a crashed engine reports its exit code separately from the stderr text', async t => {

@@ -72,11 +72,28 @@ test('a call is offered, recorded as two channels while it goes on and saved as 
     await expect.poll(async () => (await page.evaluate(() => window.shopot.boot())).settings.meetingIgnore).toEqual([{id: 'deadlock.exe', name: 'deadlock'}]);
     await page.locator('[data-page="settings"]').click();
     await expect(page.locator('#meeting-ignore')).toContainText('deadlock');
+    // A transcript that cannot be stored (a read-only store.json, as a sync tool can leave it) is journaled as an error, not as saved.
+    const storeFile = path.join(dataDir, 'store.json'), journalNow = () => fs.readFileSync(path.join(dataDir, 'logs', 'shopot.log'), 'utf8');
+    const sent = payloads.length;
+    await page.evaluate(() => window.shopot.startMeeting());
+    await expect.poll(() => payloads.length, {timeout: 15000}).toBeGreaterThanOrEqual(sent + 2);
+    fs.chmodSync(storeFile, 0o444);
+    try {
+      await page.evaluate(() => window.shopot.stopMeeting());
+      await expect.poll(journalNow, {timeout: 15000}).toMatch(/ meeting-finish .*result=error/);
+    } finally { fs.chmodSync(storeFile, 0o666); }
     // A call the window cannot record: the journal keeps the error's type, not its message.
     await page.evaluate(() => { navigator.mediaDevices.getDisplayMedia = async () => { throw new DOMException('Экран Маши недоступен', 'NotAllowedError'); }; });
     await page.evaluate(() => window.shopot.startMeeting());
-    await expect.poll(() => fs.readFileSync(path.join(dataDir, 'logs', 'shopot.log'), 'utf8')).toMatch(/ meeting-finish .*result=empty/);
+    await expect.poll(journalNow).toMatch(/ meeting-finish .*result=empty/);
     answering = false; await answers;
+    // An offer main refuses, here because the model in the settings is not downloaded: the widget says why, the journal keeps the refusal.
+    const settings = (await page.evaluate(() => window.shopot.boot())).settings;
+    await page.evaluate(value => window.shopot.settings(value), {...settings, model: 'large-v3'});
+    await app.evaluate(() => { globalThis.__test.micUsers = [{id: 'zoom.exe', name: 'Zoom'}]; });
+    await expect(widget.locator('#label')).toHaveText('Созвон в Zoom. Записать?');
+    await widget.locator('#offer-record').click();
+    await expect(widget.locator('#label')).toHaveText('Сначала скачай модель в Шёпоте');
   } finally { answering = false; await app.close(); }
   // The journal follows the call part by part, without a word of what was said.
   const journal = fs.readFileSync(path.join(dataDir, 'logs', 'shopot.log'), 'utf8');
@@ -85,6 +102,10 @@ test('a call is offered, recorded as two channels while it goes on and saved as 
   expect(journal).toMatch(/ meeting-chunk index=0 channel=left result=ok attempts=1 transcribe=\S+\n/);
   expect(journal).toMatch(/ meeting-chunk index=0 channel=right result=ok attempts=1 transcribe=\S+\n/);
   expect(journal).toMatch(/ meeting-finish duration=\S+ turns=\d+ chunks=\d+ failed=0 result=saved\n/);
+  // The call whose save failed: its code and the failing call, and no second «saved».
+  expect(journal.match(/ meeting-finish .*result=saved/g)).toHaveLength(1);
+  expect(journal).toMatch(/ meeting-finish duration=\S+ turns=[1-9]\d* chunks=[1-9]\d* failed=0 result=error code=EPERM at=store\.cjs:\d+\n/);
   expect(journal).toMatch(/ meeting-finish duration=\S+ turns=0 chunks=0 failed=0 result=empty problem=renderer kind=NotAllowedError\n/);
+  expect(journal).toMatch(/ command-error command=meeting-record kind=Error expected=false at=main\.cjs:\d+\n/);
   expect(journal).not.toMatch(/Маши|rejected=/);
 });

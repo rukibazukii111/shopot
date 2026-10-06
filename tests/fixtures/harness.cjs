@@ -42,7 +42,7 @@ Worker.prototype.request = function (command, payload) {
     globalThis.__test.finish = () => resolve({text: 'Видосы для GitHub готовы.', rawText: 'Видосы для GitHub готовы.', duration: 2, elapsed: .1, model: 'turbo', words: []});
     globalThis.__test.fail = () => reject(new Error('Тестовая ошибка распознавания'));
     // An engine error as worker.cjs builds it from the reply: its type and whether the engine worded it itself.
-    globalThis.__test.failWith = ({message, kind, expected}) => reject(Object.assign(new Error(message), {engine: true, kind, expected, canceled: false}));
+    globalThis.__test.failWith = ({message, kind, expected}) => reject(Object.assign(new Error(message), {engine: true, kind, expected}));
     globalThis.__test.progress = () => this.emit('progress', {stage: 'transcribe', fraction: .5, message: 'Тестовый прогресс'});
     this.testReject = reject;
   });

@@ -44,7 +44,7 @@ npm run test:packaged             # smoke-tests the packaged app
 | `electron/corrections.cjs` | Dictionary suggestions from the user's edits in history |
 | `electron/export.cjs` | Saving a transcript as .txt, .md or .srt |
 | `electron/log.cjs` | Diagnostic journal in `<data>/logs`: a field schema per event, rotation, `pruneOlderThan` for history retention, `errorFields` |
-| `electron/report.cjs` | «Сообщить о проблеме»: the GitHub new-issue link with a short form and the app and system versions |
+| `electron/report.cjs` | «Сообщить о проблеме»: the new-issue link of the GitHub repository in `package.json` (`repository.url`), with a short form and the app and system versions |
 | `renderer/app.js` | Main window, and the actual microphone capture (MediaRecorder), even for hotkey dictation while the window is hidden |
 | `renderer/widget.*`, `widget-preload.cjs` | Non-focusable always-on-top widget with its own narrow IPC |
 | `backend/engine.py` | Commands (`download`, `transcribe`, fire-and-forget `cancel`/`preload`), pinned model revisions in `MODELS`, audio path checks, idle and memory-pressure unload |

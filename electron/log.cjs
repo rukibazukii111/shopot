@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const {MODEL_IDS, FORMATTING} = require('./store.cjs');
+const {MODEL_IDS, LANGUAGES, MODES, FORMATTING} = require('./store.cjs');
 const {DELIVERY_CODES} = require('./paste.cjs');
 
 // The diagnostic journal (PRD 6.27). It must never hold what the user said or typed: every event has a
@@ -22,7 +22,7 @@ const ERROR = {kind: token, code: token, expected: bool, message: MESSAGE, at: t
 const PHASE = oneOf(['requesting', 'recording', 'stopping', 'transcribing', 'download', 'idle']);
 const TRANSCRIPTION = {
   result: oneOf(['ok', 'no-speech', 'error', 'canceled']), trigger: oneOf(['hotkey', 'window']),
-  model: oneOf(MODEL_IDS), device: token, language: oneOf(['ru', 'en', 'auto']), mode: oneOf(['natural', 'minimal', 'raw']),
+  model: oneOf(MODEL_IDS), device: token, language: oneOf(LANGUAGES), mode: oneOf(MODES),
   formattingRequested: oneOf(FORMATTING), formatting: oneOf(FORMATTING), translate: bool,
   record: sec, audio: sec, preload: sec, wait: sec, load: sec, transcribe: sec, format: sec, total: sec, pasteTime: sec, memoryMb: int,
   paste: oneOf(DELIVERY_CODES), app: name, appId: token, profile: bool, ...ERROR,
@@ -41,9 +41,13 @@ const EVENTS = {
   'capture-error': {phase: PHASE, kind: token},
   'meeting-start': {app: name, appId: token, trigger: oneOf(['offer', 'manual'])},
   'meeting-chunk': {index: int, channel: oneOf(['left', 'right']), result: oneOf(['ok', 'fail']), attempts: int, transcribe: sec, kind: token},
-  'meeting-finish': {duration: sec, turns: int, chunks: int, failed: int, result: oneOf(['saved', 'empty']), problem: oneOf(['window-gone', 'renderer']), kind: token},
+  // `kind` is the window's recording error; `code` and `at` are a failed save's.
+  'meeting-finish': {duration: sec, turns: int, chunks: int, failed: int, result: oneOf(['saved', 'empty', 'error']),
+    problem: oneOf(['window-gone', 'renderer']), kind: token, code: token, at: token},
   download: {model: oneOf([...MODEL_IDS, 'formatter']), result: oneOf(['ok', 'error', 'canceled']), elapsed: sec, ...ERROR},
   'ipc-error': {channel: token, ...ERROR},
+  // What main refuses outside a window command: a dictation by the hotkey or the tray, a call from the widget's offer.
+  'command-error': {command: oneOf(['hotkey', 'meeting-record']), ...ERROR},
   'main-error': {origin: oneOf(['uncaughtException', 'unhandledRejection']), kind: token, code: token, at: token},
   'render-gone': {window: oneOf(['main', 'widget']), reason: token, exitCode: int},
   quit: {uptime: sec},

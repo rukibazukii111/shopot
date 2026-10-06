@@ -181,7 +181,10 @@ function toggleGlobalRecording() {
     return;
   }
   try { send('toggle-recording', beginCapture(true)); watchHotkeyHold(); }
-  catch (error) { showWidget({phase: 'error', message: error.message, hint: 'Открой Шёпот, чтобы продолжить', elapsed: 0}); }
+  catch (error) {
+    journal.write('command-error', {command: 'hotkey', ...errorFields(error)});
+    showWidget({phase: 'error', message: error.message, hint: 'Открой Шёпот, чтобы продолжить', elapsed: 0});
+  }
 }
 
 // --- Calls: noticed by microphone use, recorded as two channels, transcribed in chunks while they go on ---
@@ -249,22 +252,30 @@ async function finishMeeting(current, problem, kind) {
   if (meeting === current) meeting = null;
   const turns = meetingTurns(current.cues.left, current.cues.right);
   const duration = (Date.now() - current.startedAt) / 1000;
-  journal.write('meeting-finish', {duration, turns: turns.length, chunks: current.files.length, failed: current.failed,
-    result: turns.length ? 'saved' : 'empty', problem: !problem ? undefined : problem === WINDOW_GONE ? 'window-gone' : 'renderer', kind});
-  if (turns.length) {
-    const text = meetingText(turns);
-    store.addHistory({id: crypto.randomUUID(), createdAt: new Date(current.startedAt).toISOString(), source: current.app ? `Созвон · ${current.app.name}` : 'Созвон',
-      mode: 'natural', text, rawText: text, words: [], duration, elapsed: 0, model: current.settings.model, replacements: [], audioFile: null, app: null,
-      cues: [...current.cues.left, ...current.cues.right].sort((a, b) => a.start - b.start),
-      meeting: {app: current.app?.name ?? null, turns: turns.length, failedChunks: current.failed}});
+  const report = {duration, turns: turns.length, chunks: current.files.length, failed: current.failed,
+    problem: !problem ? undefined : problem === WINDOW_GONE ? 'window-gone' : 'renderer', kind};
+  try {
+    if (turns.length) {
+      const text = meetingText(turns);
+      store.addHistory({id: crypto.randomUUID(), createdAt: new Date(current.startedAt).toISOString(), source: current.app ? `Созвон · ${current.app.name}` : 'Созвон',
+        mode: 'natural', text, rawText: text, words: [], duration, elapsed: 0, model: current.settings.model, replacements: [], audioFile: null, app: null,
+        cues: [...current.cues.left, ...current.cues.right].sort((a, b) => a.start - b.start),
+        meeting: {app: current.app?.name ?? null, turns: turns.length, failedChunks: current.failed}});
+    }
+    // Transcribed chunks are not needed any more (after a crash they come back as recordings to retry).
+    // A chunk the engine could not transcribe stays as an unfinished recording, like a failed dictation.
+    for (const [index, {file, ok}] of current.files.entries()) {
+      if (ok) { if (fs.existsSync(file)) fs.unlinkSync(file); }
+      else store.data.pendingRecordings.push({id: crypto.randomUUID(), audioFile: path.basename(file), source: `Созвон, часть ${index + 1}`, createdAt: new Date().toISOString()});
+    }
+    store.save();
+  } catch (error) {
+    // A full disk, or store.json held by an antivirus or a sync tool: the code and the failing call, never the path.
+    const {code, at} = errorFields(error);
+    journal.write('meeting-finish', {...report, result: 'error', code, at});
+    throw error;
   }
-  // Transcribed chunks are not needed any more (after a crash they come back as recordings to retry).
-  // A chunk the engine could not transcribe stays as an unfinished recording, like a failed dictation.
-  for (const [index, {file, ok}] of current.files.entries()) {
-    if (ok) { if (fs.existsSync(file)) fs.unlinkSync(file); }
-    else store.data.pendingRecordings.push({id: crypto.randomUUID(), audioFile: path.basename(file), source: `Созвон, часть ${index + 1}`, createdAt: new Date().toISOString()});
-  }
-  store.save();
+  journal.write('meeting-finish', {...report, result: turns.length ? 'saved' : 'empty'});
   setBusy(busy); updateTray(); send('snapshot', snapshot());
   const failed = current.failed ? ` Не распознано кусков: ${current.failed}.` : '';
   showWidget(turns.length ? {phase: 'success', message: 'Расшифровка созвона готова', hint: `Она в истории Шёпота.${failed}`}
@@ -290,7 +301,11 @@ function createWidget() {
     if (action === 'cancel' && capture) { journalCancel(); hideWidget(); send('cancel-recording'); }
     if (action === 'hide' && !capture) { if (meeting) meeting.hidden = true; widget.hide(); }
     if (action === 'meeting-record' && offer) {
-      try { startMeeting(offer); } catch (error) { showWidget({phase: 'error', message: error.message, hint: 'Открой Шёпот, чтобы продолжить'}); }
+      try { startMeeting(offer); }
+      catch (error) {
+        journal.write('command-error', {command: 'meeting-record', ...errorFields(error)});
+        showWidget({phase: 'error', message: error.message, hint: 'Открой Шёпот, чтобы продолжить'});
+      }
     }
     if (action === 'meeting-ignore' && offer) {
       store.setSettings({...store.data.settings, meetingIgnore: [...store.data.settings.meetingIgnore, {id: offer.id, name: offer.name}]});
@@ -397,7 +412,8 @@ else {
     arch: process.arch, memoryGb: Math.round(os.totalmem() / 2 ** 30), packaged: app.isPackaged, hidden: startHidden,
     // A non-ASCII or spaced path to the data folder is a common cause of install-specific failures; the path itself stays out.
     dataDirNonAscii: /[^\x20-\x7e]/.test(dataDir), dataDirSpace: /\s/.test(dataDir)});
-  // Observers only: Electron keeps its own handling (an exception still ends the app, a rejection only warns).
+  // Observers only: Electron keeps its own handling (an uncaught exception shows its error dialog and the app
+  // keeps running; a rejection only warns).
   process.on('uncaughtExceptionMonitor', (error, origin) => { const {kind, code, at} = errorFields(error); journal.write('main-error', {origin, kind, code, at}); });
   process.on('unhandledRejection', reason => {
     const {kind, code, at} = errorFields(reason);
@@ -463,11 +479,15 @@ else {
       trusted(event);
       if (!capture || value?.id !== capture.id) return;
       if (['error', 'canceled'].includes(value.phase)) {
-        // The type tells a denied permission from a missing or busy microphone; the message stays out.
-        if (value.phase === 'canceled') journalCancel(); else journal.write('capture-error', {phase: capture.phase, kind: value.kind});
+        // A failure comes with its type (a denied or busy microphone, a recorder error, an empty recording); a cancel
+        // by the user comes without one. The message stays out.
+        if (value.phase === 'canceled' && value.kind === undefined) journalCancel();
+        else journal.write('capture-error', {phase: capture.phase, kind: value.kind});
         finishCapture({phase: value.phase, message: value.phase === 'canceled' ? 'Запись отменена' : 'Микрофон недоступен', hint: String(value.message || '').slice(0, 240)});
       } else if ((value.phase === 'recording' && ['requesting', 'recording'].includes(capture.phase)) ||
                  (value.phase === 'stopping' && ['recording', 'stopping'].includes(capture.phase))) {
+        // A microphone that went away stops the recording; what was recorded is still recognized.
+        if (value.kind !== undefined) journal.write('capture-error', {phase: capture.phase, kind: value.kind});
         capture.phase = value.phase;
         capture.record = Math.max(0, Math.min(900, Number(value.elapsed) || 0));
         if (value.phase === 'stopping') { releaseEscape(); hideWidget(); }

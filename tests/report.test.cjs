@@ -30,7 +30,8 @@ test('a report opens a new issue with a short form and the versions, nothing els
   assert.ok(link.length < 2000, `${link.length} characters`);
 });
 
-test('the issue address is the repository from package.json', () => {
+test('the issue address is a GitHub page of the repository in package.json', () => {
   assert.equal(ISSUES, `${pkg.repository.url.replace(/\.git$/, '')}/issues/new`);
-  assert.equal(ISSUES, 'https://github.com/rukibazukii111/shopot/issues/new');
+  // shell.openExternal gets this address: an https GitHub page, whatever form the repository URL takes.
+  assert.match(ISSUES, /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/new$/);
 });
