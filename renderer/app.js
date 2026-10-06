@@ -321,7 +321,7 @@ async function startRecording(session) {
       } catch (error) { if (operation === state.operation) { api.captureUpdate({id: session.id, phase: 'error', message: error.message}); showError(error); } }
       finally { if (operation === state.operation) { captureId = null; state.phase = 'idle'; refreshControls(); } }
     };
-    recorder.onerror = event => { showError(event.error || new Error('Запись прервалась')); recordingCanceled = true; if (recorder.state !== 'inactive') recorder.stop(); else { releaseMicrophone(); api.captureUpdate({id: session.id, phase: 'error'}); captureId = null; state.phase = 'idle'; refreshControls(); } };
+    recorder.onerror = event => { showError(event.error || new Error('Запись прервалась')); recordingCanceled = true; if (recorder.state !== 'inactive') recorder.stop(); else { releaseMicrophone(); api.captureUpdate({id: session.id, phase: 'error', kind: event.error?.name}); captureId = null; state.phase = 'idle'; refreshControls(); } };
     stream.getAudioTracks().forEach(track => track.onended = () => {
       showError(new Error('Микрофон отключён. Запись остановлена.'));
       if (recorder?.state === 'recording') stopRecording();
@@ -343,7 +343,7 @@ async function startRecording(session) {
     releaseMicrophone(); state.phase = 'idle'; refreshControls();
     const messages = {NotAllowedError: 'Нет доступа к микрофону. Разреши доступ для Шёпота в настройках системы и попробуй снова.', NotFoundError: 'Микрофон не найден. Подключи его и попробуй снова.', NotReadableError: 'Микрофон занят или недоступен. Проверь другое приложение и повтори запись.', OverconstrainedError: 'Выбранный микрофон недоступен. Выбери системный микрофон в настройках.'};
     const message = messages[error.name] || error.message;
-    if (session) api.captureUpdate({id: session.id, phase: 'error', message});
+    if (session) api.captureUpdate({id: session.id, phase: 'error', message, kind: error.name});
     captureId = null; showError(new Error(message));
   }
 }
@@ -404,7 +404,7 @@ async function recordMeeting({id, chunkMs}) {
     if (session.finishing) await finishMeetingRecording();
   } catch (error) {
     releaseMeeting(session); if (meetingSession === session) meetingSession = null;
-    await api.meetingDone(id, error.message || 'Не удалось начать запись');
+    await api.meetingDone(id, error.message || 'Не удалось начать запись', error.name);
   }
 }
 function meetingChunk(session) {

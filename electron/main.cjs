@@ -71,9 +71,11 @@ function engineFields(status) {
     formatter: !formatter?.supported ? 'unsupported' : formatter.installed ? 'installed' : 'absent', startup: (Date.now() - engineStartedAt) / 1000};
 }
 // Timings and the outcome of one recognition, picked field by field: the result also holds the text.
-function resultFields(result) {
+// `wait` is the request's time outside the engine's job: mostly the queue (a preload still loading, a call chunk).
+function resultFields(result, requestSeconds) {
   const load = Number(result.loadElapsed) || 0, format = Number(result.formatElapsed) || 0;
   return {model: result.model, device: result.device, formatting: result.formatting, audio: result.duration,
+    wait: Number.isFinite(result.elapsed) ? Math.max(0, requestSeconds - result.elapsed) : undefined,
     load: result.loadElapsed, format: result.formatElapsed, total: result.elapsed,
     transcribe: Number.isFinite(result.elapsed) ? Math.max(0, result.elapsed - load - format) : undefined,
     memoryMb: Number.isFinite(result.memoryPeak) ? Math.round(result.memoryPeak / 2 ** 20) : undefined};
@@ -240,14 +242,15 @@ async function transcribeMeetingChunk(current, file, offset, index) {
   }
   return true;
 }
-async function finishMeeting(current, problem) {
+// `kind` is the type of the window's recording error; its message (`problem`) is for the widget only.
+async function finishMeeting(current, problem, kind) {
   await meetingQueue;
   clearInterval(meetingClock);
   if (meeting === current) meeting = null;
   const turns = meetingTurns(current.cues.left, current.cues.right);
   const duration = (Date.now() - current.startedAt) / 1000;
   journal.write('meeting-finish', {duration, turns: turns.length, chunks: current.files.length, failed: current.failed,
-    result: turns.length ? 'saved' : 'empty', problem: !problem ? undefined : problem === WINDOW_GONE ? 'window-gone' : 'renderer'});
+    result: turns.length ? 'saved' : 'empty', problem: !problem ? undefined : problem === WINDOW_GONE ? 'window-gone' : 'renderer', kind});
   if (turns.length) {
     const text = meetingText(turns);
     store.addHistory({id: crypto.randomUUID(), createdAt: new Date(current.startedAt).toISOString(), source: current.app ? `Созвон · ${current.app.name}` : 'Созвон',
@@ -343,16 +346,22 @@ async function runTranscription(filePath, source, recordingSession = null, retry
       store.data.pendingRecordings.push({id: crypto.randomUUID(), audioFile, source, createdAt: new Date().toISOString()});
       store.save();
     }
+    const requested = performance.now();
     const result = await worker.request('transcribe', {audioFile, ...settings, dictionary, snippets});
     if (currentJob !== job) { canceled = task.canceled; report.result = 'canceled'; return {canceled: true}; }
-    Object.assign(report, resultFields(result));
+    Object.assign(report, resultFields(result, (performance.now() - requested) / 1000));
+    // Only a dictation sends a preload (beginCapture); for a file or a retry it would be a canceled dictation's.
+    if (recordingSession) report.preload = result.preloadElapsed;
     if (result.noSpeech) {
       completed = true; report.result = 'no-speech';
       if (recordingSession) finishCapture({phase: 'error', message: 'Речь не обнаружена', hint: 'Попробуй говорить ближе к микрофону'});
       return {noSpeech: true};
     }
+    // History shows loadElapsed as a part of the recognition time («из них загрузка модели»); the preload ran
+    // while the user spoke, outside that time, so its seconds stay in the journal.
+    const {preloadElapsed, ...recognized} = result;
     const entry = {id: crypto.randomUUID(), createdAt: new Date().toISOString(), source,
-      mode: settings.mode, ...result, audioFile: settings.keepAudio ? path.basename(filePath) : null, app: recordingSession?.app ?? null};
+      mode: settings.mode, ...recognized, audioFile: settings.keepAudio ? path.basename(filePath) : null, app: recordingSession?.app ?? null};
     store.addHistory(entry);
     completed = true;
     const pasteStarted = performance.now();
@@ -383,7 +392,8 @@ async function runTranscription(filePath, source, recordingSession = null, retry
 
 if (!app.requestSingleInstanceLock()) { app.quit(); }
 else {
-  journal.write('app-start', {version: appVersion, electron: process.versions.electron, os: os.release(), platform: process.platform,
+  // The same system version as in «Сообщить о проблеме»: on macOS os.release() is the Darwin kernel's.
+  journal.write('app-start', {version: appVersion, electron: process.versions.electron, os: process.getSystemVersion(), platform: process.platform,
     arch: process.arch, memoryGb: Math.round(os.totalmem() / 2 ** 30), packaged: app.isPackaged, hidden: startHidden,
     // A non-ASCII or spaced path to the data folder is a common cause of install-specific failures; the path itself stays out.
     dataDirNonAscii: /[^\x20-\x7e]/.test(dataDir), dataDirSpace: /\s/.test(dataDir)});
@@ -453,7 +463,8 @@ else {
       trusted(event);
       if (!capture || value?.id !== capture.id) return;
       if (['error', 'canceled'].includes(value.phase)) {
-        if (value.phase === 'canceled') journalCancel(); else journal.write('capture-error', {phase: capture.phase});
+        // The type tells a denied permission from a missing or busy microphone; the message stays out.
+        if (value.phase === 'canceled') journalCancel(); else journal.write('capture-error', {phase: capture.phase, kind: value.kind});
         finishCapture({phase: value.phase, message: value.phase === 'canceled' ? 'Запись отменена' : 'Микрофон недоступен', hint: String(value.message || '').slice(0, 240)});
       } else if ((value.phase === 'recording' && ['requesting', 'recording'].includes(capture.phase)) ||
                  (value.phase === 'stopping' && ['recording', 'stopping'].includes(capture.phase))) {
@@ -594,7 +605,7 @@ else {
       if (!meeting || value?.id !== meeting.id) return false;
       const current = meeting;
       current.stopping = true; clearTimeout(current.endTimer);
-      finishMeeting(current, value.error ? String(value.error).slice(0, 200) : '').catch(error => console.error('Созвон не сохранён:', error));
+      finishMeeting(current, value.error ? String(value.error).slice(0, 200) : '', value.kind).catch(error => console.error('Созвон не сохранён:', error));
       return true;
     });
     ipc('copy-summary', async id => {

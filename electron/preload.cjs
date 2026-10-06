@@ -27,7 +27,7 @@ contextBridge.exposeInMainWorld('shopot', {
   startMeeting: () => ipcRenderer.invoke('meeting-start'),
   stopMeeting: () => ipcRenderer.invoke('meeting-stop'),
   meetingChunk: (id, index, offset, audio) => ipcRenderer.invoke('meeting-chunk', {id, index, offset, audio}),
-  meetingDone: (id, error) => ipcRenderer.invoke('meeting-done', {id, error}),
+  meetingDone: (id, error, kind) => ipcRenderer.invoke('meeting-done', {id, error, kind}),
   copySummary: id => ipcRenderer.invoke('copy-summary', id),
   openJournal: () => ipcRenderer.invoke('journal-open'),
   saveJournal: () => ipcRenderer.invoke('journal-save'),

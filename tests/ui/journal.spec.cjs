@@ -21,8 +21,9 @@ test('the journal records every step of real work and none of what the user said
   store.setSettings({...store.data.settings, context: mark('Подсказка'), autoCopy: false, autoPaste: false});
   const imported = path.join(dataDir, `Встреча с юристом ${stamp}.wav`);
   fs.writeFileSync(imported, Buffer.alloc(64));
-  const result = {text: `${said} ${mark('Текст')}`, rawText: mark('Сырой'), duration: 3.5, elapsed: 1.25, loadElapsed: .5, formatElapsed: .25,
-    memoryPeak: 512 * 2 ** 20, device: 'cpu', formatting: 'rules', model: 'gigaam', noSpeech: false,
+  // The hotkey preload loaded the model for 2.5 s while the user spoke (the engine reports it once, for the journal).
+  const result = {text: `${said} ${mark('Текст')}`, rawText: mark('Сырой'), duration: 3.5, elapsed: .5, loadElapsed: .2, formatElapsed: .1,
+    preloadElapsed: 2.5, memoryPeak: 512 * 2 ** 20, device: 'cpu', formatting: 'rules', model: 'gigaam', noSpeech: false,
     words: [{word: mark('Слово'), start: 0, end: 1}], segments: [{text: mark('Сегмент'), start: 0, end: 1}], cues: [{text: mark('Субтитр'), start: 0, end: 1}],
     replacements: [{from: mark('псевдоним'), to: mark('Словарь')}], snippets: [mark('мой адрес')], commands: []};
 
@@ -30,7 +31,7 @@ test('the journal records every step of real work and none of what the user said
     env: {...env, SHOPOT_DATA_DIR: dataDir}});
   const requests = () => app.evaluate(() => globalThis.__test.requests.length);
   const idle = () => expect.poll(() => page.evaluate(() => window.shopot.boot().then(s => s.busy))).toBe(false);
-  let page;
+  let page, system;
   async function dictate(finish) {
     const before = await requests();
     await app.evaluate(() => globalThis.__test.toggle());
@@ -45,7 +46,11 @@ test('the journal records every step of real work and none of what the user said
     await expect(page.locator('#engine-label')).toHaveText('Локальный движок');
     // The window title of the target app is private even if it is ever captured.
     await app.evaluate((_, title) => { globalThis.__test.fakeTarget = {hwnd: 1, pid: 1, focus: 0, title, app: {id: 'telegram.exe', name: 'Telegram'}}; }, mark('Чат с Машей'));
-    await dictate(() => app.evaluate((_, value) => globalThis.__test.resolve(value), result));
+    // The engine answers 0.8 s after the request and spent 0.5 s on it: the rest is the wait for the engine.
+    await dictate(async () => {
+      await new Promise(resolve => setTimeout(resolve, 800));
+      await app.evaluate((_, value) => globalThis.__test.resolve(value), result);
+    });
     await dictate(() => app.evaluate(() => globalThis.__test.resolve({text: '', rawText: '', words: [], segments: [], duration: 1, elapsed: .1, model: 'gigaam', noSpeech: true})));
     await dictate(() => app.evaluate((_, message) => globalThis.__test.failWith({message, kind: 'KeyError', expected: false}), `KeyError: '${said}'`));
     await dictate(() => app.evaluate(() => globalThis.__test.failWith({message: 'Аудиофайл пуст.', kind: 'UserError', expected: true})));
@@ -64,6 +69,15 @@ test('the journal records every step of real work and none of what the user said
     await expect.poll(requests).toBe(before + 1);
     await app.evaluate((_, value) => globalThis.__test.resolve(value), result);
     await idle();
+    // The microphone fails with a type the window has no words for, so its own message travels to main.
+    await page.evaluate(message => {
+      window.originalGetMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      navigator.mediaDevices.getUserMedia = async () => { throw new DOMException(message, 'AbortError'); };
+    }, mark('Микрофон Маши'));
+    await app.evaluate(() => globalThis.__test.toggle());
+    await expect.poll(() => fs.readFileSync(path.join(dataDir, 'logs', 'shopot.log'), 'utf8')).toMatch(/ capture-error /);
+    await page.evaluate(() => { navigator.mediaDevices.getUserMedia = window.originalGetMedia; });
+    system = await app.evaluate(() => process.getSystemVersion());
     // Escape during a recording.
     await app.evaluate(() => globalThis.__test.toggle());
     await expect(page.locator('#record-time')).not.toHaveText('00:00');
@@ -80,14 +94,20 @@ test('the journal records every step of real work and none of what the user said
   expect(journal).not.toMatch(/Маш|юрист|Встреча|Улица|Подсказка/);
   const has = pattern => expect(lines.some(line => pattern.test(line)), String(pattern)).toBe(true);
   const version = require('../../package.json').version.replace(/\./g, '\\.');
-  has(new RegExp(` app-start version=${version} electron=\\S+ .* dataDirNonAscii=(true|false) dataDirSpace=(true|false)`));
+  // The system version reads the same as in «Сообщить о проблеме» (on macOS os.release() is the Darwin version).
+  has(new RegExp(` app-start version=${version} electron=\\S+ os=${system.replace(/\./g, '\\.')} platform=\\S+ .* dataDirNonAscii=(true|false) dataDirSpace=(true|false)`));
   has(/ engine-ready models=gigaam@322c3b294926,turbo@,small@ .*formatter=absent/);
-  has(/ dictation result=ok trigger=hotkey model=gigaam device=cpu language=ru mode=natural formattingRequested=rules formatting=rules translate=false record=\d.* audio=3\.5 load=0\.5 transcribe=0\.5 format=0\.25 total=1\.25 pasteTime=\S+ memoryMb=512 paste=saved app=Telegram appId=telegram\.exe profile=false$/);
+  // The load inside the job stays apart from the preload's, so recognition is the job minus load and layout.
+  has(/ dictation result=ok trigger=hotkey model=gigaam device=cpu language=ru mode=natural formattingRequested=rules formatting=rules translate=false record=\d.* audio=3\.5 preload=2\.5 wait=\S+ load=0\.2 transcribe=0\.2 format=0\.1 total=0\.5 pasteTime=\S+ memoryMb=512 paste=saved app=Telegram appId=telegram\.exe profile=false$/);
+  expect(Number(/ wait=(\S+)/.exec(lines.find(line => / dictation result=ok /.test(line)))[1])).toBeGreaterThanOrEqual(.25);
   has(/ dictation result=no-speech .* audio=1 /);
   has(/ dictation result=error .*kind=KeyError expected=false$/);
   has(/ dictation result=error .*kind=UserError expected=true message="Аудиофайл пуст\."$/);
-  has(/ file result=ok model=gigaam .* paste=saved$/);
+  has(/ file result=ok model=gigaam .* wait=\S+ load=0\.2 .* paste=saved$/);
   has(/ retry result=ok /);
+  // Only a dictation sends a preload; a file or a retry would report a canceled dictation's.
+  expect(lines.filter(line => / (file|retry) result=ok .*preload=/.test(line))).toEqual([]);
+  has(/ capture-error phase=requesting kind=AbortError$/);
   has(/ cancel phase=recording$/);
   expect(lines.filter(line => / cancel /.test(line))).toHaveLength(1);
   // A failed dictation is journaled once, as the dictation, not again as a failed window command.
@@ -95,4 +115,8 @@ test('the journal records every step of real work and none of what the user said
   has(/ app-ready hotkey=true native=(true|false) meetings=(true|false)$/);
   expect(lines.filter(line => / dictation result=error .*kind=KeyError/.test(line))[0]).not.toContain('message=');
   expect(journal).not.toContain('rejected=');
+  // The preload's time is the journal's: history keeps showing the load inside the recognition time.
+  const history = JSON.parse(fs.readFileSync(path.join(dataDir, 'store.json'), 'utf8')).history;
+  expect(history.filter(entry => 'preloadElapsed' in entry)).toEqual([]);
+  expect(history.filter(entry => entry.loadElapsed === .2)).toHaveLength(3);
 });

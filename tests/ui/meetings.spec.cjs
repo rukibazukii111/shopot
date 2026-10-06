@@ -72,6 +72,10 @@ test('a call is offered, recorded as two channels while it goes on and saved as 
     await expect.poll(async () => (await page.evaluate(() => window.shopot.boot())).settings.meetingIgnore).toEqual([{id: 'deadlock.exe', name: 'deadlock'}]);
     await page.locator('[data-page="settings"]').click();
     await expect(page.locator('#meeting-ignore')).toContainText('deadlock');
+    // A call the window cannot record: the journal keeps the error's type, not its message.
+    await page.evaluate(() => { navigator.mediaDevices.getDisplayMedia = async () => { throw new DOMException('Экран Маши недоступен', 'NotAllowedError'); }; });
+    await page.evaluate(() => window.shopot.startMeeting());
+    await expect.poll(() => fs.readFileSync(path.join(dataDir, 'logs', 'shopot.log'), 'utf8')).toMatch(/ meeting-finish .*result=empty/);
     answering = false; await answers;
   } finally { answering = false; await app.close(); }
   // The journal follows the call part by part, without a word of what was said.
@@ -81,4 +85,6 @@ test('a call is offered, recorded as two channels while it goes on and saved as 
   expect(journal).toMatch(/ meeting-chunk index=0 channel=left result=ok attempts=1 transcribe=\S+\n/);
   expect(journal).toMatch(/ meeting-chunk index=0 channel=right result=ok attempts=1 transcribe=\S+\n/);
   expect(journal).toMatch(/ meeting-finish duration=\S+ turns=\d+ chunks=\d+ failed=0 result=saved\n/);
+  expect(journal).toMatch(/ meeting-finish duration=\S+ turns=0 chunks=0 failed=0 result=empty problem=renderer kind=NotAllowedError\n/);
+  expect(journal).not.toMatch(/Маши|rejected=/);
 });

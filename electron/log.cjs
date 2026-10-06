@@ -24,7 +24,7 @@ const TRANSCRIPTION = {
   result: oneOf(['ok', 'no-speech', 'error', 'canceled']), trigger: oneOf(['hotkey', 'window']),
   model: oneOf(MODEL_IDS), device: token, language: oneOf(['ru', 'en', 'auto']), mode: oneOf(['natural', 'minimal', 'raw']),
   formattingRequested: oneOf(FORMATTING), formatting: oneOf(FORMATTING), translate: bool,
-  record: sec, audio: sec, load: sec, transcribe: sec, format: sec, total: sec, pasteTime: sec, memoryMb: int,
+  record: sec, audio: sec, preload: sec, wait: sec, load: sec, transcribe: sec, format: sec, total: sec, pasteTime: sec, memoryMb: int,
   paste: oneOf(DELIVERY_CODES), app: name, appId: token, profile: bool, ...ERROR,
 };
 const EVENTS = {
@@ -38,10 +38,10 @@ const EVENTS = {
   'engine-restart': {cause: oneOf(['window-gone', 'download-canceled'])},
   dictation: TRANSCRIPTION, file: TRANSCRIPTION, retry: TRANSCRIPTION,
   cancel: {phase: PHASE},
-  'capture-error': {phase: PHASE},
+  'capture-error': {phase: PHASE, kind: token},
   'meeting-start': {app: name, appId: token, trigger: oneOf(['offer', 'manual'])},
   'meeting-chunk': {index: int, channel: oneOf(['left', 'right']), result: oneOf(['ok', 'fail']), attempts: int, transcribe: sec, kind: token},
-  'meeting-finish': {duration: sec, turns: int, chunks: int, failed: int, result: oneOf(['saved', 'empty']), problem: oneOf(['window-gone', 'renderer'])},
+  'meeting-finish': {duration: sec, turns: int, chunks: int, failed: int, result: oneOf(['saved', 'empty']), problem: oneOf(['window-gone', 'renderer']), kind: token},
   download: {model: oneOf([...MODEL_IDS, 'formatter']), result: oneOf(['ok', 'error', 'canceled']), elapsed: sec, ...ERROR},
   'ipc-error': {channel: token, ...ERROR},
   'main-error': {origin: oneOf(['uncaughtException', 'unhandledRejection']), kind: token, code: token, at: token},
@@ -94,9 +94,15 @@ function createJournal({dir, home = os.homedir(), now = () => new Date(), platfo
     if (rejected.length) parts.push(`rejected=${rejected.join(',')}`);
     return parts.join(' ') + '\n';
   }
+  // shopot.log moves aside first: while another program holds it open (Windows), the rotation stops before
+  // any older part is touched. A rename replaces its target, so the oldest part goes only when the next takes its place.
   function rotate() {
-    fs.rmSync(files.at(-1), {force: true});
-    for (let index = files.length - 1; index > 0; index--) if (fs.existsSync(files[index - 1])) fs.renameSync(files[index - 1], files[index]);
+    const aside = `${files[0]}.rotating`;
+    fs.renameSync(files[0], aside);
+    try {
+      for (let index = files.length - 1; index > 1; index--) if (fs.existsSync(files[index - 1])) fs.renameSync(files[index - 1], files[index]);
+      fs.renameSync(aside, files[1]);
+    } catch (error) { fs.renameSync(aside, files[0]); throw error; }
     size = 0;
   }
   // Never throws: a full disk or a locked file must not stop a dictation.
@@ -124,7 +130,10 @@ function createJournal({dir, home = os.homedir(), now = () => new Date(), platfo
         if (!kept.length) { fs.rmSync(file, {force: true}); continue; }
         fs.writeFileSync(file + '.tmp', kept.join('\n') + '\n', 'utf8');
         fs.renameSync(file + '.tmp', file);
-      } catch {}
+      } catch {
+        // A locked file keeps its old lines until the next prune; its pruned copy does not stay behind.
+        try { fs.rmSync(file + '.tmp', {force: true}); } catch {}
+      }
     }
     size = null;
   }
@@ -142,4 +151,4 @@ function createJournal({dir, home = os.homedir(), now = () => new Date(), platfo
   return {write, read, pruneOlderThan, dir};
 }
 
-module.exports = {createJournal, timestamp, errorFields, EVENTS};
+module.exports = {createJournal, timestamp, errorFields};

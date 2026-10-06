@@ -133,6 +133,8 @@ class Engine:
         self.idle_unload_seconds = LOW_MEMORY_IDLE_UNLOAD_SECONDS if memory.is_low_memory() else IDLE_UNLOAD_SECONDS
         # Peak RAM of the last model load; it counts toward the dictation the model was loaded for.
         self.load_peak = 0
+        # Seconds the last hotkey preload spent loading; reported once, with the next transcription.
+        self.preload_elapsed = 0.0
         self.formatter_dir = self.data_dir / "formatter"
         self.formatter = None
 
@@ -336,6 +338,9 @@ class Engine:
                 # Shown in history: what this dictation cost in RAM, including a load at the hotkey (preload).
                 result["memoryPeak"] = max(sampler.peak, self.load_peak) or None
                 self.load_peak = 0
+                # For the app's journal only: history's loadElapsed is the part of `elapsed` spent loading.
+                result["preloadElapsed"] = finite(self.preload_elapsed)
+                self.preload_elapsed = 0.0
                 return result
             finally:
                 self.schedule_idle_unload()
@@ -380,11 +385,14 @@ class Engine:
         """Warm the models while the user is still speaking."""
         with self.model_lock:
             self.cancel_idle_unload()
+            started = time.monotonic()
             try:
                 self.load(key)
                 if formatting == "llm" and self.formatter_installed():
                     self.load_formatter()
             finally:
+                # A short dictation can wait for this; a preload that finds the models loaded reports about 0.
+                self.preload_elapsed = time.monotonic() - started
                 self.schedule_idle_unload()
 
     def shutdown(self, through):
@@ -466,7 +474,7 @@ class Engine:
         if float(np.max(np.abs(audio))) < 0.0001:
             return {"text": "", "rawText": "", "words": [], "segments": [], "replacements": [],
                     "duration": duration, "elapsed": finite(time.monotonic() - started),
-                    "language": language, "model": key, "noSpeech": True}
+                    "language": language, "model": key, "noSpeech": True, "loadElapsed": finite(load_elapsed)}
         names = [e["word"] for e in entries]
         if MODELS[key]["engine"] == "gigaam":
             parsed = self._gigaam_segments(audio, duration, request_id)

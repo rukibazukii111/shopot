@@ -73,6 +73,31 @@ test('rotation keeps three files and the newest line in shopot.log', t => {
   assert.ok(fs.statSync(path.join(f.root, 'logs', 'shopot.log')).size <= 300);
 });
 
+test('a shopot.log another program holds open stops the rotation before any older part is touched', t => {
+  const f = fixture(t, {maxBytes: 300});
+  for (let i = 0; i < 40; i++) f.journal.write('quit', {uptime: i});
+  const older = name => f.read(name).trim().split('\n').map(line => line.split('=')[1]);
+  const before = {'shopot.1.log': older('shopot.1.log'), 'shopot.2.log': older('shopot.2.log'), 'shopot.log': older('shopot.log')};
+  // What Windows does while a viewer holds the file open without delete sharing.
+  const rename = fs.renameSync;
+  const locked = t.mock.method(fs, 'renameSync', (from, to) => {
+    if (path.basename(from) === 'shopot.log') throw Object.assign(new Error('EBUSY: resource busy or locked'), {code: 'EBUSY'});
+    return rename(from, to);
+  });
+  const results = Array.from({length: 10}, (_, i) => f.journal.write('quit', {uptime: 100 + i}));
+  assert.ok(results.includes(false));
+  assert.deepEqual(f.files(), ['shopot.1.log', 'shopot.2.log', 'shopot.log']);
+  assert.deepEqual(older('shopot.1.log'), before['shopot.1.log']);
+  assert.deepEqual(older('shopot.2.log'), before['shopot.2.log']);
+  // Once the file is free, the rotation goes through and keeps the order.
+  locked.mock.restore();
+  assert.equal(f.journal.write('quit', {uptime: 200}), true);
+  assert.deepEqual(f.files(), ['shopot.1.log', 'shopot.2.log', 'shopot.log']);
+  assert.deepEqual(older('shopot.2.log'), before['shopot.1.log']);
+  assert.deepEqual(older('shopot.1.log').slice(0, before['shopot.log'].length), before['shopot.log']);
+  assert.match(f.read().trim(), / quit uptime=200$/);
+});
+
 test('reading gives the whole journal as one text, oldest line first', t => {
   const f = fixture(t, {maxBytes: 300});
   for (let i = 0; i < 40; i++) f.journal.write('quit', {uptime: i});
@@ -114,6 +139,20 @@ test('pruning removes lines older than the period from every file', t => {
   assert.deepEqual(left.map(line => line.split('=')[1]).sort(), ['50', '51', '52']);
   f.journal.write('quit', {uptime: 99});
   assert.match(f.read().trim().split('\n').at(-1), /uptime=99$/);
+});
+
+test('a prune that cannot replace a locked file leaves no copy behind', t => {
+  const f = fixture(t);
+  f.journal.write('quit', {uptime: 1});
+  f.tick(10 * 864e5);
+  f.journal.write('quit', {uptime: 2});
+  const rename = fs.renameSync;
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    if (from.endsWith('.tmp')) throw Object.assign(new Error('EPERM: operation not permitted'), {code: 'EPERM'});
+    return rename(from, to);
+  });
+  assert.doesNotThrow(() => f.journal.pruneOlderThan(7));
+  assert.deepEqual(f.files(), ['shopot.log']);
 });
 
 test('error fields carry the type and code, never the message or a path', () => {

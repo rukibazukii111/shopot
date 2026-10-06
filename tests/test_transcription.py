@@ -551,6 +551,23 @@ def test_subtitle_cues_break_at_sentences_pauses_and_length():
     assert subtitle_cues([]) == []
 
 
+def test_a_silent_recording_reports_the_model_load_it_included(tmp_path, monkeypatch):
+    import wave
+    engine = installed_engine(tmp_path)
+    with wave.open(str(engine.audio_dir / 'a0.wav'), 'wb') as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(16000)
+        out.writeframes(b'\x00\x00' * 16000)
+    monkeypatch.setattr(engine, 'load', lambda key, request_id=None: 1.5)
+    try:
+        # The app's journal takes the load out of the time spent; without it the load counts as recognition.
+        result = engine.transcribe({'model': 'gigaam', 'audioFile': 'a0.wav', 'language': 'ru'})
+        assert result['noSpeech'] is True and result['loadElapsed'] == 1.5
+    finally:
+        engine.cancel_idle_unload()
+
+
 def test_meeting_channels_are_recognized_separately(tmp_path, monkeypatch):
     import math
     import struct
