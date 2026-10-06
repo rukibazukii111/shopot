@@ -48,7 +48,8 @@ const EVENTS = {
   'ipc-error': {channel: token, ...ERROR},
   // What main refuses outside a window command: a dictation by the hotkey or the tray, a call from the widget's offer.
   'command-error': {command: oneOf(['hotkey', 'meeting-record']), ...ERROR},
-  'main-error': {origin: oneOf(['uncaughtException', 'unhandledRejection']), kind: token, code: token, at: token},
+  // Node's two ways out for an error no code caught, and `store`: store.json failed to load at start, so the app quits.
+  'main-error': {origin: oneOf(['uncaughtException', 'unhandledRejection', 'store']), kind: token, code: token, at: token},
   'render-gone': {window: oneOf(['main', 'widget']), reason: token, exitCode: int},
   quit: {uptime: sec},
 };

@@ -55,13 +55,17 @@ function ipc(name, handler) {
     catch (error) { if (!error?.journaled) journal.write('ipc-error', {channel: name, ...errorFields(error)}); throw error; }
   });
 }
-// A cancel reaches main up to three ways (Escape, the widget, the window); the first one, while the work is live, is journaled.
+// A cancel reaches main up to three ways (Escape, the widget, the window); the first one, while the work is live, is journaled
+// with the stage it interrupted. «Отменить» in the window and a second hotkey press while the microphone opens stop the
+// capture before they cancel it, so a stopped capture counts at its stage before the stop.
 function journalCancel() {
-  const phase = downloading ? 'download' : activeTranscription ? 'transcribing' : capture?.phase;
+  const phase = downloading ? 'download' : activeTranscription ? 'transcribing' : capture?.stoppedFrom ?? capture?.phase;
   if (!phase || capture?.cancelJournaled) return;
   if (capture) capture.cancelJournaled = true;
   journal.write('cancel', {phase});
 }
+// A failure outside any command: its type, system code and first frame in our code, never its message.
+function journalMainError(origin, error) { const {kind, code, at} = errorFields(error); journal.write('main-error', {origin, kind, code, at}); }
 function startEngine() { engineStartedAt = Date.now(); journal.write('engine-start'); worker.start(); }
 function restartEngine(cause) { journal.write('engine-restart', {cause}); engineStartedAt = Date.now(); worker.restart(); }
 function engineFields(status) {
@@ -176,7 +180,7 @@ function toggleGlobalRecording() {
     // While the keys are still down, another trigger is the held key repeating, not a second press.
     if (hold) return;
     if (['requesting', 'recording'].includes(capture.phase)) {
-      capture.phase = 'stopping'; releaseEscape(); hideWidget(); send('toggle-recording');
+      capture.stoppedFrom = capture.phase; capture.phase = 'stopping'; releaseEscape(); hideWidget(); send('toggle-recording');
     }
     return;
   }
@@ -414,10 +418,9 @@ else {
     dataDirNonAscii: /[^\x20-\x7e]/.test(dataDir), dataDirSpace: /\s/.test(dataDir)});
   // Observers only: Electron keeps its own handling (an uncaught exception shows its error dialog and the app
   // keeps running; a rejection only warns).
-  process.on('uncaughtExceptionMonitor', (error, origin) => { const {kind, code, at} = errorFields(error); journal.write('main-error', {origin, kind, code, at}); });
+  process.on('uncaughtExceptionMonitor', (error, origin) => journalMainError(origin, error));
   process.on('unhandledRejection', reason => {
-    const {kind, code, at} = errorFields(reason);
-    journal.write('main-error', {origin: 'unhandledRejection', kind, code, at});
+    journalMainError('unhandledRejection', reason);
     console.error('Unhandled rejection:', reason);
   });
   app.on('second-instance', () => { window?.show(); window?.focus(); });
@@ -426,7 +429,7 @@ else {
     nativeTheme.themeSource = 'dark';
     fs.mkdirSync(audioDir, {recursive: true});
     try { store = new Store(dataDir); }
-    catch (error) { dialog.showErrorBox('Шёпот', error.message); app.quit(); return; }
+    catch (error) { journalMainError('store', error); dialog.showErrorBox('Шёпот', error.message); app.quit(); return; }
     // Recover interrupted captures, including files saved just before a crash.
     const retained = new Set(store.data.history.map(e => e.audioFile).filter(Boolean));
     const previousPending = JSON.stringify(store.data.pendingRecordings);
@@ -488,6 +491,7 @@ else {
                  (value.phase === 'stopping' && ['recording', 'stopping'].includes(capture.phase))) {
         // A microphone that went away stops the recording; what was recorded is still recognized.
         if (value.kind !== undefined) journal.write('capture-error', {phase: capture.phase, kind: value.kind});
+        if (value.phase === 'stopping') capture.stoppedFrom ??= capture.phase;
         capture.phase = value.phase;
         capture.record = Math.max(0, Math.min(900, Number(value.elapsed) || 0));
         if (value.phase === 'stopping') { releaseEscape(); hideWidget(); }

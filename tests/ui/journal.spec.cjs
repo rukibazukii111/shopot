@@ -159,3 +159,63 @@ test('the journal records every step of real work and none of what the user said
   expect(history.filter(entry => 'preloadElapsed' in entry)).toEqual([]);
   expect(history.filter(entry => entry.loadElapsed === .2)).toHaveLength(3);
 });
+
+test('a cancel is journaled with the stage the user interrupted, not with the stop it starts', async () => {
+  const dataDir = path.join(root, '.private', 'ui-test', `journal-cancel-${Date.now()}`);
+  fs.mkdirSync(dataDir, {recursive: true});
+  const store = new Store(dataDir);
+  store.setSettings({...store.data.settings, autoCopy: false, autoPaste: false});
+  const app = await electron.launch({args: [path.join(root, 'tests/fixtures/harness.cjs'), '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'],
+    env: {...env, SHOPOT_DATA_DIR: dataDir}});
+  const cancels = () => fs.readFileSync(path.join(dataDir, 'logs', 'shopot.log'), 'utf8').match(/(?<= cancel ).*$/gm) ?? [];
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('#engine-label')).toHaveText('Локальный движок');
+    await app.evaluate(() => { globalThis.__test.fakeTarget = {hwnd: 1, pid: 1, focus: 0, app: {id: 'notepad.exe', name: 'Notepad'}}; });
+    // «Отменить» in the window: the window stops the recorder first and reports the cancel once it has stopped.
+    await page.locator('#record-button').click();
+    await expect(page.locator('#record-time')).not.toHaveText('00:00');
+    await page.locator('#cancel-button').click();
+    await expect(page.locator('#record-label')).toHaveText('Начать диктовку');
+    await expect.poll(cancels).toEqual(['phase=recording']);
+    // The hotkey pressed again while the microphone is still opening: main stops the capture, then the window cancels it.
+    // A press is a second one only after the hold watcher has found the keys up; before that it is the held key repeating.
+    await app.evaluate(() => Object.defineProperty(globalThis.__test, 'keysDown', {configurable: true, get: () => { globalThis.__test.keysRead = true; return false; }}));
+    await page.evaluate(() => {
+      window.originalGetMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      navigator.mediaDevices.getUserMedia = () => new Promise(() => {});
+    });
+    await app.evaluate(() => globalThis.__test.toggle());
+    await expect(page.locator('#record-heading')).toHaveText('Готовлюсь слушать');
+    await expect.poll(() => app.evaluate(() => globalThis.__test.keysRead)).toBe(true);
+    await app.evaluate(() => globalThis.__test.toggle());
+    await expect(page.locator('#record-label')).toHaveText('Начать диктовку');
+    await expect.poll(cancels).toEqual(['phase=recording', 'phase=requesting']);
+    // After a plain stop the cancel belongs to recognition: the stage that stop interrupted does not linger.
+    await page.evaluate(() => { navigator.mediaDevices.getUserMedia = window.originalGetMedia; });
+    await app.evaluate(() => globalThis.__test.toggle());
+    await expect(page.locator('#record-time')).not.toHaveText('00:00');
+    await app.evaluate(() => globalThis.__test.toggle());
+    await expect.poll(() => app.evaluate(() => globalThis.__test.requests.length)).toBe(1);
+    await page.locator('#cancel-button').click();
+    await expect(page.locator('#record-label')).toHaveText('Начать диктовку');
+    await expect.poll(cancels).toEqual(['phase=recording', 'phase=requesting', 'phase=transcribing']);
+  } finally { await app.close(); }
+});
+
+test('a store that cannot be loaded at start is journaled before the app quits, without its message', async () => {
+  const dataDir = path.join(root, '.private', 'ui-test', `journal-store-${Date.now()}`);
+  fs.mkdirSync(dataDir, {recursive: true});
+  // Cut short, as a crash or a sync tool can leave it.
+  fs.writeFileSync(path.join(dataDir, 'store.json'), '{"version": 1, "settings": {');
+  // The native error box cannot be kept off the desktop, so the harness leaves it out.
+  const app = await electron.launch({args: [path.join(root, 'tests/fixtures/harness.cjs')], env: {...env, SHOPOT_DATA_DIR: dataDir, SHOPOT_TEST_NO_ERROR_BOX: '1'}});
+  const journal = () => fs.existsSync(path.join(dataDir, 'logs', 'shopot.log')) ? fs.readFileSync(path.join(dataDir, 'logs', 'shopot.log'), 'utf8').trim().split('\n') : [];
+  try {
+    await expect.poll(() => journal().map(line => line.split(' ')[1]), {timeout: 15000}).toEqual(['app-start', 'main-error', 'quit']);
+  } finally { await app.close(); }
+  const lines = journal();
+  const unreadable = fs.readFileSync(path.join(root, 'electron', 'store.cjs'), 'utf8').split('\n')
+    .findIndex(line => line.includes("throw new Error('Не удалось прочитать историю")) + 1;
+  expect(lines[1]).toMatch(new RegExp(` main-error origin=store kind=Error at=store\\.cjs:${unreadable}$`));
+});
