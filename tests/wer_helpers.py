@@ -23,3 +23,14 @@ def write_tone(path, seconds=1.0, rate=16000):
         out.setframerate(rate)
         out.writeframes((0.3 * np.sin(2 * np.pi * 440 * t) * 32767).astype("<i2").tobytes())
     return path
+
+
+def fake_models(folder):
+    """A models folder where GigaAM counts as downloaded; the tests fake recognition itself."""
+    from engine import GIGAAM_FILES, MODELS
+    gigaam = Path(folder) / "gigaam"
+    gigaam.mkdir(parents=True)
+    (gigaam / "shopot-ready.json").write_text(json.dumps({"revision": MODELS["gigaam"]["revision"]}), "utf-8")
+    for name in GIGAAM_FILES:
+        (gigaam / name).write_bytes(b"x")
+    return Path(folder)
