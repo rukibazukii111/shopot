@@ -1,0 +1,40 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Шёпот: обработка звука для замера WER</title>
+<script>
+// Records the fake microphone as renderer/app.js records the real one: one channel, the three processing
+// switches, webm/opus at 96 kbit/s. The switches are asked for exactly, so Chromium refuses instead of substituting.
+const CHUNK = 4 * 1024 * 1024;  // base64 characters per call back to the main process
+let encoded = '';
+
+async function record(wanted, seconds) {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({audio: {channelCount: 1,
+      echoCancellation: {exact: wanted.echoCancellation}, noiseSuppression: {exact: wanted.noiseSuppression},
+      autoGainControl: {exact: wanted.autoGainControl}}});
+    const [track] = stream.getAudioTracks();
+    const {autoGainControl, noiseSuppression, echoCancellation} = track.getSettings();
+    const recorder = new MediaRecorder(stream, {mimeType: 'audio/webm;codecs=opus', audioBitsPerSecond: 96000});
+    const chunks = [];
+    recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
+    const stopped = new Promise(resolve => { recorder.onstop = resolve; });
+    recorder.start();
+    await new Promise(resolve => setTimeout(resolve, seconds * 1000));
+    recorder.stop();
+    await stopped;
+    track.stop();
+    const bytes = new Uint8Array(await new Blob(chunks).arrayBuffer());
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    encoded = btoa(binary);
+    return {settings: {autoGainControl, noiseSuppression, echoCancellation}, bytes: bytes.length,
+      chunks: Math.ceil(encoded.length / CHUNK)};
+  } catch (error) {
+    return {error: `${error.name}: ${error.message}`};
+  }
+}
+
+function chunk(index) {
+  return encoded.slice(index * CHUNK, (index + 1) * CHUNK);
+}
+</script>
