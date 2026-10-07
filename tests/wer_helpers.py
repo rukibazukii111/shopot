@@ -10,3 +10,16 @@ ROOT = Path(__file__).resolve().parents[1]
 for folder in ("scripts", "backend"):
     if str(ROOT / folder) not in sys.path:
         sys.path.insert(0, str(ROOT / folder))
+
+
+def write_tone(path, seconds=1.0, rate=16000):
+    """A mono 16-bit WAV with a 440 Hz tone: something every decoder reads."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    t = np.arange(int(rate * seconds)) / rate
+    with wave.open(str(path), "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(rate)
+        out.writeframes((0.3 * np.sin(2 * np.pi * 440 * t) * 32767).astype("<i2").tobytes())
+    return path
