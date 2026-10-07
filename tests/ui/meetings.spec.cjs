@@ -95,8 +95,13 @@ test('a call is offered, recorded as two channels while it goes on and saved as 
       await page.evaluate(() => window.shopot.stopMeeting());
       await expect(widget.locator('#label')).toHaveText('Расшифровка созвона не сохранена', {timeout: 15000});
       await expect(page.locator('#meeting-banner')).toBeHidden();
+      await expect(page.locator('#unsaved-banner')).toBeVisible();
       await expect.poll(journalNow).toMatch(/ meeting-finish .*result=error/);
     } finally { fs.chmodSync(storeFile, 0o666); }
+    // Once the file can be written again, «Повторить» saves the transcript at once.
+    await page.locator('#retry-save').click();
+    await expect(page.locator('#unsaved-banner')).toBeHidden();
+    await expect(widget.locator('#label')).toHaveText('Расшифровка созвона сохранена');
     // A call the window cannot record: the journal keeps the error's type, not its message.
     await page.evaluate(() => { navigator.mediaDevices.getDisplayMedia = async () => { throw new DOMException('Экран Маши недоступен', 'NotAllowedError'); }; });
     await page.evaluate(() => window.shopot.startMeeting());
@@ -117,6 +122,7 @@ test('a call is offered, recorded as two channels while it goes on and saved as 
   expect(journal).toMatch(/ meeting-chunk index=0 channel=left result=ok attempts=1 transcribe=\S+\n/);
   expect(journal).toMatch(/ meeting-chunk index=0 channel=right result=ok attempts=1 transcribe=\S+\n/);
   expect(journal).toMatch(/ meeting-finish duration=\S+ turns=\d+ chunks=\d+ failed=0 result=saved attempts=1\n/);
+  expect(journal).toMatch(/ meeting-save result=saved trigger=button waited=\S+\n/);
   // The call whose save failed: its code and the failing call, and no second «saved».
   expect(journal.match(/ meeting-finish .*result=saved/g)).toHaveLength(1);
   expect(journal).toMatch(/ meeting-finish duration=\S+ turns=[1-9]\d* chunks=[1-9]\d* failed=0 result=error attempts=3 code=EPERM at=store\.cjs:\d+\n/);
@@ -169,6 +175,13 @@ test('a call transcript that cannot be saved stays in the history until a save w
     await page.waitForTimeout(3500);
     expect(await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith('/widget.html')).isVisible())).toBe(true);
     await expect(widget.locator('#label')).toHaveText('Расшифровка созвона не сохранена');
+    // The window shows its own banner; «Повторить» while the file is still locked keeps it.
+    await expect(page.locator('#unsaved-banner')).toBeVisible();
+    await expect(page.locator('#unsaved-title')).toHaveText('Расшифровка созвона не сохранена');
+    await expect(page.locator('#unsaved-detail')).toHaveText('Файл истории занят другой программой или закрыт для записи. Текст уже в истории, Шёпот пробует сохранить его раз в минуту.');
+    await page.locator('#retry-save').click();
+    await expect(page.locator('#toast')).toContainText('Пока не получилось. Шёпот попробует ещё раз через минуту');
+    await expect(page.locator('#unsaved-banner')).toBeVisible();
     // The disk fills up during a second call: the advice is to free space.
     await app.evaluate(() => {
       const fs = globalThis.__test.fs, write = fs.writeFileSync;
@@ -182,12 +195,15 @@ test('a call transcript that cannot be saved stays in the history until a save w
     expect(second.length).toBeGreaterThanOrEqual(1);
     await expect(widget.locator('#hint')).toHaveText('Освободи место на диске');
     expect(await unsaved()).toEqual({count: 2, reason: 'space'});
+    await expect(page.locator('#unsaved-title')).toHaveText('Не сохранены расшифровки созвонов: 2');
+    await expect(page.locator('#unsaved-detail')).toHaveText('На диске нет места. Текст уже в истории, Шёпот пробует сохранить его раз в минуту. Освободи место или нажми «Повторить».');
     // Deleting the second call's text from the history lets go of its audio.
     const secondId = (await page.evaluate(() => window.shopot.boot())).history[0].id;
     await app.evaluate(({dialog}) => { dialog.showMessageBox = async () => ({response: 1}); });
     await page.evaluate(id => window.shopot.deleteEntry(id).catch(() => false), secondId);
     await expect.poll(unsaved, {timeout: 10000}).toEqual({count: 1, reason: 'space'});
     expect(chunks()).toEqual(first);
+    await expect(page.locator('#unsaved-title')).toHaveText('Расшифровка созвона не сохранена');
     await app.evaluate(() => globalThis.__test.restoreWrite());
     // A dictation keeps the widget when the file can be written again and the transcript is saved by itself.
     await app.evaluate(() => globalThis.__test.toggle());
@@ -197,6 +213,7 @@ test('a call transcript that cannot be saved stays in the history until a save w
     expect(saved()[0].text).toMatch(/Я: Моя реплика 1\./);
     await expect.poll(chunks).toEqual([]);
     expect(await unsaved()).toBeNull();
+    await expect(page.locator('#unsaved-banner')).toBeHidden();
     await expect(widget.locator('#label')).toHaveText('Слушаю тебя');
     await app.evaluate(() => globalThis.__test.cancel());
     await expect(widget.locator('#label')).toHaveText('Запись отменена');
@@ -206,4 +223,5 @@ test('a call transcript that cannot be saved stays in the history until a save w
   expect(journal).toMatch(/ meeting-finish duration=\S+ turns=[1-9]\d* chunks=[1-9]\d* failed=0 result=error attempts=3 code=EPERM at=store\.cjs:\d+\n/);
   expect(journal).toMatch(/ meeting-finish duration=\S+ turns=[1-9]\d* chunks=[1-9]\d* failed=0 result=error attempts=3 code=ENOSPC at=store\.cjs:\d+\n/);
   expect(journal).toMatch(/ meeting-save result=saved trigger=timer waited=\S+\n/);
+  expect(journal).toMatch(/ meeting-save result=error trigger=button code=EPERM at=store\.cjs:\d+\n/);
 });

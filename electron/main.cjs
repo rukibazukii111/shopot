@@ -694,6 +694,8 @@ else {
       finishMeeting(current, value.error ? String(value.error).slice(0, 200) : '', value.kind).catch(error => console.error('Созвон не сохранён:', error));
       return true;
     });
+    // «Повторить» on the banner of a call transcript that is not on disk yet.
+    ipc('meeting-save', () => !retryUnsaved('button'));
     ipc('copy-summary', async id => {
       const entry = entryFor(id);
       await clipboard.writeText(clipboardText(summaryPrompt(entry.text, entry.meeting?.app)));

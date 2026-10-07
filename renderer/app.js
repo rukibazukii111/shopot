@@ -46,7 +46,7 @@ const modelInfo = {
 };
 // Measured peaks of the Whisper models; on an 8 GB machine they compete with the browser and the system.
 const heavyModels = {turbo: 'При загрузке модели нужно до 1,9 ГБ, остальные программы могут тормозить.', 'large-v3': 'Модели нужно около 3,3 ГБ, система может зависать.'};
-const state = {settings: {}, dictionary: [], snippets: [], profiles: [], suggestions: new Map(), dictionaryTab: 'words', history: [], pendingRecordings: [], engine: null, page: 'dictation', phase: 'idle', operation: 0, hotkeyRegistered: false, selected: null, download: null, flash: null, confirmModel: null, totalMemory: 0};
+const state = {settings: {}, dictionary: [], snippets: [], profiles: [], suggestions: new Map(), dictionaryTab: 'words', history: [], pendingRecordings: [], engine: null, page: 'dictation', phase: 'idle', operation: 0, hotkeyRegistered: false, selected: null, download: null, flash: null, confirmModel: null, totalMemory: 0, unsaved: null};
 let recorder, stream, audioContext, analyser, raf, recordingTimer, startedAt, recordingCanceled = false;
 let editingWord = null, editingSnippet = null, wordAliases = [], toastTimer, flashTimer, blobUrls = [], contextDirty = false, captureId = null;
 const drafts = new Map();
@@ -446,6 +446,16 @@ function renderMeeting() {
   const tick = () => { $('#meeting-detail').textContent = [current.app, current.stopping ? 'Текст появится в истории' : duration((Date.now() - current.startedAt) / 1000)].filter(Boolean).join(' · '); };
   tick();
   if (!current.stopping) meetingTimer = setInterval(tick, 1000);
+}
+// A call transcript that is in the history but not on disk yet; main tries to save it once a minute.
+function renderUnsaved() {
+  const unsaved = state.unsaved;
+  $('#unsaved-banner').hidden = !unsaved;
+  if (!unsaved) return;
+  $('#unsaved-title').textContent = unsaved.count === 1 ? 'Расшифровка созвона не сохранена' : `Не сохранены расшифровки созвонов: ${unsaved.count}`;
+  $('#unsaved-detail').textContent = unsaved.reason === 'space'
+    ? 'На диске нет места. Текст уже в истории, Шёпот пробует сохранить его раз в минуту. Освободи место или нажми «Повторить».'
+    : 'Файл истории занят другой программой или закрыт для записи. Текст уже в истории, Шёпот пробует сохранить его раз в минуту.';
 }
 
 function renderRecovery() {
@@ -860,6 +870,9 @@ $('#voice-commands').addEventListener('change', event => guard(() => saveSetting
 $('#meeting-offers').addEventListener('change', event => guard(() => saveSettings({meetingOffers: event.target.checked})));
 $('#meeting-button').addEventListener('click', () => guard(async () => { state.meeting = await api.startMeeting(); renderMeeting(); }));
 $('#meeting-stop').addEventListener('click', () => guard(() => api.stopMeeting()));
+$('#retry-save').addEventListener('click', () => guard(async () => {
+  if (!await api.saveMeetings()) toast('Пока не получилось. Шёпот попробует ещё раз через минуту', 'muted');
+}));
 $('#keep-audio').addEventListener('change', event => guard(() => saveSettings({keepAudio: event.target.checked})));
 $('#microphone-select').addEventListener('change', event => guard(() => saveSettings({microphoneId: event.target.value})));
 $('#save-context').addEventListener('click', () => guard(async () => {
@@ -924,8 +937,8 @@ $('#dictionary-form').addEventListener('submit', async event => {
 api.onToggle(toggleRecording); api.onCancel(() => guard(cancelOperation));
 api.onEngine(({status, error}) => { state.engine = status || null; state.engineError = error; updateEngine(); if (error) showError(new Error(error)); });
 api.onSnapshot(snapshot => {
-  Object.assign(state, {history: snapshot.history, pendingRecordings: snapshot.pendingRecordings, meeting: snapshot.meeting, settings: snapshot.settings});
-  renderResults(); renderRecovery(); renderProfiles(); renderMeeting(); syncMeetingSettings();
+  Object.assign(state, {history: snapshot.history, pendingRecordings: snapshot.pendingRecordings, meeting: snapshot.meeting, settings: snapshot.settings, unsaved: snapshot.unsaved});
+  renderResults(); renderRecovery(); renderProfiles(); renderMeeting(); renderUnsaved(); syncMeetingSettings();
 });
 api.onMeetingRecord(value => guard(() => recordMeeting(value)));
 api.onMeetingFinish(() => guard(finishMeetingRecording));
@@ -950,7 +963,7 @@ $('#delete-recording').addEventListener('click', () => guard(async () => {
 paintIcons(); resetWave(); refreshControls(); openWord(null); renderResults();
 guard(async () => {
   Object.assign(state, await api.boot());
-  syncSettings(); openWord(state.dictionary[0] || null); renderResults(); updateEngine(); renderMeeting();
+  syncSettings(); openWord(state.dictionary[0] || null); renderResults(); updateEngine(); renderMeeting(); renderUnsaved();
   if (state.engineError) showError(new Error(state.engineError));
   await listMicrophones();
 });
