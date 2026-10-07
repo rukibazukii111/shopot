@@ -163,3 +163,43 @@ test('push-to-talk held to the limit stops there, and letting go of the keys cha
     await expect.poll(() => pastes(app)).toBe(1);
   } finally { await app.close(); }
 });
+
+test('a recording in the main window warns and stops at the limit, and is never pasted', async () => {
+  const {app, page, dataDir} = await launch('limit-window');
+  try {
+    await page.locator('#record-button').click();
+    await expect(page.locator('#record-label')).toHaveText('Закончить запись');
+    await expect(page.locator('#record-time')).not.toHaveText('00:00');
+    await page.clock.fastForward('14:01');
+    await expect(page.locator('#record-status')).toHaveText('Осталась минута');
+    await page.clock.fastForward('01:00');
+    await expect(page.locator('#toast')).toContainText('Прошло 15 минут · запись закончена');
+    await expect.poll(() => requests(app)).toBe(1);
+    expect(await widgetVisible(app)).toBe(false);
+    await app.evaluate(() => globalThis.__test.finish());
+    await expect(page.locator('.transcript-editor')).toHaveValue(TEXT);
+    expect(await pastes(app)).toBe(0);
+    await expect.poll(() => journal(dataDir)).toMatch(/ dictation result=ok trigger=window .*record=900 limit=true /);
+  } finally { await app.close(); }
+});
+
+test('a call is not stopped at the dictation limit', async () => {
+  test.skip(process.platform !== 'win32', 'Calls are recorded on Windows only');
+  const {app, page} = await launch('limit-call');
+  try {
+    // The other side is a test tone: nothing from the machine's speakers is recorded.
+    await page.evaluate(() => {
+      navigator.mediaDevices.getDisplayMedia = async () => {
+        const context = new AudioContext(), tone = context.createOscillator(), out = context.createMediaStreamDestination();
+        tone.connect(out); tone.start();
+        return new MediaStream([...document.createElement('canvas').captureStream(1).getVideoTracks(), ...out.stream.getAudioTracks()]);
+      };
+    });
+    await page.locator('#meeting-button').click();
+    await expect(page.locator('#meeting-title')).toHaveText('Идёт запись созвона');
+    await page.clock.fastForward('16:00');
+    await expect(page.locator('#meeting-detail')).toHaveText(/^16:\d\d$/);
+    await expect(page.locator('#meeting-title')).toHaveText('Идёт запись созвона');
+    expect((await page.evaluate(() => window.shopot.boot())).meeting).toMatchObject({stopping: false});
+  } finally { await app.close(); }
+});
