@@ -7,7 +7,7 @@ from wer_helpers import write_tone
 import wer_audio
 
 
-def fake_capture(calls, fail=(), settings=None, short=False, delay=0.05, interrupt=False):
+def fake_capture(calls, fail=(), settings=None, short=False, delay=0.05, interrupt=False, silent=False):
     """Stands in for Electron: copies the prepared WAV (the decoder reads it like the WebM) and reports settings."""
     def capture(binary, wav, output, variant, seconds):
         calls.append(variant)
@@ -18,7 +18,7 @@ def fake_capture(calls, fail=(), settings=None, short=False, delay=0.05, interru
         with wave.open(str(wav)) as source, wave.open(str(output), "wb") as out:
             out.setparams(source.getparams())
             frames = source.readframes(source.getnframes())
-            out.writeframes(frames[:len(frames) // 2] if short else frames)
+            out.writeframes(bytes(len(frames)) if silent else frames[:len(frames) // 2] if short else frames)
         return {"ok": True, "settings": settings or wer_audio.wanted(variant), "startDelay": delay}
     return capture
 
@@ -90,4 +90,23 @@ def test_kept_audio_follows_the_preparation_code(tmp_path, monkeypatch):
     changed = tmp_path / "wer_audio.py"
     changed.write_bytes(Path(wer_audio.__file__).read_bytes() + b"\n# another lead of silence\n")
     monkeypatch.setattr(wer_audio, "__file__", str(changed))
+    assert wer_audio.capture_code() != before
+
+
+def test_processing_refuses_a_silent_capture(tmp_path):
+    # Chromium records silence when its fake device cannot read the input; that is a failure, not a 100% WER.
+    source = write_tone(tmp_path / "a.wav")
+    _, failed = wer_audio.process({"abc": source}, tmp_path / "silent", ["ns"], capture=fake_capture([], silent=True),
+                                  binary=("electron", "44.3.0"), **QUIET)
+    assert "тишину" in failed[("abc", "ns")]
+    assert not list((tmp_path / "silent").rglob("*.webm"))
+
+
+@pytest.mark.parametrize("package", ["faster-whisper", "av", "numpy"])
+def test_kept_audio_follows_the_installed_decoding_libraries(monkeypatch, package):
+    # prepare() decodes with faster-whisper's decode_audio, which resamples with PyAV and numpy.
+    from importlib import metadata
+    before = wer_audio.capture_code()
+    real = metadata.version
+    monkeypatch.setattr(metadata, "version", lambda name: "99.0.0" if name == package else real(name))
     assert wer_audio.capture_code() != before

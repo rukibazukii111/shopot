@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import wave
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from importlib import metadata
 from pathlib import Path
 
 import numpy as np
@@ -28,6 +29,19 @@ LEAD_SECONDS = 1.0
 MAX_START_DELAY = LEAD_SECONDS - 0.2
 TAIL_SECONDS = 1.0
 MARK = "SHOPOT_WER "
+# The engine treats audio quieter than this as no speech (backend/engine.py, Engine._transcribe).
+SILENCE = 0.0001
+
+
+def versions(*packages):
+    """Installed versions of the packages: worktrees share one .venv, so requirements.txt may not match it."""
+    found = {}
+    for package in packages:
+        try:
+            found[package] = metadata.version(package)
+        except metadata.PackageNotFoundError:
+            found[package] = None
+    return found
 
 
 def wanted(variant):
@@ -48,6 +62,8 @@ def capture_code():
     # This module prepares the input (lead of silence, resampling), so its code keys the results too.
     for path in (*CAPTURE, Path(__file__)):
         digest.update(path.read_bytes())
+    # prepare() decodes with faster-whisper's decode_audio, which resamples with PyAV and numpy.
+    digest.update(json.dumps(versions("faster-whisper", "av", "numpy"), sort_keys=True).encode())
     return digest.hexdigest()[:12]
 
 
@@ -92,9 +108,13 @@ def check(output, seconds, report, want):
     if not isinstance(delay, (int, float)) or delay > MAX_START_DELAY:
         raise RuntimeError(f"Запись началась слишком поздно: через {delay} с, первое слово могло пропасть")
     from faster_whisper.audio import decode_audio
-    captured = len(decode_audio(str(output), sampling_rate=16000)) / 16000
+    audio = decode_audio(str(output), sampling_rate=16000)
+    captured = len(audio) / 16000
     if captured < seconds - 0.1:
         raise RuntimeError(f"Записалось {captured:.1f} с из {seconds:.1f} с")
+    # The fake device records silence when it cannot read the input; it must not count as a recognized 100%.
+    if not len(audio) or float(np.max(np.abs(audio))) < SILENCE:
+        raise RuntimeError("Chromium записал тишину: звук записи до него не дошёл")
 
 
 def cached(folder, variant, key):

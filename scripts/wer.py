@@ -73,11 +73,16 @@ def block_network():
     socket.socket.connect = refuse
 
 
+# The packages that decode and recognize the audio; their installed versions key the kept transcripts.
+LIBRARIES = ("faster-whisper", "ctranslate2", "onnxruntime", "onnx-asr", "tokenizers", "av", "numpy")
+
+
 def code_version():
-    """Kept transcripts belong to the engine code and the library versions that made them."""
+    """Kept transcripts belong to the engine code and the installed library versions that made them."""
     digest = hashlib.sha256()
-    for path in sorted((ROOT / "backend").glob("*.py")) + [ROOT / "backend" / "requirements.txt"]:
-        digest.update(path.read_bytes() if path.is_file() else b"")
+    for path in sorted((ROOT / "backend").glob("*.py")):
+        digest.update(path.read_bytes())
+    digest.update(json.dumps(wer_audio.versions(*LIBRARIES), sort_keys=True).encode())
     return digest.hexdigest()[:12]
 
 
@@ -219,7 +224,9 @@ def main(argv=None):
                         help="варианты обработки через запятую или all: " + ", ".join(wer_audio.VARIANTS))
     parser.add_argument("--jobs", type=int, default=8, help="сколько процессов обработки звука идут одновременно")
     parser.add_argument("--models-dir", type=Path,
-                        default=Path(os.environ.get("SHOPOT_MODELS_DIR") or home / ".local" / "models"))
+                        default=Path(os.environ.get("SHOPOT_MODELS_DIR") or home / ".local" / "models"),
+                        help="папка скачанных моделей; по умолчанию SHOPOT_MODELS_DIR или .local/models "
+                             "основной папки проекта")
     parser.add_argument("--dictionary", type=Path, help="словарь набора; по умолчанию <набор>/dictionary.json")
     parser.add_argument("--import-dictionary", nargs="?", const=wer_set.default_store(), type=Path, metavar="STORE",
                         help="скопировать словарь из store.json Шёпота в набор и выйти")

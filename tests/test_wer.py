@@ -73,11 +73,10 @@ def test_import_dictionary_command_copies_into_the_set(tmp_path):
         wer.main(["--set", str(tmp_path / "set"), "--import-dictionary", str(store)])
 
 
-def test_kept_transcripts_follow_the_recognition_libraries(tmp_path, monkeypatch):
-    (tmp_path / "backend").mkdir()
-    (tmp_path / "backend" / "engine.py").write_text("engine", "utf-8")
-    (tmp_path / "backend" / "requirements.txt").write_text("faster-whisper==1.2.1\n", "utf-8")
-    monkeypatch.setattr(wer, "ROOT", tmp_path)
+def test_kept_transcripts_follow_the_installed_libraries(monkeypatch):
+    # Worktrees share one .venv: the installed versions, not requirements.txt, made the kept transcripts.
+    from importlib import metadata
     before = wer.code_version()
-    (tmp_path / "backend" / "requirements.txt").write_text("faster-whisper==1.3.0\n", "utf-8")
+    real = metadata.version
+    monkeypatch.setattr(metadata, "version", lambda name: "9.9.9" if name == "ctranslate2" else real(name))
     assert wer.code_version() != before
