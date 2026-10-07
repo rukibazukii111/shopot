@@ -42,6 +42,11 @@ const MEETING_CHUNK_MS = (Number(process.env.SHOPOT_MEETING_CHUNK_SECONDS) || 30
 const MIC_POLL_MS = Number(process.env.SHOPOT_MIC_POLL_MS) || 4000;
 const WINDOW_GONE = 'Окно записи перезапустилось';
 let meeting = null, offer = null, offerTimer, meetingClock, micWatcher = null, meetingQueue = Promise.resolve();
+// Calls whose transcript is in the history in memory but not yet in store.json: a full disk, or the file held by an
+// antivirus or a sync tool. Each keeps its transcribed chunks on disk until a save succeeds, so after a crash or a quit
+// they come back as unfinished recordings. `told` marks the ones the user was told about after the quick tries.
+let unsaved = [], unsavedReason = 'access', saveRetryTimer;
+const SAVE_RETRY_MS = (Number(process.env.SHOPOT_SAVE_RETRY_SECONDS) || 60) * 1000;
 let widgetState = {phase: 'requesting', shortcut: process.platform === 'darwin' ? '⌘⇧Space' : 'Ctrl⇧Space'};
 
 function send(channel, value) { if (window && !window.isDestroyed()) window.webContents.send(channel, value); }
@@ -86,7 +91,9 @@ function resultFields(result, requestSeconds) {
 }
 function pastePermission() { return process.platform !== 'darwin' || systemPreferences.isTrustedAccessibilityClient(false); }
 function meetingState() { return meeting ? {app: meeting.app?.name ?? null, startedAt: meeting.startedAt, stopping: meeting.stopping} : null; }
-function snapshot() { return {...store.data, engine: worker.status, engineError, busy, hotkeyRegistered, nativeAvailable, pastePermission: pastePermission(), platform: process.platform, totalMemory: os.totalmem(), meeting: meetingState(), meetingsSupported: MEETINGS}; }
+// The window's banner for calls whose transcript is not on disk yet; `reason` picks its advice.
+function unsavedState() { const count = unsaved.filter(record => record.told).length; return count ? {count, reason: unsavedReason} : null; }
+function snapshot() { return {...store.data, engine: worker.status, engineError, busy, hotkeyRegistered, nativeAvailable, pastePermission: pastePermission(), platform: process.platform, totalMemory: os.totalmem(), meeting: meetingState(), meetingsSupported: MEETINGS, unsaved: unsavedState()}; }
 function modelId(id) { if (!MODEL_IDS.includes(id)) throw new Error('Неизвестная модель'); return id; }
 function textValue(value) { if (typeof value !== 'string' || value.length > 200000) throw new Error('Недопустимый текст'); return value; }
 function entryFor(id) { const entry = store.data.history.find(e => e.id === id); if (!entry) throw new Error('Запись не найдена'); return entry; }
@@ -119,7 +126,7 @@ function updateTray(label = 'Шёпот') { if (tray) tray.setToolTip(label); }
 // Escape is taken from other apps only while the microphone is live; after that it belongs to the user again.
 function releaseEscape() { globalShortcut.unregister('Escape'); }
 function hideWidget() { clearTimeout(widgetTimer); widget?.hide(); }
-function showWidget(value, show = true) {
+function showWidget(value, show = true, stay = false) {
   clearTimeout(widgetTimer);
   widgetState = {...widgetState, ...value};
   if (!widget || widget.isDestroyed()) return;
@@ -129,7 +136,8 @@ function showWidget(value, show = true) {
     widget.setPosition(Math.round(area.x + (area.width - 384) / 2), area.y + area.height - 138);
     widget.showInactive();
   }
-  if (show && ['success', 'error', 'canceled'].includes(value.phase)) widgetTimer = setTimeout(hideWidget, 3000);
+  // An error the user has to act on stays until they close it.
+  if (show && !stay && ['success', 'error', 'canceled'].includes(value.phase)) widgetTimer = setTimeout(hideWidget, 3000);
 }
 function stopWatchingHold() { if (hold) { clearInterval(hold.timer); hold = null; } }
 // After the hotkey starts a recording, watch whether it is still held. A short press keeps the
@@ -249,6 +257,44 @@ async function transcribeMeetingChunk(current, file, offset, index) {
   }
   return true;
 }
+// A call's result takes the widget only when no dictation, call or offer is using it.
+function widgetFree() { return !capture && !meeting && !offer; }
+// A chunk an antivirus still holds stays behind (the next start lists it as an unfinished recording); the rest go.
+function dropChunks(files) { for (const file of files) { try { fs.rmSync(file, {force: true}); } catch {} } }
+// One save of the whole store. Once it is on disk, every call waiting for it lets go of its transcribed chunks.
+function saveHistory(trigger) {
+  try { store.save(); } catch (error) { return error; }
+  clearTimeout(saveRetryTimer);
+  for (const record of unsaved.splice(0)) {
+    dropChunks(record.files);
+    if (record.told) journal.write('meeting-save', {result: 'saved', trigger, waited: (Date.now() - record.since) / 1000});
+  }
+  return null;
+}
+function scheduleSaveRetry() {
+  clearTimeout(saveRetryTimer);
+  if (unsaved.some(record => record.told)) saveRetryTimer = setTimeout(() => retryUnsaved('timer'), SAVE_RETRY_MS);
+}
+// Calls the user was told about are saved again once a minute, by «Повторить» and before quitting.
+// Returns the save's error, or null once nothing waits.
+function retryUnsaved(trigger) {
+  clearTimeout(saveRetryTimer);
+  const before = JSON.stringify(unsavedState());
+  // A transcript the user deleted from the history is not waited for: its chunks go with it.
+  for (const record of unsaved.filter(record => !store.data.history.some(entry => entry.id === record.entryId))) {
+    dropChunks(record.files); unsaved.splice(unsaved.indexOf(record), 1);
+  }
+  const waiting = unsaved.length, error = waiting ? saveHistory(trigger) : null;
+  if (error) {
+    unsavedReason = error.code === 'ENOSPC' ? 'space' : 'access';
+    if (trigger === 'button') { const {code, at} = errorFields(error); journal.write('meeting-save', {result: 'error', trigger, code, at}); }
+    scheduleSaveRetry();
+  } else if (waiting && trigger !== 'quit' && widgetFree()) {
+    showWidget({phase: 'success', message: 'Расшифровка созвона сохранена', hint: 'Она в истории Шёпота'});
+  }
+  if (JSON.stringify(unsavedState()) !== before) send('snapshot', snapshot());
+  return error;
+}
 // `kind` is the type of the window's recording error; its message (`problem`) is for the widget only.
 async function finishMeeting(current, problem, kind) {
   await meetingQueue;
@@ -258,32 +304,48 @@ async function finishMeeting(current, problem, kind) {
   const duration = (Date.now() - current.startedAt) / 1000;
   const report = {duration, turns: turns.length, chunks: current.files.length, failed: current.failed,
     problem: !problem ? undefined : problem === WINDOW_GONE ? 'window-gone' : 'renderer', kind};
-  try {
-    if (turns.length) {
-      const text = meetingText(turns);
-      store.addHistory({id: crypto.randomUUID(), createdAt: new Date(current.startedAt).toISOString(), source: current.app ? `Созвон · ${current.app.name}` : 'Созвон',
-        mode: 'natural', text, rawText: text, words: [], duration, elapsed: 0, model: current.settings.model, replacements: [], audioFile: null, app: null,
-        cues: [...current.cues.left, ...current.cues.right].sort((a, b) => a.start - b.start),
-        meeting: {app: current.app?.name ?? null, turns: turns.length, failedChunks: current.failed}});
-    }
-    // Transcribed chunks are not needed any more (after a crash they come back as recordings to retry).
-    // A chunk the engine could not transcribe stays as an unfinished recording, like a failed dictation.
-    for (const [index, {file, ok}] of current.files.entries()) {
-      if (ok) { if (fs.existsSync(file)) fs.unlinkSync(file); }
-      else store.data.pendingRecordings.push({id: crypto.randomUUID(), audioFile: path.basename(file), source: `Созвон, часть ${index + 1}`, createdAt: new Date().toISOString()});
-    }
-    store.save();
-  } catch (error) {
-    // A full disk, or store.json held by an antivirus or a sync tool: the code and the failing call, never the path.
-    const {code, at} = errorFields(error);
-    journal.write('meeting-finish', {...report, result: 'error', code, at});
-    throw error;
+  const transcribed = current.files.filter(chunk => chunk.ok).map(chunk => chunk.file);
+  // A chunk the engine could not transcribe stays as an unfinished recording, like a failed dictation.
+  for (const [index, {file, ok}] of current.files.entries()) {
+    if (!ok) store.data.pendingRecordings.push({id: crypto.randomUUID(), audioFile: path.basename(file), source: `Созвон, часть ${index + 1}`, createdAt: new Date().toISOString()});
   }
-  journal.write('meeting-finish', {...report, result: turns.length ? 'saved' : 'empty'});
-  setBusy(busy); updateTray(); send('snapshot', snapshot());
-  const failed = current.failed ? ` Не распознано кусков: ${current.failed}.` : '';
-  showWidget(turns.length ? {phase: 'success', message: 'Расшифровка созвона готова', hint: `Она в истории Шёпота.${failed}`}
-    : {phase: 'error', message: problem || 'В записи созвона нет речи', hint: problem ? 'Проверь доступ к звуку и микрофону' : 'Ничего не сохранено'}, true);
+  if (!turns.length) {
+    // No transcript to wait for: the transcribed chunks go now; a failed chunk's audio stays even if this save fails.
+    dropChunks(transcribed);
+    const error = saveHistory('finish'), {code, at} = error ? errorFields(error) : {};
+    journal.write('meeting-finish', {...report, result: error ? 'error' : 'empty', code, at});
+    setBusy(busy); updateTray(); send('snapshot', snapshot());
+    if (widgetFree()) showWidget({phase: 'error', message: problem || 'В записи созвона нет речи', hint: problem ? 'Проверь доступ к звуку и микрофону' : 'Ничего не сохранено'});
+    return;
+  }
+  const text = meetingText(turns), record = {entryId: crypto.randomUUID(), files: transcribed, since: Date.now(), told: false};
+  store.data.history.unshift({id: record.entryId, createdAt: new Date(current.startedAt).toISOString(), source: current.app ? `Созвон · ${current.app.name}` : 'Созвон',
+    mode: 'natural', text, rawText: text, words: [], duration, elapsed: 0, model: current.settings.model, replacements: [], audioFile: null, app: null,
+    cues: [...current.cues.left, ...current.cues.right].sort((a, b) => a.start - b.start),
+    meeting: {app: current.app?.name ?? null, turns: turns.length, failedChunks: current.failed}});
+  unsaved.push(record);
+  // An antivirus or a sync tool usually lets go of store.json within a second or two: try again before telling the user.
+  let error, attempts = 0;
+  do {
+    if (attempts) await new Promise(resolve => setTimeout(resolve, 1000 * attempts));
+    attempts++;
+    error = unsaved.includes(record) ? saveHistory('finish') : null;
+  } while (error && attempts < 3);
+  setBusy(busy); updateTray();
+  if (!error) {
+    journal.write('meeting-finish', {...report, result: 'saved', attempts});
+    send('snapshot', snapshot());
+    const failed = current.failed ? ` Не распознано кусков: ${current.failed}.` : '';
+    if (widgetFree()) showWidget({phase: 'success', message: 'Расшифровка созвона готова', hint: `Она в истории Шёпота.${failed}`});
+    return;
+  }
+  // A full disk, or store.json held by an antivirus or a sync tool: the code and the failing call, never the path.
+  const {code, at} = errorFields(error);
+  journal.write('meeting-finish', {...report, result: 'error', attempts, code, at});
+  record.told = true; unsavedReason = code === 'ENOSPC' ? 'space' : 'access';
+  scheduleSaveRetry(); send('snapshot', snapshot());
+  if (widgetFree()) showWidget({phase: 'error', message: 'Расшифровка созвона не сохранена',
+    hint: unsavedReason === 'space' ? 'Освободи место на диске' : 'Файл истории занят. Повторю сам'}, true, true);
 }
 function createWidget() {
   widget = new BrowserWindow({width: 384, height: 110, show: false, frame: false, transparent: true,

@@ -41,9 +41,13 @@ const EVENTS = {
   'capture-error': {phase: PHASE, kind: token},
   'meeting-start': {app: name, appId: token, trigger: oneOf(['offer', 'manual'])},
   'meeting-chunk': {index: int, channel: oneOf(['left', 'right']), result: oneOf(['ok', 'fail']), attempts: int, transcribe: sec, kind: token},
-  // `kind` is the window's recording error; `code` and `at` are a failed save's.
-  'meeting-finish': {duration: sec, turns: int, chunks: int, failed: int, result: oneOf(['saved', 'empty', 'error']),
+  // `kind` is the window's recording error; `code` and `at` are a failed save's; `attempts` counts the quick tries.
+  'meeting-finish': {duration: sec, turns: int, chunks: int, failed: int, result: oneOf(['saved', 'empty', 'error']), attempts: int,
     problem: oneOf(['window-gone', 'renderer']), kind: token, code: token, at: token},
+  // A transcript whose save failed at the end of its call: saved later (`waited` seconds after), or failing again at
+  // «Повторить» or at a quit, where `choice` is the answer to the warning.
+  'meeting-save': {result: oneOf(['saved', 'error']), trigger: oneOf(['finish', 'timer', 'button', 'quit']), waited: sec,
+    choice: oneOf(['stay', 'quit']), code: token, at: token},
   download: {model: oneOf([...MODEL_IDS, 'formatter']), result: oneOf(['ok', 'error', 'canceled']), elapsed: sec, ...ERROR},
   'ipc-error': {channel: token, ...ERROR},
   // What main refuses outside a window command: a dictation by the hotkey or the tray, a call from the widget's offer.
