@@ -34,7 +34,9 @@ for (const [variant, settings] of [['none', off], ['agc+ns+ec', all]]) {
     {env, encoding: 'utf8', timeout: 60000, windowsHide: true});
     const line = run.stdout.split(/\r?\n/).find(text => text.startsWith('SHOPOT_WER '));
     expect(line, run.stdout + run.stderr).toBeTruthy();
-    expect(JSON.parse(line.slice('SHOPOT_WER '.length))).toMatchObject({ok: true, settings});
+    const report = JSON.parse(line.slice('SHOPOT_WER '.length));
+    expect(report).toMatchObject({ok: true, settings});
+    expect(report.startDelay).toBeLessThan(0.8);  // scripts/wer_audio.py MAX_START_DELAY
     expect(run.status).toBe(0);
     const bytes = fs.readFileSync(output);
     expect(bytes.subarray(0, 4).toString('hex')).toBe('1a45dfa3');  // WebM starts with the EBML header

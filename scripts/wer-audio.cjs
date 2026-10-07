@@ -37,7 +37,7 @@ app.whenReady().then(async () => {
     }
     fs.writeFileSync(option('output'), Buffer.concat(pieces));
     const same = Object.keys(wanted).every(key => result.settings[key] === wanted[key]);
-    finish({ok: same, settings: result.settings, bytes: result.bytes,
+    finish({ok: same, settings: result.settings, bytes: result.bytes, startDelay: result.startDelay,
       ...(same ? {} : {error: 'Chromium применил другие настройки обработки'})});
   } catch (error) {
     finish({ok: false, error: String(error?.message || error)});

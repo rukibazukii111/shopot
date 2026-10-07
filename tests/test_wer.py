@@ -71,3 +71,13 @@ def test_import_dictionary_command_copies_into_the_set(tmp_path):
     assert target == tmp_path / "set" / "dictionary.json" and target.is_file()
     with pytest.raises(SystemExit, match="--replace"):
         wer.main(["--set", str(tmp_path / "set"), "--import-dictionary", str(store)])
+
+
+def test_kept_transcripts_follow_the_recognition_libraries(tmp_path, monkeypatch):
+    (tmp_path / "backend").mkdir()
+    (tmp_path / "backend" / "engine.py").write_text("engine", "utf-8")
+    (tmp_path / "backend" / "requirements.txt").write_text("faster-whisper==1.2.1\n", "utf-8")
+    monkeypatch.setattr(wer, "ROOT", tmp_path)
+    before = wer.code_version()
+    (tmp_path / "backend" / "requirements.txt").write_text("faster-whisper==1.3.0\n", "utf-8")
+    assert wer.code_version() != before

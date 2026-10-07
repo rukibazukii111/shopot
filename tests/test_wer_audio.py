@@ -1,4 +1,5 @@
 import wave
+from pathlib import Path
 
 import pytest
 
@@ -6,17 +7,19 @@ from wer_helpers import write_tone
 import wer_audio
 
 
-def fake_capture(calls, fail=(), settings=None, short=False):
+def fake_capture(calls, fail=(), settings=None, short=False, delay=0.05, interrupt=False):
     """Stands in for Electron: copies the prepared WAV (the decoder reads it like the WebM) and reports settings."""
     def capture(binary, wav, output, variant, seconds):
         calls.append(variant)
+        if interrupt:
+            raise KeyboardInterrupt
         if variant in fail and calls.count(variant) == 1:
             raise RuntimeError("Electron упал")
         with wave.open(str(wav)) as source, wave.open(str(output), "wb") as out:
             out.setparams(source.getparams())
             frames = source.readframes(source.getnframes())
             out.writeframes(frames[:len(frames) // 2] if short else frames)
-        return {"ok": True, "settings": settings or wer_audio.wanted(variant)}
+        return {"ok": True, "settings": settings or wer_audio.wanted(variant), "startDelay": delay}
     return capture
 
 
@@ -59,3 +62,32 @@ def test_prepared_input_is_48_khz_mono_with_a_lead_of_silence(tmp_path):
         lead = prepared.readframes(int(48000 * wer_audio.LEAD_SECONDS))
     assert seconds == pytest.approx(1.0 + wer_audio.LEAD_SECONDS, abs=0.01)
     assert set(lead) == {0}
+
+
+def test_processing_refuses_a_recorder_that_started_late(tmp_path):
+    # The fake device plays the file from the moment it opens: a late recorder loses the first word.
+    source = write_tone(tmp_path / "a.wav")
+    _, failed = wer_audio.process({"abc": source}, tmp_path / "late", ["ns"],
+                                  capture=fake_capture([], delay=wer_audio.LEAD_SECONDS), binary=("electron", "44.3.0"),
+                                  **QUIET)
+    assert "поздно" in failed[("abc", "ns")]
+    assert not list((tmp_path / "late").rglob("*.webm"))
+
+
+def test_interrupting_stops_the_queued_captures(tmp_path):
+    source = write_tone(tmp_path / "a.wav")
+    calls = []
+    with pytest.raises(KeyboardInterrupt):
+        wer_audio.process({"abc": source}, tmp_path / "cache", wer_audio.PROCESSED,
+                          capture=fake_capture(calls, interrupt=True), binary=("electron", "44.3.0"),
+                          jobs=1, log=lambda message: None)
+    # Ctrl+C does not wait for the queued real-time captures; the worker may have taken the next one already.
+    assert len(calls) <= 2
+
+
+def test_kept_audio_follows_the_preparation_code(tmp_path, monkeypatch):
+    before = wer_audio.capture_code()
+    changed = tmp_path / "wer_audio.py"
+    changed.write_bytes(Path(wer_audio.__file__).read_bytes() + b"\n# another lead of silence\n")
+    monkeypatch.setattr(wer_audio, "__file__", str(changed))
+    assert wer_audio.capture_code() != before

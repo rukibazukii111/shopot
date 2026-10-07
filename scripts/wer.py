@@ -74,10 +74,10 @@ def block_network():
 
 
 def code_version():
-    """Kept transcripts belong to the engine code that made them: a change in recognition measures again."""
+    """Kept transcripts belong to the engine code and the library versions that made them."""
     digest = hashlib.sha256()
-    for path in sorted((ROOT / "backend").glob("*.py")):
-        digest.update(path.read_bytes())
+    for path in sorted((ROOT / "backend").glob("*.py")) + [ROOT / "backend" / "requirements.txt"]:
+        digest.update(path.read_bytes() if path.is_file() else b"")
     return digest.hexdigest()[:12]
 
 

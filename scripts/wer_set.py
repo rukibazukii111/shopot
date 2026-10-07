@@ -43,6 +43,8 @@ def scan(root):
         if not path.is_file():
             continue
         relative = unicodedata.normalize("NFC", path.relative_to(root).as_posix())
+        if any(part.startswith(".") for part in relative.split("/")):
+            continue  # «._name» AppleDouble files from a Mac via a FAT drive, .DS_Store, .Trashes: not recordings
         if relative.lower().endswith(DRAFT_SUFFIX):
             texts.setdefault(relative[:-len(DRAFT_SUFFIX)], {})["draft"] = path
         elif relative.lower().endswith(".txt"):

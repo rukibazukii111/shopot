@@ -83,3 +83,15 @@ def test_import_copies_only_the_dictionary_and_keeps_an_existing_copy(tmp_path):
         load_dictionary(tmp_path / "нет.json")
     with pytest.raises(FileNotFoundError, match="store.json"):
         import_dictionary(tmp_path / "нет" / "store.json", tmp_path / "другой.json")
+
+
+def test_mac_and_windows_service_files_are_not_recordings(tmp_path):
+    put(tmp_path, "mac/термины/01.m4a")
+    put(tmp_path, "mac/термины/01.txt", "Йога")
+    put(tmp_path, "mac/термины/._01.m4a", b"\x00\x05\x16\x07")  # AppleDouble left by a FAT or exFAT drive
+    put(tmp_path, "mac/термины/._01.txt", b"\x00\x05\x16\x07")
+    put(tmp_path, "mac/.Trashes/501/02.m4a")
+    put(tmp_path, "mac/термины/.DS_Store")
+    recordings, orphans = scan(tmp_path)
+    assert [(r.name, r.state) for r in recordings] == [("mac/термины/01.m4a", "verified")]
+    assert orphans == []

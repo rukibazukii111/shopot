@@ -9,6 +9,9 @@ let encoded = '';
 
 async function record(wanted, seconds) {
   try {
+    // The fake device starts playing the file while getUserMedia opens it; the delay until the recorder starts
+    // is audio lost from the lead of silence, so it is reported and checked in scripts/wer_audio.py.
+    const opened = performance.now();
     const stream = await navigator.mediaDevices.getUserMedia({audio: {channelCount: 1,
       echoCancellation: {exact: wanted.echoCancellation}, noiseSuppression: {exact: wanted.noiseSuppression},
       autoGainControl: {exact: wanted.autoGainControl}}});
@@ -19,6 +22,7 @@ async function record(wanted, seconds) {
     recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
     const stopped = new Promise(resolve => { recorder.onstop = resolve; });
     recorder.start();
+    const startDelay = (performance.now() - opened) / 1000;
     await new Promise(resolve => setTimeout(resolve, seconds * 1000));
     recorder.stop();
     await stopped;
@@ -27,7 +31,7 @@ async function record(wanted, seconds) {
     let binary = '';
     for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
     encoded = btoa(binary);
-    return {settings: {autoGainControl, noiseSuppression, echoCancellation}, bytes: bytes.length,
+    return {settings: {autoGainControl, noiseSuppression, echoCancellation}, bytes: bytes.length, startDelay,
       chunks: Math.ceil(encoded.length / CHUNK)};
   } catch (error) {
     return {error: `${error.name}: ${error.message}`};

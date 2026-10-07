@@ -22,8 +22,10 @@ CAPTURE = (ROOT / "scripts" / "wer-audio.cjs", ROOT / "scripts" / "wer-audio.htm
 PROCESSED = ["none", "agc", "ns", "ec", "agc+ns", "agc+ec", "ns+ec", "agc+ns+ec"]
 VARIANTS = ["file"] + PROCESSED
 RATE = 48000
-# Capture starts a moment before the recorder does: a little silence keeps the first word whole.
-LEAD_SECONDS = 0.3
+# The fake device plays the file from the moment it opens, a moment before the recorder starts:
+# a second of silence keeps the first word whole, and a later start is refused.
+LEAD_SECONDS = 1.0
+MAX_START_DELAY = LEAD_SECONDS - 0.2
 TAIL_SECONDS = 1.0
 MARK = "SHOPOT_WER "
 
@@ -43,7 +45,8 @@ def electron():
 
 def capture_code():
     digest = hashlib.sha256()
-    for path in CAPTURE:
+    # This module prepares the input (lead of silence, resampling), so its code keys the results too.
+    for path in (*CAPTURE, Path(__file__)):
         digest.update(path.read_bytes())
     return digest.hexdigest()[:12]
 
@@ -85,6 +88,9 @@ def check(output, seconds, report, want):
     """The recording is whole and Chromium applied exactly the processing asked for."""
     if report.get("settings") != want:
         raise RuntimeError(f"Chromium применил не те настройки обработки: {report.get('settings')}")
+    delay = report.get("startDelay")
+    if not isinstance(delay, (int, float)) or delay > MAX_START_DELAY:
+        raise RuntimeError(f"Запись началась слишком поздно: через {delay} с, первое слово могло пропасть")
     from faster_whisper.audio import decode_audio
     captured = len(decode_audio(str(output), sampling_rate=16000)) / 16000
     if captured < seconds - 0.1:
@@ -143,7 +149,8 @@ def process(sources, cache, variants, jobs, log=print, capture=run_capture, bina
             return folder / f"{variant}.webm"
 
         runs = [item for item in todo if item[0] in prepared]
-        with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+        pool = ThreadPoolExecutor(max_workers=max(1, jobs))
+        try:
             futures = {pool.submit(one, *item): item for item in runs}
             for count, future in enumerate(as_completed(futures), 1):
                 try:
@@ -151,4 +158,9 @@ def process(sources, cache, variants, jobs, log=print, capture=run_capture, bina
                 except Exception as error:  # one failed capture must not stop the others; the report lists it
                     failed[futures[future]] = str(error)
                 log(f"Обработка звука: {count} из {len(runs)}")
+        except BaseException:
+            # Ctrl+C: queued captures are dropped instead of running on in real time; kept ones stay for next time.
+            pool.shutdown(wait=True, cancel_futures=True)
+            raise
+        pool.shutdown()
     return done, failed
