@@ -341,7 +341,7 @@ async function startRecording(session) {
       api.captureUpdate({id: session.id, phase: 'recording', elapsed, level: Math.min(1, rms * 6)});
       // Main gives the limit with the session and tells the widget about the last minute from the same tick.
       if (elapsed >= session.warnAt && !state.limitWarning) { state.limitWarning = true; refreshControls(); }
-      if (elapsed >= session.limit) { toast('Прошло 15 минут · запись закончена'); stopRecording(false, {limit: true}); }
+      if (elapsed >= session.limit) { toast(`Прошло ${Math.round(session.limit / 60)} минут · запись закончена`); stopRecording(false, {limit: true}); }
     }, 100);
     await listMicrophones().catch(() => {});
   } catch (error) {
