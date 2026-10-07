@@ -197,13 +197,18 @@ test('a call transcript that cannot be saved stays in the history until a save w
     expect(await unsaved()).toEqual({count: 2, reason: 'space'});
     await expect(page.locator('#unsaved-title')).toHaveText('Не сохранены расшифровки созвонов: 2');
     await expect(page.locator('#unsaved-detail')).toHaveText('На диске нет места. Текст уже в истории, Шёпот пробует сохранить его раз в минуту. Освободи место или нажми «Повторить».');
-    // Deleting the second call's text from the history lets go of its audio.
-    const secondId = (await page.evaluate(() => window.shopot.boot())).history[0].id;
-    await app.evaluate(({dialog}) => { dialog.showMessageBox = async () => ({response: 1}); });
-    await page.evaluate(id => window.shopot.deleteEntry(id).catch(() => false), secondId);
-    await expect.poll(unsaved, {timeout: 10000}).toEqual({count: 1, reason: 'space'});
+    // Deleting the second call's text from the history lets go of its audio at once, not on the next retry,
+    // although store.json still cannot be written. The first call still waits, so the widget keeps its message.
+    const deleteNewest = async () => {
+      const id = (await page.evaluate(() => window.shopot.boot())).history[0].id;
+      await app.evaluate(({dialog}) => { dialog.showMessageBox = async () => ({response: 1}); });
+      return page.evaluate(value => window.shopot.deleteEntry(value), id);
+    };
+    expect(await deleteNewest()).toBe(true);
+    expect(await unsaved()).toEqual({count: 1, reason: 'space'});
     expect(chunks()).toEqual(first);
-    await expect(page.locator('#unsaved-title')).toHaveText('Расшифровка созвона не сохранена');
+    await expect(page.locator('#unsaved-title')).toHaveText('Расшифровка созвона не сохранена', {timeout: 500});
+    await expect(widget.locator('#label')).toHaveText('Расшифровка созвона не сохранена');
     await app.evaluate(() => globalThis.__test.restoreWrite());
     // Quitting asks first: «Остаться» keeps Shopot running, and it goes on trying.
     await app.evaluate(({dialog}) => { globalThis.__boxes = []; dialog.showMessageBox = async options => { globalThis.__boxes.push(options); return {response: 0}; }; });
@@ -224,6 +229,14 @@ test('a call transcript that cannot be saved stays in the history until a save w
     await expect(widget.locator('#label')).toHaveText('Слушаю тебя');
     await app.evaluate(() => globalThis.__test.cancel());
     await expect(widget.locator('#label')).toHaveText('Запись отменена');
+    // The only unsaved transcript deleted: nothing waits, so its message leaves the widget and the banner goes.
+    const deleted = await recordCall();
+    expect(deleted.length).toBeGreaterThanOrEqual(1);
+    expect(await deleteNewest()).toBe(true);
+    expect(await unsaved()).toBeNull();
+    expect(chunks()).toEqual([]);
+    expect(await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith('/widget.html')).isVisible())).toBe(false);
+    await expect(page.locator('#unsaved-banner')).toBeHidden({timeout: 500});
     // A call that still cannot be saved when the user quits anyway: its text is gone, its audio is not.
     const third = await recordCall();
     await engine.stop();

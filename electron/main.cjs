@@ -40,7 +40,7 @@ let widgetTimer, activeTranscription, downloading = false, job = 0;
 const MEETINGS = process.platform === 'win32';
 const MEETING_CHUNK_MS = (Number(process.env.SHOPOT_MEETING_CHUNK_SECONDS) || 300) * 1000;
 const MIC_POLL_MS = Number(process.env.SHOPOT_MIC_POLL_MS) || 4000;
-const WINDOW_GONE = 'Окно записи перезапустилось';
+const WINDOW_GONE = 'Окно записи перезапустилось', UNSAVED = 'Расшифровка созвона не сохранена';
 let meeting = null, offer = null, offerTimer, meetingClock, micWatcher = null, meetingQueue = Promise.resolve();
 // Calls whose transcript is in the history in memory but not yet in store.json: a full disk, or the file held by an
 // antivirus or a sync tool. Each keeps its transcribed chunks on disk until a save succeeds, so after a crash or a quit
@@ -284,6 +284,8 @@ function retryUnsaved(trigger) {
   for (const record of unsaved.filter(record => !store.data.history.some(entry => entry.id === record.entryId))) {
     dropChunks(record.files); unsaved.splice(unsaved.indexOf(record), 1);
   }
+  // Nothing waits any more: the widget's message about an unsaved transcript goes, if it is still there.
+  if (!unsaved.length && widgetState.phase === 'error' && widgetState.message === UNSAVED) hideWidget();
   const waiting = unsaved.length, error = waiting ? saveHistory(trigger) : null;
   if (error) {
     unsavedReason = error.code === 'ENOSPC' ? 'space' : 'access';
@@ -344,7 +346,7 @@ async function finishMeeting(current, problem, kind) {
   journal.write('meeting-finish', {...report, result: 'error', attempts, code, at});
   record.told = true; unsavedReason = code === 'ENOSPC' ? 'space' : 'access';
   scheduleSaveRetry(); send('snapshot', snapshot());
-  if (widgetFree()) showWidget({phase: 'error', message: 'Расшифровка созвона не сохранена',
+  if (widgetFree()) showWidget({phase: 'error', message: UNSAVED,
     hint: unsavedReason === 'space' ? 'Освободи место на диске' : 'Файл истории занят. Повторю сам'}, true, true);
 }
 function createWidget() {
@@ -670,7 +672,10 @@ else {
       const answer = await dialog.showMessageBox(window, {type: 'question', message: 'Удалить эту диктовку?',
         detail: 'Текст и сохранённая аудиозапись будут удалены с этого компьютера.', buttons: ['Оставить', 'Удалить'], defaultId: 0, cancelId: 0});
       if (answer.response !== 1) return false;
-      store.data.history = store.data.history.filter(e => e.id !== id); store.save();
+      store.data.history = store.data.history.filter(e => e.id !== id);
+      // A call transcript not on disk yet takes its audio with it; the others waiting get a save try, not an error.
+      if (unsaved.some(record => record.entryId === id)) { retryUnsaved('delete'); return true; }
+      store.save();
       const audio = audioFor(entry); if (audio && fs.existsSync(audio)) fs.unlinkSync(audio);
       return true;
     });

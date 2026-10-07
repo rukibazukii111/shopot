@@ -44,9 +44,9 @@ const EVENTS = {
   // `kind` is the window's recording error; `code` and `at` are a failed save's; `attempts` counts the quick tries.
   'meeting-finish': {duration: sec, turns: int, chunks: int, failed: int, result: oneOf(['saved', 'empty', 'error']), attempts: int,
     problem: oneOf(['window-gone', 'renderer']), kind: token, code: token, at: token},
-  // A transcript whose save failed at the end of its call: saved later (`waited` seconds after), or failing again at
-  // «Повторить» or at a quit, where `choice` is the answer to the warning.
-  'meeting-save': {result: oneOf(['saved', 'error']), trigger: oneOf(['finish', 'timer', 'button', 'quit']), waited: sec,
+  // A transcript whose save failed at the end of its call: saved later (`waited` seconds after; `delete` is a try made when
+  // another unsaved one is deleted), or failing again at «Повторить» or at a quit, where `choice` is the answer to the warning.
+  'meeting-save': {result: oneOf(['saved', 'error']), trigger: oneOf(['finish', 'timer', 'button', 'delete', 'quit']), waited: sec,
     choice: oneOf(['stay', 'quit']), code: token, at: token},
   download: {model: oneOf([...MODEL_IDS, 'formatter']), result: oneOf(['ok', 'error', 'canceled']), elapsed: sec, ...ERROR},
   'ipc-error': {channel: token, ...ERROR},
