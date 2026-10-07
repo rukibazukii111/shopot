@@ -289,6 +289,14 @@ test('a dictation in the window leaves the widget to a finished call, and deleti
     await page.evaluate(() => window.shopot.beginRecording());
     await expect(widget.locator('#label')).toHaveText('Расшифровка созвона не сохранена', {timeout: 15000});
     await page.evaluate(() => window.shopot.cancel());
+    // Its end does not take the message away: it stays until the user closes it, also during a dictation in the window.
+    const widgetVisible = () => app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith('/widget.html')).isVisible());
+    expect(await widgetVisible()).toBe(true);
+    await expect(widget.locator('#label')).toHaveText('Расшифровка созвона не сохранена');
+    await page.evaluate(() => window.shopot.beginRecording());
+    await widget.locator('#cancel').click();
+    await expect.poll(widgetVisible).toBe(false);
+    await page.evaluate(() => window.shopot.cancel());
     // store.json can be written again and another save puts the transcript on disk before the retry does.
     fs.chmodSync(storeFile, 0o666);
     const {settings, history} = await page.evaluate(() => window.shopot.boot());

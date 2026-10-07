@@ -163,8 +163,8 @@ function finishCapture(value) {
   const previous = capture; capture = null;
   if (previous?.target) paste.release(previous.target);
   releaseEscape(); setBusy(busy); updateTray();
-  hideWidget();
-  if (previous?.global) showWidget(value, value.phase === 'error');
+  // Only a hotkey dictation uses the widget; a dictation in the window leaves its message (a call's) alone.
+  if (previous?.global) { hideWidget(); showWidget(value, value.phase === 'error'); }
 }
 function beginCapture(global = false) {
   if (busy || capture) throw new Error('Дождись завершения текущей операции');
@@ -179,7 +179,7 @@ function beginCapture(global = false) {
   // Load the model while the user speaks instead of after they stop.
   worker.notify('preload', {model: capture.settings.model, formatting: capture.settings.formatting});
   if (blocker === undefined) blocker = powerSaveBlocker.start('prevent-app-suspension');
-  globalShortcut.register('Escape', () => { journalCancel(); hideWidget(); send('cancel-recording'); });
+  globalShortcut.register('Escape', () => { journalCancel(); if (capture?.global) hideWidget(); send('cancel-recording'); });
   if (global) showWidget({phase: 'requesting', elapsed: 0, level: 0, message: '', hint: '', holding: false});
   return {id: capture.id, settings: capture.settings};
 }
@@ -368,7 +368,7 @@ function createWidget() {
     if (action === 'stop' && capture?.phase === 'recording') toggleGlobalRecording();
     if (action === 'stop' && meeting && !capture) stopMeeting();
     if (action === 'cancel' && capture) { journalCancel(); hideWidget(); send('cancel-recording'); }
-    if (action === 'hide' && !capture) { if (meeting) meeting.hidden = true; widget.hide(); }
+    if (action === 'hide' && !capture?.global) { if (meeting) meeting.hidden = true; widget.hide(); }
     if (action === 'meeting-record' && offer) {
       try { startMeeting(offer); }
       catch (error) {
