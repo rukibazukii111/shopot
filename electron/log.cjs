@@ -24,7 +24,7 @@ const TRANSCRIPTION = {
   result: oneOf(['ok', 'no-speech', 'error', 'canceled']), trigger: oneOf(['hotkey', 'window']),
   model: oneOf(MODEL_IDS), device: token, language: oneOf(LANGUAGES), mode: oneOf(MODES),
   formattingRequested: oneOf(FORMATTING), formatting: oneOf(FORMATTING), translate: bool,
-  record: sec, audio: sec, preload: sec, wait: sec, load: sec, transcribe: sec, format: sec, total: sec, pasteTime: sec, memoryMb: int,
+  record: sec, limit: bool, audio: sec, preload: sec, wait: sec, load: sec, transcribe: sec, format: sec, total: sec, pasteTime: sec, memoryMb: int,
   paste: oneOf(DELIVERY_CODES), app: name, appId: token, profile: bool, ...ERROR,
 };
 const EVENTS = {

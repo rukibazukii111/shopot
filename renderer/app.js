@@ -328,7 +328,7 @@ async function startRecording(session) {
     recorder.onerror = event => { failure = event.error?.name || 'RecorderError'; showError(event.error || new Error('Запись прервалась')); recordingCanceled = true; if (recorder.state !== 'inactive') recorder.stop(); else { releaseMicrophone(); api.captureUpdate({id: session.id, phase: 'error', kind: failure}); captureId = null; state.phase = 'idle'; refreshControls(); } };
     stream.getAudioTracks().forEach(track => track.onended = () => {
       showError(new Error('Микрофон отключён. Запись остановлена.'));
-      if (recorder?.state === 'recording') stopRecording(false, 'TrackEnded');
+      if (recorder?.state === 'recording') stopRecording(false, {kind: 'TrackEnded'});
     });
     audioContext = new AudioContext(); analyser = audioContext.createAnalyser(); analyser.fftSize = 256;
     audioContext.createMediaStreamSource(stream).connect(analyser);
@@ -341,7 +341,7 @@ async function startRecording(session) {
       api.captureUpdate({id: session.id, phase: 'recording', elapsed, level: Math.min(1, rms * 6)});
       // Main gives the limit with the session and tells the widget about the last minute from the same tick.
       if (elapsed >= session.warnAt && !state.limitWarning) { state.limitWarning = true; refreshControls(); }
-      if (elapsed >= session.limit) { toast('Достигнут предел записи: 15 минут'); stopRecording(); }
+      if (elapsed >= session.limit) { toast('Прошло 15 минут · запись закончена'); stopRecording(false, {limit: true}); }
     }, 100);
     await listMicrophones().catch(() => {});
   } catch (error) {
@@ -354,10 +354,11 @@ async function startRecording(session) {
   }
 }
 // `kind` names a failure that stopped the recording (the microphone went away); a stop by the user has none.
-function stopRecording(cancel = false, kind) {
+// `limit` marks the stop at the dictation limit (PRD 6.2): main keeps the widget until the text is in.
+function stopRecording(cancel = false, {kind, limit = false} = {}) {
   if (state.phase !== 'recording' || !recorder || recorder.state === 'inactive') return;
   recordingCanceled = cancel; state.phase = 'stopping'; clearInterval(recordingTimer);
-  api.captureUpdate({id: captureId, phase: 'stopping', elapsed: (Date.now() - startedAt) / 1000, kind});
+  api.captureUpdate({id: captureId, phase: 'stopping', elapsed: (Date.now() - startedAt) / 1000, kind, limit});
   refreshControls(); recorder.stop();
 }
 function toggleRecording(session) { if (state.phase === 'recording') stopRecording(); else if (state.phase === 'requesting') guard(cancelOperation); else if (state.phase === 'idle') guard(() => startRecording(session)); }

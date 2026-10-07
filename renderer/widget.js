@@ -28,6 +28,10 @@ function renderHint(value) {
   else if (terminal.includes(value.phase)) hint.replaceChildren(note(value.hint || 'Текст доступен в истории'));
   else hint.replaceChildren();
 }
+// A recording stopped at the limit: the widget stays with its recognition, and the cross only hides it (PRD 6.2).
+function stoppedAtLimit(value) { return value.limit === true && ['stopping', 'transcribing'].includes(value.phase); }
+// The cross hides the widget instead of canceling: after the result, during a call, and after a stop at the limit.
+function closes(value) { return terminal.includes(value.phase) || ['meeting-offer', 'meeting', 'meeting-finishing'].includes(value.phase) || stoppedAtLimit(value); }
 function render(value) {
   state = value; $('widget').dataset.phase = value.phase;
   const done = terminal.includes(value.phase), recording = value.phase === 'recording';
@@ -40,21 +44,23 @@ function render(value) {
   const hours = Math.floor(seconds / 3600), clock = `${String(Math.floor(seconds / 60) % 60).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
   $('time').textContent = hours ? `${hours}:${clock}` : clock;
   $('time').hidden = !recording && !meeting;
+  // The recognition's progress when the engine reports it; until then the bar slides.
+  const fraction = value.phase === 'transcribing' && Number.isFinite(value.progress) ? value.progress : null;
+  $('progress').classList.toggle('determinate', fraction !== null);
+  $('progress').firstElementChild.style.width = fraction === null ? '' : `${Math.round(fraction * 100)}%`;
   $('state-icon').innerHTML = done || offer ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${stateIcons[value.phase]}</svg>` : '';
   renderHint(value);
   $('stop').hidden = !recording && !meeting;
   $('stop').title = meeting ? 'Закончить запись созвона' : 'Закончить диктовку';
   $('open').hidden = !done;
   $('offer-record').hidden = $('offer-ignore').hidden = !offer;
-  // During a call the cross only hides the widget: the recording goes on.
-  const closes = done || offer || meeting || value.phase === 'meeting-finishing';
-  $('cancel').title = closes ? (meeting ? 'Скрыть, запись продолжится' : 'Закрыть') : 'Отменить';
-  $('cancel').setAttribute('aria-label', closes ? $('cancel').title : 'Отменить диктовку');
+  const closing = closes(value);
+  $('cancel').title = closing ? (meeting ? 'Скрыть, запись продолжится' : stoppedAtLimit(value) ? 'Скрыть, распознавание продолжится' : 'Закрыть') : 'Отменить';
+  $('cancel').setAttribute('aria-label', closing ? $('cancel').title : 'Отменить диктовку');
   [...$('wave').children].forEach((bar, i) => bar.style.height = (recording ? Math.max(5, (value.level || 0) * 24 * waveShape[i] / 24) : waveShape[i]) + 'px');
 }
 $('stop').onclick = () => api.action('stop');
-$('cancel').onclick = () => api.action(state.phase === 'meeting-offer' ? 'meeting-dismiss'
-  : terminal.includes(state.phase) || ['meeting', 'meeting-finishing'].includes(state.phase) ? 'hide' : 'cancel');
+$('cancel').onclick = () => api.action(state.phase === 'meeting-offer' ? 'meeting-dismiss' : closes(state) ? 'hide' : 'cancel');
 $('offer-record').onclick = () => api.action('meeting-record');
 $('offer-ignore').onclick = () => api.action('meeting-ignore');
 $('open').onclick = () => api.action('open');

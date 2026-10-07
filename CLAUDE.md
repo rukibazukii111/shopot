@@ -78,7 +78,7 @@ Data dir: `SHOPOT_DATA_DIR`, else `.local/` from source, else `%APPDATA%/Shopot`
 
 ## UI tests
 
-`tests/fixtures/harness.cjs` is the Playwright entry point: it stubs `Worker` with a fake ASR (`globalThis.__test.finish()/fail()/progress()`), captures the `globalShortcut` callbacks (`__test.toggle`, `__test.cancel`), wraps the real native input backend, then loads the real `main.cjs`. `tests/fixtures/app.cjs` runs the real app for the one test with the real worker. Both load `tests/fixtures/offscreen.cjs`, which keeps every test window off-screen, unfocused and off the taskbar; `SHOPOT_TEST_VISIBLE=1` shows them. Tests use Chromium's fake media devices and isolated data dirs under `.private/ui-test/`. `--hidden` starts the app in the tray without a window.
+`tests/fixtures/harness.cjs` is the Playwright entry point: it stubs `Worker` with a fake ASR (`globalThis.__test.finish()/fail()/progress()`), captures the `globalShortcut` callbacks (`__test.toggle`, `__test.cancel`), wraps the real native input backend, then loads the real `main.cjs`. `tests/fixtures/app.cjs` runs the real app for the one test with the real worker. Both load `tests/fixtures/offscreen.cjs`, which keeps every test window off-screen, unfocused and off the taskbar; `SHOPOT_TEST_VISIBLE=1` shows them. Tests use Chromium's fake media devices and isolated data dirs under `.private/ui-test/`. `--hidden` starts the app in the tray without a window. `__test.fakeDesktop = {pastes: 0}` makes a pretend desktop: the target app keeps focus, no key is held, the clipboard is a variable and a paste is only counted. Tests that need minutes of recording move the windows' clock with Playwright's `page.clock`, installed after the widget page exists.
 
 ## Docs
 

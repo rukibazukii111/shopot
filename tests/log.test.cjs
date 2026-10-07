@@ -177,3 +177,12 @@ test('error fields carry the type and code, never the message or a path', () => 
   assert.deepEqual(errorFields(engine), {kind: 'UserError', expected: true, message: 'Аудиофайл пуст.'});
   assert.deepEqual(errorFields('строка'), {kind: 'string', expected: false});
 });
+
+test('a dictation stopped at the limit says so, and an ordinary one does not', t => {
+  const f = fixture(t);
+  f.journal.write('dictation', {result: 'ok', trigger: 'hotkey', record: 900, limit: true, paste: 'pasted'});
+  f.journal.write('dictation', {result: 'ok', trigger: 'hotkey', record: 12.5, paste: 'pasted'});
+  const [stopped, ordinary] = f.read().trim().split('\n');
+  assert.match(stopped, / dictation result=ok trigger=hotkey record=900 limit=true paste=pasted$/);
+  assert.match(ordinary, / dictation result=ok trigger=hotkey record=12\.5 paste=pasted$/);
+});

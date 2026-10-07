@@ -1,10 +1,22 @@
 // Isolated UI harness: production IPC/controller, fake ASR, actual OS input backend.
 require('./offscreen.cjs');
-const {globalShortcut, dialog} = require('electron');
+const {globalShortcut, dialog, clipboard} = require('electron');
 // Tests pick the machine size: warnings for heavy models depend on it.
 if (process.env.SHOPOT_TEST_TOTAL_MEMORY) require('node:os').totalmem = () => Number(process.env.SHOPOT_TEST_TOTAL_MEMORY);
 // A failed start shows a native error box, which no test may put on the desktop: a test of one sets this.
 if (process.env.SHOPOT_TEST_NO_ERROR_BOX === '1') dialog.showErrorBox = () => {};
+// A pretend desktop (__test.fakeDesktop = {pastes: 0}) for following a dictation to its paste: the clipboard is the
+// test's own, the app at the cursor keeps focus, no key is held, and a paste is only counted. Nothing reaches the
+// clipboard or the windows of whoever works at this machine.
+for (const method of ['writeText', 'readText']) {
+  const original = clipboard[method].bind(clipboard);
+  clipboard[method] = (...args) => {
+    const desktop = globalThis.__test?.fakeDesktop;
+    if (!desktop) return original(...args);
+    if (method === 'writeText') { desktop.clipboard = args[0]; return undefined; }
+    return desktop.clipboard ?? '';
+  };
+}
 const {Worker} = require('../../electron/worker.cjs');
 const status = {formatter: {name: 'Qwen3-4B', size: '2,4 ГБ', supported: true, installed: false}, models: [{id: 'gigaam', installed: true, languages: ['ru'], revision: '322c3b294926a5c8'}, {id: 'turbo', installed: true, languages: ['ru', 'en', 'auto']}, {id: 'small', installed: true, languages: ['ru', 'en', 'auto'], translates: true}], device: 'cpu', computeType: 'int8'};
 globalThis.__test = {requests: [], notifications: [], nativeCalls: []};
@@ -27,6 +39,12 @@ nativeModule.createNativeBackend = () => {
       if (method === 'paste' && native.capture()?.pid !== globalThis.__test.targetPid) return false;
       const result = original(...args); globalThis.__test.nativeCalls.push({method, args, result}); return result;
     };
+  }
+  const desktop = {capture: () => ({hwnd: 1, pid: 1, focus: 0, app: null}), sameTarget: () => true, permitted: () => true,
+    modifiersDown: () => false, release: () => {}, paste: () => { globalThis.__test.fakeDesktop.pastes++; return true; }};
+  for (const [method, fake] of Object.entries(desktop)) {
+    const original = native[method];
+    native[method] = (...args) => globalThis.__test.fakeDesktop ? fake(...args) : original(...args);
   }
   return native;
 };

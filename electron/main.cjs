@@ -175,7 +175,7 @@ function beginCapture(global = false) {
   worker.notify('preload', {model: capture.settings.model, formatting: capture.settings.formatting});
   if (blocker === undefined) blocker = powerSaveBlocker.start('prevent-app-suspension');
   globalShortcut.register('Escape', () => { journalCancel(); hideWidget(); send('cancel-recording'); });
-  if (global) showWidget({phase: 'requesting', elapsed: 0, level: 0, message: '', hint: '', holding: false, warning: false});
+  if (global) showWidget({phase: 'requesting', elapsed: 0, level: 0, message: '', hint: '', holding: false, warning: false, limit: false, progress: null});
   // The window stops the recording at the limit and announces its last minute; the numbers are main's.
   return {id: capture.id, settings: capture.settings, limit: DICTATION_LIMIT_SECONDS, warnAt: DICTATION_LIMIT_SECONDS - LIMIT_WARNING_SECONDS};
 }
@@ -306,7 +306,10 @@ function createWidget() {
     if (!trustedWidget(event)) return;
     if (action === 'stop' && capture?.phase === 'recording') toggleGlobalRecording();
     if (action === 'stop' && meeting && !capture) stopMeeting();
-    if (action === 'cancel' && capture) { journalCancel(); hideWidget(); send('cancel-recording'); }
+    // After a stop at the limit the cross only hides the widget: the recognition and the paste go on (PRD 6.2).
+    // A cancel sent in the second of the stop, before the widget knew of it, is taken the same way.
+    if (['cancel', 'hide'].includes(action) && capture?.limit) { capture.widgetHidden = true; hideWidget(); }
+    else if (action === 'cancel' && capture) { journalCancel(); hideWidget(); send('cancel-recording'); }
     if (action === 'hide' && !capture) { if (meeting) meeting.hidden = true; widget.hide(); }
     if (action === 'meeting-record' && offer) {
       try { startMeeting(offer); }
@@ -357,11 +360,16 @@ async function runTranscription(filePath, source, recordingSession = null, retry
   // `source` is never journaled: for an imported file it is the user's file name.
   const report = {result: 'error', model: settings.model, language: settings.language, mode: settings.mode,
     formattingRequested: settings.formatting, translate: settings.translate};
-  if (recordingSession) Object.assign(report, {trigger: recordingSession.global ? 'hotkey' : 'window', record: recordingSession.record,
+  if (recordingSession) Object.assign(report, {trigger: recordingSession.global ? 'hotkey' : 'window', record: recordingSession.record, limit: recordingSession.limit || undefined,
     app: recordingSession.app?.name, appId: recordingSession.app?.id, profile: recordingSession.app?.profile});
   if (recordingSession) {
     recordingSession.phase = 'transcribing';
-    if (recordingSession.global) { hideWidget(); showWidget({phase: 'transcribing', message: '', level: 0}, false); }
+    if (recordingSession.global) {
+      // A recording stopped at the limit keeps the widget until its text is in, unless the user hid it (PRD 6.2).
+      const shown = Boolean(recordingSession.limit && !recordingSession.widgetHidden);
+      if (!shown) hideWidget();
+      showWidget({phase: 'transcribing', message: '', level: 0, progress: null}, shown);
+    }
   }
   try {
     // Journal before inference: a worker/app crash must leave audio available for retry.
@@ -463,7 +471,11 @@ else {
     worker.on('ready', status => { engineError = null; journal.write('engine-ready', engineFields(status)); send('engine', {status}); });
     worker.on('progress', event => {
       send('progress', event);
-      if (capture?.global && capture.phase === 'transcribing') showWidget({phase: 'transcribing', message: event.message || 'Распознаю на устройстве'}, false);
+      // The recognition shows only after a stop at the limit; for any other dictation the widget stays hidden.
+      if (capture?.global && capture.phase === 'transcribing') {
+        showWidget({phase: 'transcribing', message: '', progress: Number.isFinite(event.fraction) ? Math.max(0, Math.min(1, event.fraction)) : null},
+          Boolean(capture.limit && !capture.widgetHidden));
+      }
     });
     worker.on('offline', (error, info = {}) => { engineError = error; journal.write('engine-offline', info); send('engine', {error}); });
     try { startEngine(); } catch (error) { engineError = error.message; journal.write('engine-offline', {cause: 'missing'}); }
@@ -495,6 +507,9 @@ else {
                  (value.phase === 'stopping' && ['recording', 'stopping'].includes(capture.phase))) {
         // A microphone that went away stops the recording; what was recorded is still recognized.
         if (value.kind !== undefined) journal.write('capture-error', {phase: capture.phase, kind: value.kind});
+        // The window stopped the recording at the limit: the widget then stays with the recognition until the text
+        // is in (PRD 6.2). A stop already under way (the hotkey, the widget) stays the user's.
+        if (value.phase === 'stopping' && value.limit === true && capture.phase === 'recording') capture.limit = true;
         if (value.phase === 'stopping') capture.stoppedFrom ??= capture.phase;
         capture.phase = value.phase;
         const elapsed = Math.max(0, Math.min(DICTATION_LIMIT_SECONDS, Number(value.elapsed) || 0));
@@ -502,8 +517,9 @@ else {
         const warning = value.phase === 'recording' && elapsed >= DICTATION_LIMIT_SECONDS - LIMIT_WARNING_SECONDS;
         // So long a recording may outlast the idle unload: load the model again for the stop that is coming.
         if (warning && !capture.warned) { capture.warned = true; worker.notify('preload', {model: capture.settings.model, formatting: capture.settings.formatting}); }
-        if (value.phase === 'stopping') { releaseEscape(); hideWidget(); }
-        if (capture.global) showWidget({phase: value.phase, message: '', elapsed, warning, level: Math.max(0, Math.min(1, Number(value.level) || 0))}, value.phase === 'recording');
+        if (value.phase === 'stopping') { releaseEscape(); if (!capture.limit) hideWidget(); }
+        if (capture.global) showWidget({phase: value.phase, message: '', elapsed, warning, limit: Boolean(capture.limit),
+          level: Math.max(0, Math.min(1, Number(value.level) || 0))}, value.phase === 'recording' || Boolean(capture.limit));
         updateTray(value.phase === 'recording' ? 'Шёпот — идёт запись. Escape: отмена' : 'Шёпот — распознаю запись');
       }
     });

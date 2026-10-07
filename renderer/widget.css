@@ -45,6 +45,8 @@ kbd {
 }
 #progress { display: none; position: relative; flex: 1; height: 2px; overflow: hidden; border-radius: 2px; background: #242728; }
 #progress i { position: absolute; top: 0; left: 0; width: 40%; height: 100%; border-radius: 2px; background: #f4f4f6; animation: slide 1.3s cubic-bezier(.65, 0, .35, 1) infinite; }
+/* Recognition with known progress: the bar fills instead of sliding. */
+#progress.determinate i { animation: none; transition: width .3s linear; }
 main[data-phase=transcribing] #progress { display: block; }
 main[data-phase=transcribing] #hint { display: none; }
 main[data-phase=success] .sub, main[data-phase=error] .sub, main[data-phase=canceled] .sub { padding-left: 36px; }
