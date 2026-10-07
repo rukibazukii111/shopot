@@ -45,7 +45,7 @@ let meeting = null, offer = null, offerTimer, meetingClock, micWatcher = null, m
 // Calls whose transcript is in the history in memory but not yet in store.json: a full disk, or the file held by an
 // antivirus or a sync tool. Each keeps its transcribed chunks on disk until a save succeeds, so after a crash or a quit
 // they come back as unfinished recordings. `told` marks the ones the user was told about after the quick tries.
-let unsaved = [], unsavedReason = 'access', saveRetryTimer;
+let unsaved = [], unsavedReason = 'access', saveRetryTimer, quitDialog = false, quitConfirmed = false;
 const SAVE_RETRY_MS = (Number(process.env.SHOPOT_SAVE_RETRY_SECONDS) || 60) * 1000;
 let widgetState = {phase: 'requesting', shortcut: process.platform === 'darwin' ? '⌘⇧Space' : 'Ctrl⇧Space'};
 
@@ -505,7 +505,10 @@ else {
         if (stat.isFile()) store.data.pendingRecordings.push({id: crypto.randomUUID(), audioFile: name, source: 'Незавершённая запись', createdAt: stat.mtime.toISOString()});
       }
     }
-    if (JSON.stringify(store.data.pendingRecordings) !== previousPending) store.save();
+    if (JSON.stringify(store.data.pendingRecordings) !== previousPending) {
+      // store.json can still be locked, or the disk full, after a quit that left a call unsaved: the recordings are listed anyway.
+      try { store.save(); } catch (error) { journalMainError('recovery', error); }
+    }
     session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
       callback(contents === window?.webContents && contents.getURL() === uiUrl && permission === 'media' &&
         !details.mediaTypes?.includes('video'));
@@ -743,6 +746,21 @@ else {
   });
 }
 app.on('activate', () => { if (window) window.show(); });
-app.on('before-quit', () => { quitting = true; });
+// A call transcript still not on disk gets one more try; if that fails too, the user decides whether to quit.
+app.on('before-quit', event => {
+  quitting = true;
+  if (quitConfirmed || !unsaved.length) return;
+  if (quitDialog) { event.preventDefault(); quitting = false; return; }
+  const error = retryUnsaved('quit');
+  if (!error) return;
+  event.preventDefault(); quitting = false; quitDialog = true;
+  const {code, at} = errorFields(error);
+  dialog.showMessageBox({type: 'warning', title: 'Шёпот', message: 'Расшифровка созвона не сохранена',
+    detail: 'Если выйти, останется только аудио. Его можно будет распознать заново, но без «Я» и «Собеседники».',
+    buttons: ['Остаться', 'Выйти'], defaultId: 0, cancelId: 0, noLink: true}).then(({response}) => {
+    journal.write('meeting-save', {result: 'error', trigger: 'quit', choice: response === 1 ? 'quit' : 'stay', code, at});
+    if (response === 1) { quitConfirmed = true; app.quit(); }
+  }, () => {}).finally(() => { quitDialog = false; });
+});
 app.on('will-quit', () => { journal.write('quit', {uptime: (Date.now() - launchedAt) / 1000}); clearTimeout(widgetTimer); micWatcher?.stop(); globalShortcut.unregisterAll(); worker?.stop(); if (capture?.target) paste?.release(capture.target); });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

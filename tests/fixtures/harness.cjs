@@ -5,6 +5,8 @@ const {globalShortcut, dialog} = require('electron');
 if (process.env.SHOPOT_TEST_TOTAL_MEMORY) require('node:os').totalmem = () => Number(process.env.SHOPOT_TEST_TOTAL_MEMORY);
 // A failed start shows a native error box, which no test may put on the desktop: a test of one sets this.
 if (process.env.SHOPOT_TEST_NO_ERROR_BOX === '1') dialog.showErrorBox = () => {};
+// A message box on the desktop would stop a test: unless a test sets its own, its cancel button answers.
+dialog.showMessageBox = async (...args) => ({response: args.at(-1)?.cancelId ?? 0, checkboxChecked: false});
 const {Worker} = require('../../electron/worker.cjs');
 const status = {formatter: {name: 'Qwen3-4B', size: '2,4 ГБ', supported: true, installed: false}, models: [{id: 'gigaam', installed: true, languages: ['ru'], revision: '322c3b294926a5c8'}, {id: 'turbo', installed: true, languages: ['ru', 'en', 'auto']}, {id: 'small', installed: true, languages: ['ru', 'en', 'auto'], translates: true}], device: 'cpu', computeType: 'int8'};
 globalThis.__test = {requests: [], notifications: [], nativeCalls: []};

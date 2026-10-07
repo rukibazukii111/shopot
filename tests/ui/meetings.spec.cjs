@@ -131,7 +131,7 @@ test('a call is offered, recorded as two channels while it goes on and saved as 
   expect(journal).not.toMatch(/Маши|rejected=/);
 });
 
-test('a call transcript that cannot be saved stays in the history until a save works', async () => {
+test('a call transcript that cannot be saved stays in the history until a save works, and quitting asks first', async () => {
   test.skip(process.platform !== 'win32', 'Calls are recorded on Windows only');
   const dataDir = path.join(root, '.private', 'ui-test', `meeting-unsaved-${Date.now()}`);
   fs.mkdirSync(dataDir, {recursive: true});
@@ -205,6 +205,13 @@ test('a call transcript that cannot be saved stays in the history until a save w
     expect(chunks()).toEqual(first);
     await expect(page.locator('#unsaved-title')).toHaveText('Расшифровка созвона не сохранена');
     await app.evaluate(() => globalThis.__test.restoreWrite());
+    // Quitting asks first: «Остаться» keeps Shopot running, and it goes on trying.
+    await app.evaluate(({dialog}) => { globalThis.__boxes = []; dialog.showMessageBox = async options => { globalThis.__boxes.push(options); return {response: 0}; }; });
+    await app.evaluate(({app}) => app.quit());
+    await expect.poll(() => app.evaluate(() => globalThis.__boxes.length)).toBe(1);
+    expect(await app.evaluate(() => globalThis.__boxes[0])).toMatchObject({type: 'warning', title: 'Шёпот', message: 'Расшифровка созвона не сохранена',
+      detail: 'Если выйти, останется только аудио. Его можно будет распознать заново, но без «Я» и «Собеседники».', buttons: ['Остаться', 'Выйти'], defaultId: 0, cancelId: 0});
+    await expect(page.locator('#unsaved-banner')).toBeVisible();
     // A dictation keeps the widget when the file can be written again and the transcript is saved by itself.
     await app.evaluate(() => globalThis.__test.toggle());
     await expect(widget.locator('#label')).toHaveText('Слушаю тебя');
@@ -217,11 +224,28 @@ test('a call transcript that cannot be saved stays in the history until a save w
     await expect(widget.locator('#label')).toHaveText('Слушаю тебя');
     await app.evaluate(() => globalThis.__test.cancel());
     await expect(widget.locator('#label')).toHaveText('Запись отменена');
-  } finally { await engine?.stop(); fs.chmodSync(storeFile, 0o666); await app.close(); }
+    // A call that still cannot be saved when the user quits anyway: its text is gone, its audio is not.
+    const third = await recordCall();
+    await engine.stop();
+    await app.evaluate(({dialog}) => { dialog.showMessageBox = async options => { globalThis.__boxes.push(options); return {response: 1}; }; });
+    await Promise.all([app.waitForEvent('close'), app.evaluate(({app}) => app.quit()).catch(() => {})]);
+    expect(saved()).toHaveLength(1);
+    expect(chunks()).toEqual(third);
+    // The next start lists that audio as unfinished recordings, even while store.json still cannot be written.
+    const again = await launch();
+    try {
+      const restarted = await again.firstWindow();
+      await expect(restarted.locator('#recovery-banner')).toBeVisible();
+      await expect(restarted.locator('#recovery-title')).toHaveText(third.length === 1 ? 'Запись сохранена, можно повторить распознавание' : `Ожидают распознавания: ${third.length}`);
+    } finally { await again.close(); }
+  } finally { await engine?.stop(); fs.chmodSync(storeFile, 0o666); await app.close().catch(() => {}); }
   const journal = fs.readFileSync(path.join(dataDir, 'logs', 'shopot.log'), 'utf8');
   expect(journal).not.toMatch(/реплика|собеседника|rejected=/i);
   expect(journal).toMatch(/ meeting-finish duration=\S+ turns=[1-9]\d* chunks=[1-9]\d* failed=0 result=error attempts=3 code=EPERM at=store\.cjs:\d+\n/);
   expect(journal).toMatch(/ meeting-finish duration=\S+ turns=[1-9]\d* chunks=[1-9]\d* failed=0 result=error attempts=3 code=ENOSPC at=store\.cjs:\d+\n/);
   expect(journal).toMatch(/ meeting-save result=saved trigger=timer waited=\S+\n/);
   expect(journal).toMatch(/ meeting-save result=error trigger=button code=EPERM at=store\.cjs:\d+\n/);
+  expect(journal).toMatch(/ meeting-save result=error trigger=quit choice=stay code=EPERM at=store\.cjs:\d+\n/);
+  expect(journal).toMatch(/ meeting-save result=error trigger=quit choice=quit code=EPERM at=store\.cjs:\d+\n/);
+  expect(journal).toMatch(/ main-error origin=recovery kind=Error code=EPERM at=store\.cjs:\d+\n/);
 });
