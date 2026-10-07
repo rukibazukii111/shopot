@@ -32,7 +32,10 @@ function render(value) {
   state = value; $('widget').dataset.phase = value.phase;
   const done = terminal.includes(value.phase), recording = value.phase === 'recording';
   const meeting = value.phase === 'meeting', offer = value.phase === 'meeting-offer';
-  $('label').textContent = value.message || labels[value.phase] || 'Шёпот';
+  // The last minute before the dictation limit (PRD 6.2).
+  const lastMinute = recording && value.warning === true;
+  $('widget').toggleAttribute('data-warning', lastMinute);
+  $('label').textContent = value.message || (lastMinute ? 'Осталась минута' : labels[value.phase]) || 'Шёпот';
   const seconds = Math.floor(value.elapsed || 0);
   const hours = Math.floor(seconds / 3600), clock = `${String(Math.floor(seconds / 60) % 60).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
   $('time').textContent = hours ? `${hours}:${clock}` : clock;

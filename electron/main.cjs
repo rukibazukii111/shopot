@@ -35,6 +35,9 @@ let nativeAvailable = false, nativeBackend = null;
 // Holding the hotkey longer than this makes it push-to-talk: letting go ends the recording.
 const HOLD_MS = 450;
 let hold = null;
+// One dictation lasts at most this long (PRD 6.2); its last minute is announced. A call has no such limit.
+const DICTATION_LIMIT_SECONDS = 15 * 60;
+const LIMIT_WARNING_SECONDS = 60;
 let widgetTimer, activeTranscription, downloading = false, job = 0;
 // Calls are recorded on Windows only for now: that is where Electron captures system audio (WASAPI loopback).
 const MEETINGS = process.platform === 'win32';
@@ -172,8 +175,9 @@ function beginCapture(global = false) {
   worker.notify('preload', {model: capture.settings.model, formatting: capture.settings.formatting});
   if (blocker === undefined) blocker = powerSaveBlocker.start('prevent-app-suspension');
   globalShortcut.register('Escape', () => { journalCancel(); hideWidget(); send('cancel-recording'); });
-  if (global) showWidget({phase: 'requesting', elapsed: 0, level: 0, message: '', hint: '', holding: false});
-  return {id: capture.id, settings: capture.settings};
+  if (global) showWidget({phase: 'requesting', elapsed: 0, level: 0, message: '', hint: '', holding: false, warning: false});
+  // The window stops the recording at the limit and announces its last minute; the numbers are main's.
+  return {id: capture.id, settings: capture.settings, limit: DICTATION_LIMIT_SECONDS, warnAt: DICTATION_LIMIT_SECONDS - LIMIT_WARNING_SECONDS};
 }
 function toggleGlobalRecording() {
   if (capture) {
@@ -493,9 +497,13 @@ else {
         if (value.kind !== undefined) journal.write('capture-error', {phase: capture.phase, kind: value.kind});
         if (value.phase === 'stopping') capture.stoppedFrom ??= capture.phase;
         capture.phase = value.phase;
-        capture.record = Math.max(0, Math.min(900, Number(value.elapsed) || 0));
+        const elapsed = Math.max(0, Math.min(DICTATION_LIMIT_SECONDS, Number(value.elapsed) || 0));
+        capture.record = elapsed;
+        const warning = value.phase === 'recording' && elapsed >= DICTATION_LIMIT_SECONDS - LIMIT_WARNING_SECONDS;
+        // So long a recording may outlast the idle unload: load the model again for the stop that is coming.
+        if (warning && !capture.warned) { capture.warned = true; worker.notify('preload', {model: capture.settings.model, formatting: capture.settings.formatting}); }
         if (value.phase === 'stopping') { releaseEscape(); hideWidget(); }
-        if (capture.global) showWidget({phase: value.phase, message: '', elapsed: Math.max(0, Math.min(900, Number(value.elapsed) || 0)), level: Math.max(0, Math.min(1, Number(value.level) || 0))}, value.phase === 'recording');
+        if (capture.global) showWidget({phase: value.phase, message: '', elapsed, warning, level: Math.max(0, Math.min(1, Number(value.level) || 0))}, value.phase === 'recording');
         updateTray(value.phase === 'recording' ? 'Шёпот — идёт запись. Escape: отмена' : 'Шёпот — распознаю запись');
       }
     });

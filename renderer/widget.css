@@ -61,6 +61,8 @@ main[data-phase=meeting-offer] .sub { padding-left: 36px; }
 main[data-phase=meeting-finishing] #wave i { animation: breathe 1.4s ease-in-out infinite; }
 main[data-phase=meeting-finishing] #progress { display: block; }
 main[data-phase=meeting-finishing] #hint { display: none; }
+/* The last minute before the dictation limit: colour marks the state. */
+main[data-warning] strong, main[data-warning] #time { color: #ffc533; }
 [hidden] { display: none !important; }
 @keyframes breathe { 0%, 100% { opacity: .3; } 50% { opacity: .9; } }
 @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(260%); } }

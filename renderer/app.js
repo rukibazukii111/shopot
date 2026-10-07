@@ -46,7 +46,7 @@ const modelInfo = {
 };
 // Measured peaks of the Whisper models; on an 8 GB machine they compete with the browser and the system.
 const heavyModels = {turbo: 'При загрузке модели нужно до 1,9 ГБ, остальные программы могут тормозить.', 'large-v3': 'Модели нужно около 3,3 ГБ, система может зависать.'};
-const state = {settings: {}, dictionary: [], snippets: [], profiles: [], suggestions: new Map(), dictionaryTab: 'words', history: [], pendingRecordings: [], engine: null, page: 'dictation', phase: 'idle', operation: 0, hotkeyRegistered: false, selected: null, download: null, flash: null, confirmModel: null, totalMemory: 0};
+const state = {settings: {}, dictionary: [], snippets: [], profiles: [], suggestions: new Map(), dictionaryTab: 'words', history: [], pendingRecordings: [], engine: null, page: 'dictation', phase: 'idle', operation: 0, limitWarning: false, hotkeyRegistered: false, selected: null, download: null, flash: null, confirmModel: null, totalMemory: 0};
 let recorder, stream, audioContext, analyser, raf, recordingTimer, startedAt, recordingCanceled = false;
 let editingWord = null, editingSnippet = null, wordAliases = [], toastTimer, flashTimer, blobUrls = [], contextDirty = false, captureId = null;
 const drafts = new Map();
@@ -134,6 +134,8 @@ function idleDescription() {
 function refreshControls() {
   const phase = state.phase, ready = installed();
   const recordingNow = phase === 'recording';
+  // The last minute before the dictation limit (PRD 6.2).
+  const lastMinute = recordingNow && state.limitWarning;
   const processing = ['transcribing', 'stopping', 'opening'].includes(phase);
   $('#recorder-card').classList.toggle('recording', recordingNow);
   $('#recorder-card').classList.toggle('processing', processing);
@@ -144,8 +146,8 @@ function refreshControls() {
   const view = {...base, ...phaseText[phase]};
   const flash = phase === 'idle' ? state.flash : null;
   const status = $('#record-status');
-  status.className = 'record-status' + (flash ? (flash.tone === 'ok' ? ' ok' : '') : recordingNow ? ' live' : phase === 'idle' && state.engine && !ready ? ' warn' : '');
-  status.innerHTML = (recordingNow ? '<span class="rec-dot"></span>' : icon(flash?.tone === 'ok' ? 'check' : 'mic')) + `<span>${escapeHtml(flash ? flash.message : view.status)}</span>`;
+  status.className = 'record-status' + (flash ? (flash.tone === 'ok' ? ' ok' : '') : lastMinute ? ' warn' : recordingNow ? ' live' : phase === 'idle' && state.engine && !ready ? ' warn' : '');
+  status.innerHTML = (recordingNow ? '<span class="rec-dot"></span>' : icon(flash?.tone === 'ok' ? 'check' : 'mic')) + `<span>${escapeHtml(flash ? flash.message : lastMinute ? 'Осталась минута' : view.status)}</span>`;
   $('#record-heading').textContent = view.heading;
   $('#record-description').textContent = view.text;
   $('#record-label').textContent = phaseText[phase]?.label || (ready ? 'Начать диктовку' : 'Скачать модель');
@@ -330,14 +332,16 @@ async function startRecording(session) {
     });
     audioContext = new AudioContext(); analyser = audioContext.createAnalyser(); analyser.fftSize = 256;
     audioContext.createMediaStreamSource(stream).connect(analyser);
-    recordingCanceled = false; state.phase = 'recording'; recorder.start(1000); startedAt = Date.now();
+    recordingCanceled = false; state.limitWarning = false; state.phase = 'recording'; recorder.start(1000); startedAt = Date.now();
     api.captureUpdate({id: session.id, phase: 'recording', elapsed: 0}); refreshControls(); $('#record-time').textContent = '00:00'; animateWave();
     recordingTimer = setInterval(() => {
       const elapsed = (Date.now() - startedAt) / 1000; $('#record-time').textContent = duration(Math.floor(elapsed));
       const samples = new Uint8Array(analyser.frequencyBinCount); analyser.getByteTimeDomainData(samples);
       const rms = Math.sqrt(samples.reduce((sum, value) => sum + ((value - 128) / 128) ** 2, 0) / samples.length);
       api.captureUpdate({id: session.id, phase: 'recording', elapsed, level: Math.min(1, rms * 6)});
-      if (elapsed >= 15 * 60) { toast('Достигнут предел записи: 15 минут'); stopRecording(); }
+      // Main gives the limit with the session and tells the widget about the last minute from the same tick.
+      if (elapsed >= session.warnAt && !state.limitWarning) { state.limitWarning = true; refreshControls(); }
+      if (elapsed >= session.limit) { toast('Достигнут предел записи: 15 минут'); stopRecording(); }
     }, 100);
     await listMicrophones().catch(() => {});
   } catch (error) {
