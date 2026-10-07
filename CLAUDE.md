@@ -23,6 +23,7 @@ npx playwright test tests/ui/widget.spec.cjs -g "cancels transcription"   # sing
 .venv/Scripts/python.exe -m pip install -r backend/requirements-dev.txt
 .venv/Scripts/python.exe -m pytest -q
 .venv/Scripts/python.exe -m pytest -q tests/test_transcription.py -k raw_mode
+.venv/Scripts/python.exe scripts/wer.py --models gigaam   # WER on the reference set (PRD 7), report in .private/wer/reports
 
 npm run dist -- --publish never   # PyInstaller engine (dist/shopot-engine) + electron-builder -> release/
 npm run test:packaged             # smoke-tests the packaged app
@@ -30,7 +31,7 @@ npm run test:packaged             # smoke-tests the packaged app
 
 - The native Win32 SendInput paste test is skipped unless `SHOPOT_NATIVE_INPUT_TEST=1` is set (PowerShell: `$env:SHOPOT_NATIVE_INPUT_TEST = '1'`). It needs an interactive desktop.
 - Build installers only on the target OS and architecture. `.github/workflows/build.yml` runs pytest, `npm test`, `test:ui`, `dist` and `test:packaged` on Windows x64, macOS arm64 and macOS Intel. It publishes a release for `v*` tags with `RELEASE_NOTES.md` as the release text.
-- `scripts/evaluate.py` and `scripts/verify-microphone.cjs` check real recognition on a local recording. Outputs go to `.private/`, which is gitignored.
+- `scripts/evaluate.py` and `scripts/verify-microphone.cjs` check real recognition on a local recording. Outputs go to `.private/`, which is gitignored. `scripts/wer.py` measures WER on the owner's reference set; the set, processed audio and reports live in the main checkout's `.private/`.
 
 ## Where things live
 
@@ -71,6 +72,7 @@ Data dir: `SHOPOT_DATA_DIR`, else `.local/` from source, else `%APPDATA%/Shopot`
 - The engine uses at most 4 threads: more barely help and freeze laptops.
 - `audio_path()` accepts only `<uuid>.<ext>` names resolving inside the audio dir, which guards against symlinks and MSIX redirection of `audio/` on Windows.
 - Call recording merges the microphone (left) and WASAPI loopback system audio (right) into one stereo stream; each channel is recognised separately, and a microphone cue repeating overlapping system audio is dropped as echo.
+- The WER measurement feeds each recording to Chromium's fake audio capture in a hidden Electron process, one process per processing combination: one page cannot hold tracks with different processing on one device (Chromium hands back an existing source and ignores the constraints). Capture runs in real time, so processed audio is kept in `.private/wer/audio`.
 - The page CSP (`style-src 'self'`) blocks inline `style` attributes, so dynamic sizes are set through the CSSOM. The UI is dark only; colour marks state only.
 
 ## UI tests
