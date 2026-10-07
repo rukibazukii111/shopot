@@ -257,8 +257,8 @@ async function transcribeMeetingChunk(current, file, offset, index) {
   }
   return true;
 }
-// A call's result takes the widget only when no dictation, call or offer is using it.
-function widgetFree() { return !capture && !meeting && !offer; }
+// A call's result takes the widget only when no hotkey dictation, call or offer is using it; a dictation in the window does not.
+function widgetFree() { return !capture?.global && !meeting && !offer; }
 // A chunk an antivirus still holds stays behind (the next start lists it as an unfinished recording); the rest go.
 function dropChunks(files) { for (const file of files) { try { fs.rmSync(file, {force: true}); } catch {} } }
 // One save of the whole store. Once it is on disk, every call waiting for it lets go of its transcribed chunks.
@@ -286,7 +286,8 @@ function retryUnsaved(trigger) {
   }
   // Nothing waits any more: the widget's message about an unsaved transcript goes, if it is still there.
   if (!unsaved.length && widgetState.phase === 'error' && widgetState.message === UNSAVED) hideWidget();
-  const waiting = unsaved.length, error = waiting ? saveHistory(trigger) : null;
+  // A delete is always written: another save may have put the deleted transcript on disk already.
+  const waiting = unsaved.length, error = waiting || trigger === 'delete' ? saveHistory(trigger) : null;
   if (error) {
     unsavedReason = error.code === 'ENOSPC' ? 'space' : 'access';
     if (trigger === 'button') { const {code, at} = errorFields(error); journal.write('meeting-save', {result: 'error', trigger, code, at}); }

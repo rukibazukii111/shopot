@@ -262,3 +262,42 @@ test('a call transcript that cannot be saved stays in the history until a save w
   expect(journal).toMatch(/ meeting-save result=error trigger=quit choice=quit code=EPERM at=store\.cjs:\d+\n/);
   expect(journal).toMatch(/ main-error origin=recovery kind=Error code=EPERM at=store\.cjs:\d+\n/);
 });
+
+test('a dictation in the window leaves the widget to a finished call, and deleting a transcript saved late removes it from disk', async () => {
+  test.skip(process.platform !== 'win32', 'Calls are recorded on Windows only');
+  const dataDir = path.join(root, '.private', 'ui-test', `meeting-late-${Date.now()}`);
+  fs.mkdirSync(dataDir, {recursive: true});
+  const store = new Store(dataDir);
+  store.setSettings({...store.data.settings, autoCopy: false, autoPaste: false});
+  const storeFile = path.join(dataDir, 'store.json');
+  const saved = () => JSON.parse(fs.readFileSync(storeFile, 'utf8')).history;
+  // The retry timer stays out of the way: only the settings change below writes store.json.
+  const app = await electron.launch({args: [path.join(root, 'tests/fixtures/harness.cjs'), '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'],
+    env: {...env, SHOPOT_DATA_DIR: dataDir, SHOPOT_MIC_POLL_MS: '150', SHOPOT_MEETING_CHUNK_SECONDS: '1.2', SHOPOT_SAVE_RETRY_SECONDS: '600'}});
+  let engine;
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('#engine-label')).toHaveText('Локальный движок');
+    await fakeSystemAudio(page);
+    engine = answerChunks(app);
+    const widget = await widgetOf(app);
+    await page.evaluate(() => window.shopot.startMeeting());
+    await expect.poll(() => engine.payloads.length, {timeout: 15000}).toBeGreaterThanOrEqual(2);
+    fs.chmodSync(storeFile, 0o444);
+    await page.evaluate(() => window.shopot.stopMeeting());
+    // A dictation started in the main window does not use the widget: the call's message still replaces «Собираю…».
+    await page.evaluate(() => window.shopot.beginRecording());
+    await expect(widget.locator('#label')).toHaveText('Расшифровка созвона не сохранена', {timeout: 15000});
+    await page.evaluate(() => window.shopot.cancel());
+    // store.json can be written again and another save puts the transcript on disk before the retry does.
+    fs.chmodSync(storeFile, 0o666);
+    const {settings, history} = await page.evaluate(() => window.shopot.boot());
+    await page.evaluate(value => window.shopot.settings(value), {...settings, keepAudio: !settings.keepAudio});
+    expect(saved()).toHaveLength(1);
+    // Deleting it then removes it from disk too, not only from the history in memory.
+    await app.evaluate(({dialog}) => { dialog.showMessageBox = async () => ({response: 1}); });
+    expect(await page.evaluate(id => window.shopot.deleteEntry(id), history[0].id)).toBe(true);
+    expect(saved()).toEqual([]);
+    expect((await page.evaluate(() => window.shopot.boot())).unsaved).toBeNull();
+  } finally { await engine?.stop(); fs.chmodSync(storeFile, 0o666); await app.close().catch(() => {}); }
+});
