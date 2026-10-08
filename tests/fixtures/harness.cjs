@@ -6,6 +6,9 @@ if (process.env.SHOPOT_TEST_TOTAL_MEMORY) require('node:os').totalmem = () => Nu
 const {Worker} = require('../../electron/worker.cjs');
 const status = {formatter: {name: 'Qwen3-4B', size: '2,4 ГБ', supported: true, installed: false}, models: [{id: 'gigaam', installed: true, languages: ['ru']}, {id: 'turbo', installed: true, languages: ['ru', 'en', 'auto']}, {id: 'small', installed: true, languages: ['ru', 'en', 'auto'], translates: true}], device: 'cpu', computeType: 'int8'};
 globalThis.__test = {requests: [], notifications: [], nativeCalls: []};
+// Tests pick the video card; by default there is no NVIDIA card.
+status.gpu = {supported: true, device: null, enoughMemory: false, minMemoryMb: 3584, installed: false, size: '1,3 ГБ',
+  ...(process.env.SHOPOT_TEST_GPU ? JSON.parse(process.env.SHOPOT_TEST_GPU) : {})};
 globalThis.__test.status = status;
 const nativeModule = require('../../electron/native-input.cjs');
 const createNative = nativeModule.createNativeBackend;
@@ -42,6 +45,7 @@ Worker.prototype.request = function (command, payload) {
     globalThis.__test.finish = () => resolve({text: 'Видосы для GitHub готовы.', rawText: 'Видосы для GitHub готовы.', duration: 2, elapsed: .1, model: 'turbo', words: []});
     globalThis.__test.fail = () => reject(new Error('Тестовая ошибка распознавания'));
     globalThis.__test.progress = () => this.emit('progress', {stage: 'transcribe', fraction: .5, message: 'Тестовый прогресс'});
+    globalThis.__test.emitProgress = event => this.emit('progress', event);
     this.testReject = reject;
   });
 };

@@ -94,3 +94,9 @@ test('per-app profiles override only what they set, for the app that had focus',
   assert.throws(() => validateProfiles([{app: ''}]), /приложение/);
   assert.throws(() => validateProfiles(Array.from({length: 31}, (_, i) => ({app: `app${i}.exe`}))), /30/);
 });
+
+test('GPU use is on by default and must be a boolean', () => {
+  assert.equal(validateSettings({}).useGpu, true);
+  assert.equal(validateSettings({useGpu: false}).useGpu, false);
+  assert.throws(() => validateSettings({useGpu: 'yes'}), /useGpu/);
+});

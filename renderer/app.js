@@ -705,6 +705,7 @@ function modelCard(card) {
   // A heavy model on a small machine takes a second click: the first one only asks.
   const label = card.confirm ? (card.installed ? 'Всё равно выбрать' : 'Всё равно скачать') : card.installed ? card.selectLabel : `${icon('download')}Скачать`;
   const action = card.downloading ? '<button class="button-outline" id="cancel-download">Остановить</button>'
+    : card.control !== undefined ? card.control
     : card.installed && card.selected ? `<span class="badge-success" ${card.attr}>${icon('check')}Используется</span>`
     : `<button class="button-outline${card.confirm ? ' confirm' : ''}" ${card.attr} ${card.busy ? 'disabled' : ''}>${label}</button>`;
   const meta = card.downloading
@@ -727,7 +728,22 @@ function renderModels() {
     size: formatter?.size || '2,4 ГБ', installed: Boolean(formatter?.installed), selected: state.settings.formatting === 'llm',
     downloading: state.download?.id === 'formatter', busy: busy || unsupported, attr: 'data-formatter', selectLabel: 'Включить',
     source: 'загрузка llama.cpp и модели с Hugging Face', note: unsupported ? 'Пока только для Windows' : ''});
+  renderGpu(busy);
   updateDownloadProgress();
+}
+function renderGpu(busy) {
+  // Only machines with an NVIDIA card see the card; one with too little memory sees why it cannot download.
+  const gpu = state.engine?.gpu, device = gpu?.device;
+  $('#gpu-title').hidden = $('#gpu-list').hidden = !device;
+  if (!device) { $('#gpu-list').innerHTML = ''; return; }
+  const memory = `${Math.round(device.memoryMb / 1024)} ГБ`, installed = Boolean(gpu.installed);
+  const toggle = `<label class="toggle-row"><span class="switch"><input type="checkbox" id="use-gpu" role="switch"${state.settings.useGpu ? ' checked' : ''}${busy ? ' disabled' : ''}><span></span></span><span class="toggle-text"><strong>Использовать видеокарту</strong></span></label>`;
+  $('#gpu-list').innerHTML = modelCard({icon: 'cpu', title: 'Ускорение NVIDIA', subtitle: `${escapeHtml(device.name)}, ${memory}`,
+    text: 'Модели Whisper распознают речь на видеокарте в несколько раз быстрее, перевод на английский тоже. GigaAM остаётся на процессоре.',
+    size: gpu.size || '1,3 ГБ', installed, selected: installed && state.settings.useGpu, downloading: state.download?.id === 'gpu',
+    busy, attr: 'data-gpu', source: 'библиотеки NVIDIA с PyPI',
+    ...(gpu.enoughMemory ? {} : {control: '', note: 'Ускорение недоступно', warning: `Нужно минимум 4 ГБ видеопамяти. У этой видеокарты — ${memory}.`}),
+    ...(installed ? {control: toggle} : {})});
 }
 function updateDownloadProgress() {
   const download = state.download, bar = $('#download-progress');
@@ -748,6 +764,16 @@ async function selectFormatter() {
   try {
     const engine = await api.download('formatter');
     if (operation === state.operation) { state.engine = engine; await saveSettings({formatting: 'llm'}); toast('Умное оформление готово и включено'); }
+  } catch (error) { if (operation === state.operation) showError(error); }
+  finally { if (operation === state.operation) { state.phase = 'idle'; state.download = null; updateEngine(); } }
+}
+async function downloadGpu() {
+  if (isBusy() || !state.engine?.gpu?.enoughMemory || state.engine.gpu.installed) return;
+  const operation = ++state.operation;
+  state.phase = 'downloading'; state.download = {id: 'gpu', completed: 0, total: 0}; refreshControls(); renderModels();
+  try {
+    const engine = await api.download('gpu');
+    if (operation === state.operation) { state.engine = engine; await saveSettings({useGpu: true}); toast('Ускорение NVIDIA установлено'); }
   } catch (error) { if (operation === state.operation) showError(error); }
   finally { if (operation === state.operation) { state.phase = 'idle'; state.download = null; updateEngine(); } }
 }
@@ -777,6 +803,7 @@ document.addEventListener('click', event => {
   if (target.closest('#cancel-download')) { guard(cancelOperation); return; }
   const modelButton = target.closest('button[data-model]'); if (modelButton) { guard(() => selectModel(modelButton.dataset.model)); return; }
   if (target.closest('button[data-formatter]')) { guard(selectFormatter); return; }
+  if (target.closest('button[data-gpu]')) { guard(downloadGpu); return; }
   const row = target.closest('[data-select-entry]'); if (row) { selectEntry(row.dataset.selectEntry); return; }
   const word = target.closest('[data-word-id]'); if (word) { openWord(state.dictionary.find(e => e.id === word.dataset.wordId)); return; }
   const snippet = target.closest('[data-snippet-id]'); if (snippet) { openSnippet(state.snippets.find(e => e.id === snippet.dataset.snippetId)); return; }
@@ -797,6 +824,10 @@ document.addEventListener('click', event => {
 });
 document.addEventListener('change', event => {
   const target = event.target;
+  if (target.id === 'use-gpu') {
+    guard(async () => { await saveSettings({useGpu: target.checked}); renderModels(); toast(target.checked ? 'Ускорение включено' : 'Ускорение выключено'); });
+    return;
+  }
   if (target.matches('.transcript-editor, .history-editor')) guard(async () => {
     const id = target.dataset.entry, text = target.value;
     const {entry, suggestions} = await api.updateEntry(id, text);
@@ -928,7 +959,9 @@ api.onProgress(progress => {
     else $('#transcribe-progress').removeAttribute('value');
   }
   if (state.phase === 'downloading' && state.download) {
-    if (progress.unit === 'B' && progress.total > 0) Object.assign(state.download, {completed: progress.completed, total: progress.total});
+    // A step without a byte count (checking, unpacking) shows its text instead of a stale percentage.
+    if (progress.indeterminate) Object.assign(state.download, {total: 0, message: progress.message});
+    else if (progress.unit === 'B' && progress.total > 0) Object.assign(state.download, {completed: progress.completed, total: progress.total});
     else state.download.message = progress.message;
     updateDownloadProgress();
   }

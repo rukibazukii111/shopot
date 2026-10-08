@@ -403,8 +403,10 @@ else {
       const currentJob = ++job;
       setBusy(true); downloading = true;
       try {
-        // 'formatter' is the optional layout model (llama.cpp runtime + Qwen), downloaded and verified by the engine.
+        // 'formatter' is the optional layout model (llama.cpp runtime + Qwen), 'gpu' the NVIDIA libraries;
+        // both are downloaded and verified by the engine.
         const status = id === 'formatter' ? await worker.request('download-formatter')
+          : id === 'gpu' ? await worker.request('download-gpu')
           : await worker.request('download', {model: modelId(id)});
         worker.status = status; send('engine', {status}); return status;
       } finally { downloading = false; if (currentJob === job) setBusy(false); }

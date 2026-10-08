@@ -154,3 +154,60 @@ test('translation into English is offered only with models that can translate', 
     expect(await settings(page)).toMatchObject({model: 'gigaam', translate: false});
   } finally { await app.close(); }
 });
+
+async function launchWithGpu(name, gpu) {
+  const dataDir = path.join(testRoot, `${name}-${Date.now()}`);
+  fs.mkdirSync(dataDir, {recursive: true});
+  const env = {...cleanEnv, SHOPOT_DATA_DIR: dataDir, ...(gpu ? {SHOPOT_TEST_GPU: JSON.stringify(gpu)} : {})};
+  return electron.launch({args: [path.join(root, 'tests/fixtures/harness.cjs')], env});
+}
+const rtx = {name: 'NVIDIA GeForce RTX 5060', memoryMb: 8151, driver: '610.88'};
+
+test('NVIDIA acceleration is offered only with an NVIDIA card', async () => {
+  const app = await launchWithGpu('gpu-none');
+  try {
+    const page = await app.firstWindow();
+    await page.locator('[data-page="models"]').click();
+    await expect(page.locator('#models-list .model-card').first()).toBeVisible();
+    await expect(page.locator('#gpu-list')).toHaveCount(1);
+    await expect(page.locator('#gpu-list')).toBeHidden();
+    await expect(page.locator('#gpu-title')).toBeHidden();
+  } finally { await app.close(); }
+});
+
+test('NVIDIA acceleration downloads and then shows the GPU switch', async () => {
+  const app = await launchWithGpu('gpu-download', {device: rtx, enoughMemory: true});
+  try {
+    const page = await app.firstWindow();
+    await page.locator('[data-page="models"]').click();
+    await expect(page.locator('#gpu-list')).toContainText('Ускорение NVIDIA');
+    await expect(page.locator('#gpu-list')).toContainText('NVIDIA GeForce RTX 5060, 8 ГБ');
+    await expect(page.locator('#gpu-list')).toContainText('1,3 ГБ');
+    await page.locator('button[data-gpu]').click();
+    await expect.poll(() => app.evaluate(() => globalThis.__test.requests.map(r => r.command))).toEqual(['download-gpu']);
+    await expect(page.locator('#cancel-download')).toBeVisible();
+    await app.evaluate(() => globalThis.__test.emitProgress({stage: 'download', model: 'gpu', message: 'Скачиваем библиотеки NVIDIA…', completed: 630e6, total: 1260e6, unit: 'B'}));
+    await expect(page.locator('#download-percent')).toHaveText('50%');
+    await app.evaluate(() => globalThis.__test.emitProgress({stage: 'download', model: 'gpu', message: 'Проверяем библиотеки NVIDIA…', indeterminate: true}));
+    await expect(page.locator('#download-detail')).toHaveText('Проверяем библиотеки NVIDIA…');
+    await expect(page.locator('#download-percent')).toHaveText('');
+    await app.evaluate((_, device) => globalThis.__test.resolve({...globalThis.__test.status,
+      gpu: {...globalThis.__test.status.gpu, device, enoughMemory: true, installed: true}}), rtx);
+    const toggle = page.locator('#use-gpu');
+    await expect(toggle).toBeChecked();
+    await expect(page.locator('#gpu-list')).toContainText('Использовать видеокарту');
+    await page.locator('#gpu-list label.toggle-row').click();
+    await expect(toggle).not.toBeChecked();
+    await expect.poll(async () => (await page.evaluate(() => window.shopot.boot())).settings.useGpu).toBe(false);
+  } finally { await app.close(); }
+});
+
+test('NVIDIA card with too little memory explains why there is no download', async () => {
+  const app = await launchWithGpu('gpu-small', {device: {name: 'NVIDIA GeForce MX250', memoryMb: 2048, driver: '610.88'}, enoughMemory: false});
+  try {
+    const page = await app.firstWindow();
+    await page.locator('[data-page="models"]').click();
+    await expect(page.locator('#gpu-list')).toContainText('Нужно минимум 4 ГБ видеопамяти. У этой видеокарты — 2 ГБ.');
+    await expect(page.locator('button[data-gpu]')).toHaveCount(0);
+  } finally { await app.close(); }
+});
