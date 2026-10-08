@@ -44,6 +44,7 @@ npm run test:packaged             # smoke-tests the packaged app
 | `electron/corrections.cjs` | Dictionary suggestions from the user's edits in history |
 | `electron/export.cjs` | Saving a transcript as .txt, .md or .srt |
 | `electron/log.cjs` | Diagnostic journal in `<data>/logs`: a field schema per event, rotation, `pruneOlderThan` for history retention, `errorFields` |
+| `electron/updates.cjs` | Update checks (PRD 6.26): which GitHub release to offer (a stable install never sees a beta), downloading the installer with a SHA256SUMS check, launching it (NSIS silent on Windows, the DMG on macOS) |
 | `electron/report.cjs` | «Сообщить о проблеме»: the new-issue link of the GitHub repository in `package.json` (`repository.url`), with a short form and the app and system versions |
 | `renderer/app.js` | Main window, and the actual microphone capture (MediaRecorder), even for hotkey dictation while the window is hidden |
 | `renderer/widget.*`, `widget-preload.cjs` | Non-focusable always-on-top widget with its own narrow IPC |
@@ -56,7 +57,7 @@ Data dir: `SHOPOT_DATA_DIR`, else `.local/` from source, else `%APPDATA%/Shopot`
 
 ## Invariants (keep them)
 
-- **Security model.** Renderers are sandboxed, with contextIsolation and without Node. Navigation and window.open are denied. All `http(s)/ws(s)` requests from the session are cancelled; only the Python worker touches the network, and only for an explicit download. The one other way out: `report-problem` opens a GitHub link built in `report.cjs` in the user's browser (`shell.openExternal`); the renderer passes nothing into it. Every `ipcMain.handle` goes through `ipc()`/`trusted()`, which checks the sender and frame URL. Inputs are validated in main. A new IPC channel is registered via `ipc()` and exposed in `preload.cjs`.
+- **Security model.** Renderers are sandboxed, with contextIsolation and without Node. Navigation and window.open are denied. All `http(s)/ws(s)` requests from the default session are cancelled. Only two things touch the network: the Python worker, for an explicit download, and main's in-memory `shopot-updates` session (`updates.cjs`), which reaches GitHub hosts alone for release checks (only when the user turned them on or pressed «Проверить сейчас») and installer downloads. The one other way out: `report-problem` opens a GitHub link built in `report.cjs` in the user's browser (`shell.openExternal`); the renderer passes nothing into it. Every `ipcMain.handle` goes through `ipc()`/`trusted()`, which checks the sender and frame URL. Inputs are validated in main. A new IPC channel is registered via `ipc()` and exposed in `preload.cjs`.
 - **Words never change.** Layout (rules or LLM) only tags sentences and rebuilds the text from the original sentences; the LLM never writes text. Tests check that the word sequence is unchanged.
 - **Nothing is lost.** `runTranscription()` journals audio in `pendingRecordings` before inference; orphaned audio is recovered on startup.
 - **No stale results.** A monotonically increasing `job` counter invalidates results after a cancel or restart. Late events must not reopen the widget or paste.
