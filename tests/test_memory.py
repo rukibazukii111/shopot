@@ -89,3 +89,35 @@ def test_dictation_reports_its_memory_peak_including_the_model_load(tmp_path, mo
         assert peak is None or peak < 64 * GB
     finally:
         engine.cancel_idle_unload()
+
+
+def test_dictation_reports_the_load_its_preload_did_once(tmp_path, monkeypatch):
+    engine = Engine(tmp_path)
+    folder = engine.model_path('gigaam')
+    folder.mkdir(parents=True)
+    (folder / 'shopot-ready.json').write_text(json.dumps({'revision': MODELS['gigaam']['revision']}), 'utf-8')
+    for name in GIGAAM_FILES:
+        (folder / name).write_bytes(b'x')
+    (engine.audio_dir / 'abc.wav').write_bytes(b'x')
+
+    def load(key, request_id=None):
+        if engine.loaded_key == key:
+            return 0.0
+        time.sleep(0.3)
+        engine.loaded_key = key
+        return 0.3
+    monkeypatch.setattr(engine, 'load', load)
+    monkeypatch.setattr(engine, '_transcribe', lambda *args: {'text': 'Готово.', 'elapsed': 0.1, 'loadElapsed': 0.0})
+    request = {'model': 'gigaam', 'audioFile': 'abc.wav', 'language': 'ru'}
+    try:
+        # The hotkey loads the model while the user speaks; the dictation after it reports that load, once.
+        engine.preload('gigaam')
+        assert engine.transcribe(request)['preloadElapsed'] >= 0.25
+        assert engine.transcribe(request)['preloadElapsed'] == 0
+        # A canceled dictation's load is not the next one's: its preload finds the model loaded.
+        engine.loaded_key = None
+        engine.preload('gigaam')
+        engine.preload('gigaam')
+        assert engine.transcribe(request)['preloadElapsed'] < 0.1
+    finally:
+        engine.cancel_idle_unload()

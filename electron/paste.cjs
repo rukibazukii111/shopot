@@ -45,4 +45,4 @@ class PasteService {
     } catch { return result('blocked'); }
   }
 }
-module.exports = {PasteService, clipboardText};
+module.exports = {PasteService, clipboardText, DELIVERY_CODES: Object.keys(messages)};

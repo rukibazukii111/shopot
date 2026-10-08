@@ -476,6 +476,9 @@ textarea.input { height: auto; padding: 10px 12px 26px; resize: none; line-heigh
 .context-foot .help { flex: 1; }
 #save-context { flex-shrink: 0; min-width: 156px; height: 32px; font-size: 13px; }
 #save-context.done svg { width: 14px; height: 14px; color: var(--green); }
+.settings-row:has(.setting-actions) .setting-label { padding-top: 1px; }
+.setting-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.setting-actions .button { height: 32px; font-size: 13px; }
 
 /* Toast */
 .toast {

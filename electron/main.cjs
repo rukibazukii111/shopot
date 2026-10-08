@@ -1,4 +1,4 @@
-const {app, BrowserWindow, ipcMain, dialog, clipboard, desktopCapturer, globalShortcut, session, Tray, Menu, nativeImage, nativeTheme, powerSaveBlocker, screen, systemPreferences} = require('electron');
+const {app, BrowserWindow, ipcMain, dialog, clipboard, desktopCapturer, globalShortcut, session, shell, Tray, Menu, nativeImage, nativeTheme, powerSaveBlocker, screen, systemPreferences} = require('electron');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -11,10 +11,18 @@ const {createNativeBackend} = require('./native-input.cjs');
 const {suggestCorrections} = require('./corrections.cjs');
 const {exportText} = require('./export.cjs');
 const {MicWatcher, meetingTurns, meetingText, summaryPrompt} = require('./meetings.cjs');
+const {createJournal, errorFields, timestamp} = require('./log.cjs');
+const {systemName, issueUrl} = require('./report.cjs');
 
 const root = path.resolve(__dirname, '..');
+// From package.json rather than app.getVersion(), which reports Electron's version when main.cjs is loaded by a test harness.
+const appVersion = require('../package.json').version;
 const dataDir = path.resolve(process.env.SHOPOT_DATA_DIR || (app.isPackaged ? path.join(app.getPath('appData'), 'Shopot') : path.join(root, '.local')));
 app.setPath('userData', dataDir);
+// Diagnostics for bug reports. Only named fields go in (log.cjs): never pass it text, a file name or a whole object.
+const journal = createJournal({dir: path.join(dataDir, 'logs')});
+const launchedAt = Date.now();
+let engineStartedAt = 0;
 const audioDir = path.join(dataDir, 'audio');
 const uiUrl = pathToFileURL(path.join(root, 'renderer', 'index.html')).href;
 const widgetUrl = pathToFileURL(path.join(root, 'renderer', 'widget.html')).href;
@@ -32,6 +40,7 @@ let widgetTimer, activeTranscription, downloading = false, job = 0;
 const MEETINGS = process.platform === 'win32';
 const MEETING_CHUNK_MS = (Number(process.env.SHOPOT_MEETING_CHUNK_SECONDS) || 300) * 1000;
 const MIC_POLL_MS = Number(process.env.SHOPOT_MIC_POLL_MS) || 4000;
+const WINDOW_GONE = 'Окно записи перезапустилось';
 let meeting = null, offer = null, offerTimer, meetingClock, micWatcher = null, meetingQueue = Promise.resolve();
 let widgetState = {phase: 'requesting', shortcut: process.platform === 'darwin' ? '⌘⇧Space' : 'Ctrl⇧Space'};
 
@@ -39,13 +48,55 @@ function send(channel, value) { if (window && !window.isDestroyed()) window.webC
 function trusted(event) {
   if (event.sender !== window?.webContents || event.senderFrame?.url !== uiUrl) throw new Error('Недопустимый источник команды');
 }
-function ipc(name, handler) { ipcMain.handle(name, (event, value) => { trusted(event); return handler(value); }); }
+function ipc(name, handler) {
+  ipcMain.handle(name, async (event, value) => {
+    trusted(event);
+    try { return await handler(value); }
+    catch (error) { if (!error?.journaled) journal.write('ipc-error', {channel: name, ...errorFields(error)}); throw error; }
+  });
+}
+// A cancel reaches main up to three ways (Escape, the widget, the window); the first one, while the work is live, is journaled
+// with the stage it interrupted. «Отменить» in the window and a second hotkey press while the microphone opens stop the
+// capture before they cancel it, so a stopped capture counts at its stage before the stop.
+function journalCancel() {
+  const phase = downloading ? 'download' : activeTranscription ? 'transcribing' : capture?.stoppedFrom ?? capture?.phase;
+  if (!phase || capture?.cancelJournaled) return;
+  if (capture) capture.cancelJournaled = true;
+  journal.write('cancel', {phase});
+}
+// A failure outside any command: its type, system code and first frame in our code, never its message.
+function journalMainError(origin, error) { const {kind, code, at} = errorFields(error); journal.write('main-error', {origin, kind, code, at}); }
+function startEngine() { engineStartedAt = Date.now(); journal.write('engine-start'); worker.start(); }
+function restartEngine(cause) { journal.write('engine-restart', {cause}); engineStartedAt = Date.now(); worker.restart(); }
+function engineFields(status) {
+  const formatter = status?.formatter;
+  return {models: (status?.models || []).filter(m => m.installed).map(m => `${m.id}@${String(m.revision || '').slice(0, 12)}`),
+    threads: status?.threads, device: status?.device, compute: status?.computeType,
+    formatter: !formatter?.supported ? 'unsupported' : formatter.installed ? 'installed' : 'absent', startup: (Date.now() - engineStartedAt) / 1000};
+}
+// Timings and the outcome of one recognition, picked field by field: the result also holds the text.
+// `wait` is the request's time outside the engine's job: mostly the queue (a preload still loading, a call chunk).
+function resultFields(result, requestSeconds) {
+  const load = Number(result.loadElapsed) || 0, format = Number(result.formatElapsed) || 0;
+  return {model: result.model, device: result.device, formatting: result.formatting, audio: result.duration,
+    wait: Number.isFinite(result.elapsed) ? Math.max(0, requestSeconds - result.elapsed) : undefined,
+    load: result.loadElapsed, format: result.formatElapsed, total: result.elapsed,
+    transcribe: Number.isFinite(result.elapsed) ? Math.max(0, result.elapsed - load - format) : undefined,
+    memoryMb: Number.isFinite(result.memoryPeak) ? Math.round(result.memoryPeak / 2 ** 20) : undefined};
+}
 function pastePermission() { return process.platform !== 'darwin' || systemPreferences.isTrustedAccessibilityClient(false); }
 function meetingState() { return meeting ? {app: meeting.app?.name ?? null, startedAt: meeting.startedAt, stopping: meeting.stopping} : null; }
 function snapshot() { return {...store.data, engine: worker.status, engineError, busy, hotkeyRegistered, nativeAvailable, pastePermission: pastePermission(), platform: process.platform, totalMemory: os.totalmem(), meeting: meetingState(), meetingsSupported: MEETINGS}; }
 function modelId(id) { if (!MODEL_IDS.includes(id)) throw new Error('Неизвестная модель'); return id; }
 function textValue(value) { if (typeof value !== 'string' || value.length > 200000) throw new Error('Недопустимый текст'); return value; }
 function entryFor(id) { const entry = store.data.history.find(e => e.id === id); if (!entry) throw new Error('Запись не найдена'); return entry; }
+// A file system failure as a plain message for the window; its code still reaches the journal through ipc().
+// The stack starts at the caller, so the journal tells a failed read from a failed write.
+function fileError(message, error) {
+  const failure = Object.assign(new Error(message), {code: error?.code});
+  Error.captureStackTrace(failure, fileError);
+  return failure;
+}
 function audioFor(entry) {
   if (!entry.audioFile || !/^[a-f0-9-]+\.(wav|webm|mp3|m4a|ogg|flac|mp4)$/i.test(entry.audioFile)) return null;
   return path.join(audioDir, entry.audioFile);
@@ -120,7 +171,7 @@ function beginCapture(global = false) {
   // Load the model while the user speaks instead of after they stop.
   worker.notify('preload', {model: capture.settings.model, formatting: capture.settings.formatting});
   if (blocker === undefined) blocker = powerSaveBlocker.start('prevent-app-suspension');
-  globalShortcut.register('Escape', () => { hideWidget(); send('cancel-recording'); });
+  globalShortcut.register('Escape', () => { journalCancel(); hideWidget(); send('cancel-recording'); });
   if (global) showWidget({phase: 'requesting', elapsed: 0, level: 0, message: '', hint: '', holding: false});
   return {id: capture.id, settings: capture.settings};
 }
@@ -129,12 +180,15 @@ function toggleGlobalRecording() {
     // While the keys are still down, another trigger is the held key repeating, not a second press.
     if (hold) return;
     if (['requesting', 'recording'].includes(capture.phase)) {
-      capture.phase = 'stopping'; releaseEscape(); hideWidget(); send('toggle-recording');
+      capture.stoppedFrom = capture.phase; capture.phase = 'stopping'; releaseEscape(); hideWidget(); send('toggle-recording');
     }
     return;
   }
   try { send('toggle-recording', beginCapture(true)); watchHotkeyHold(); }
-  catch (error) { showWidget({phase: 'error', message: error.message, hint: 'Открой Шёпот, чтобы продолжить', elapsed: 0}); }
+  catch (error) {
+    journal.write('command-error', {command: 'hotkey', ...errorFields(error)});
+    showWidget({phase: 'error', message: error.message, hint: 'Открой Шёпот, чтобы продолжить', elapsed: 0});
+  }
 }
 
 // --- Calls: noticed by microphone use, recorded as two channels, transcribed in chunks while they go on ---
@@ -161,6 +215,7 @@ function startMeeting(app) {
   dismissOffer();
   meeting = {id: crypto.randomUUID(), app: app ? {id: app.id, name: app.name} : null, startedAt: Date.now(), stopping: false, hidden: false,
     cues: {left: [], right: []}, files: [], failed: 0, settings: structuredClone(store.data.settings), dictionary: structuredClone(store.data.dictionary)};
+  journal.write('meeting-start', {app: app?.name, appId: app?.id, trigger: app ? 'offer' : 'manual'});
   if (blocker === undefined) blocker = powerSaveBlocker.start('prevent-app-suspension');
   send('meeting-record', {id: meeting.id, chunkMs: MEETING_CHUNK_MS});
   clearInterval(meetingClock); meetingClock = setInterval(meetingWidget, 1000);
@@ -174,44 +229,57 @@ function stopMeeting() {
   meetingWidget(); send('snapshot', snapshot());
 }
 // Each chunk is transcribed channel by channel: left is the microphone (the user), right the other side.
-async function transcribeMeetingChunk(current, file, offset) {
+async function transcribeMeetingChunk(current, file, offset, index) {
   for (const channel of ['left', 'right']) {
+    const started = Date.now();
     for (let attempt = 1; ; attempt++) {
       try {
         const result = await worker.request('transcribe', {audioFile: path.basename(file), channel, model: current.settings.model,
           language: current.settings.language, mode: 'natural', formatting: 'off', voiceCommands: false, removeFillers: current.settings.removeFillers,
           context: current.settings.context, dictionary: current.dictionary, snippets: []});
         current.cues[channel].push(...(result.cues || []).map(cue => ({...cue, start: cue.start + offset, end: cue.end + offset})));
+        journal.write('meeting-chunk', {index, channel, result: 'ok', attempts: attempt, transcribe: (Date.now() - started) / 1000});
         break;
       } catch (error) {
         // A dictation's cancel or an engine restart can take this request down with it: try again, a few times.
-        if (attempt >= 4) { console.error('Кусок созвона не распознан:', error.message); return false; }
+        if (attempt >= 4) { journal.write('meeting-chunk', {index, channel, result: 'fail', attempts: attempt, kind: errorFields(error).kind}); return false; }
         await new Promise(resolve => setTimeout(resolve, 1500 * attempt));
       }
     }
   }
   return true;
 }
-async function finishMeeting(current, problem) {
+// `kind` is the type of the window's recording error; its message (`problem`) is for the widget only.
+async function finishMeeting(current, problem, kind) {
   await meetingQueue;
   clearInterval(meetingClock);
   if (meeting === current) meeting = null;
   const turns = meetingTurns(current.cues.left, current.cues.right);
   const duration = (Date.now() - current.startedAt) / 1000;
-  if (turns.length) {
-    const text = meetingText(turns);
-    store.addHistory({id: crypto.randomUUID(), createdAt: new Date(current.startedAt).toISOString(), source: current.app ? `Созвон · ${current.app.name}` : 'Созвон',
-      mode: 'natural', text, rawText: text, words: [], duration, elapsed: 0, model: current.settings.model, replacements: [], audioFile: null, app: null,
-      cues: [...current.cues.left, ...current.cues.right].sort((a, b) => a.start - b.start),
-      meeting: {app: current.app?.name ?? null, turns: turns.length, failedChunks: current.failed}});
+  const report = {duration, turns: turns.length, chunks: current.files.length, failed: current.failed,
+    problem: !problem ? undefined : problem === WINDOW_GONE ? 'window-gone' : 'renderer', kind};
+  try {
+    if (turns.length) {
+      const text = meetingText(turns);
+      store.addHistory({id: crypto.randomUUID(), createdAt: new Date(current.startedAt).toISOString(), source: current.app ? `Созвон · ${current.app.name}` : 'Созвон',
+        mode: 'natural', text, rawText: text, words: [], duration, elapsed: 0, model: current.settings.model, replacements: [], audioFile: null, app: null,
+        cues: [...current.cues.left, ...current.cues.right].sort((a, b) => a.start - b.start),
+        meeting: {app: current.app?.name ?? null, turns: turns.length, failedChunks: current.failed}});
+    }
+    // Transcribed chunks are not needed any more (after a crash they come back as recordings to retry).
+    // A chunk the engine could not transcribe stays as an unfinished recording, like a failed dictation.
+    for (const [index, {file, ok}] of current.files.entries()) {
+      if (ok) { if (fs.existsSync(file)) fs.unlinkSync(file); }
+      else store.data.pendingRecordings.push({id: crypto.randomUUID(), audioFile: path.basename(file), source: `Созвон, часть ${index + 1}`, createdAt: new Date().toISOString()});
+    }
+    store.save();
+  } catch (error) {
+    // A full disk, or store.json held by an antivirus or a sync tool: the code and the failing call, never the path.
+    const {code, at} = errorFields(error);
+    journal.write('meeting-finish', {...report, result: 'error', code, at});
+    throw error;
   }
-  // Transcribed chunks are not needed any more (after a crash they come back as recordings to retry).
-  // A chunk the engine could not transcribe stays as an unfinished recording, like a failed dictation.
-  for (const [index, {file, ok}] of current.files.entries()) {
-    if (ok) { if (fs.existsSync(file)) fs.unlinkSync(file); }
-    else store.data.pendingRecordings.push({id: crypto.randomUUID(), audioFile: path.basename(file), source: `Созвон, часть ${index + 1}`, createdAt: new Date().toISOString()});
-  }
-  store.save();
+  journal.write('meeting-finish', {...report, result: turns.length ? 'saved' : 'empty'});
   setBusy(busy); updateTray(); send('snapshot', snapshot());
   const failed = current.failed ? ` Не распознано кусков: ${current.failed}.` : '';
   showWidget(turns.length ? {phase: 'success', message: 'Расшифровка созвона готова', hint: `Она в истории Шёпота.${failed}`}
@@ -225,6 +293,7 @@ function createWidget() {
   if (process.platform === 'darwin') widget.setVisibleOnAllWorkspaces(true, {visibleOnFullScreen: true});
   widget.webContents.setWindowOpenHandler(() => ({action: 'deny'}));
   widget.webContents.on('will-navigate', (event, url) => { if (url !== widgetUrl) event.preventDefault(); });
+  widget.webContents.on('render-process-gone', (event, details) => journal.write('render-gone', {window: 'widget', reason: details?.reason, exitCode: details?.exitCode}));
   widget.on('close', event => { if (!quitting) { event.preventDefault(); widget.hide(); } });
   widget.loadURL(widgetUrl);
   const trustedWidget = event => event.sender === widget.webContents && event.senderFrame?.url === widgetUrl;
@@ -233,10 +302,14 @@ function createWidget() {
     if (!trustedWidget(event)) return;
     if (action === 'stop' && capture?.phase === 'recording') toggleGlobalRecording();
     if (action === 'stop' && meeting && !capture) stopMeeting();
-    if (action === 'cancel' && capture) { hideWidget(); send('cancel-recording'); }
+    if (action === 'cancel' && capture) { journalCancel(); hideWidget(); send('cancel-recording'); }
     if (action === 'hide' && !capture) { if (meeting) meeting.hidden = true; widget.hide(); }
     if (action === 'meeting-record' && offer) {
-      try { startMeeting(offer); } catch (error) { showWidget({phase: 'error', message: error.message, hint: 'Открой Шёпот, чтобы продолжить'}); }
+      try { startMeeting(offer); }
+      catch (error) {
+        journal.write('command-error', {command: 'meeting-record', ...errorFields(error)});
+        showWidget({phase: 'error', message: error.message, hint: 'Открой Шёпот, чтобы продолжить'});
+      }
     }
     if (action === 'meeting-ignore' && offer) {
       store.setSettings({...store.data.settings, meetingIgnore: [...store.data.settings.meetingIgnore, {id: offer.id, name: offer.name}]});
@@ -254,11 +327,12 @@ function createWindow() {
       sandbox: true, backgroundThrottling: false, spellcheck: false}});
   window.webContents.setWindowOpenHandler(() => ({action: 'deny'}));
   window.webContents.on('will-navigate', (event, url) => { if (url !== uiUrl) event.preventDefault(); });
-  window.webContents.on('render-process-gone', () => {
-    ++job; worker?.restart(); busy = false;
+  window.webContents.on('render-process-gone', (event, details) => {
+    journal.write('render-gone', {window: 'main', reason: details?.reason, exitCode: details?.exitCode});
+    ++job; if (worker) restartEngine('window-gone'); busy = false;
     // A call being recorded keeps what reached the engine so far.
-    if (meeting) finishMeeting(meeting, 'Окно записи перезапустилось').catch(() => {});
-    finishCapture({phase: 'error', message: 'Окно записи перезапустилось', hint: 'Повтори диктовку'});
+    if (meeting) finishMeeting(meeting, WINDOW_GONE).catch(() => {});
+    finishCapture({phase: 'error', message: WINDOW_GONE, hint: 'Повтори диктовку'});
     window.reload();
   });
   window.once('ready-to-show', () => { if (!startHidden) window.show(); });
@@ -276,6 +350,11 @@ async function runTranscription(filePath, source, recordingSession = null, retry
   const settings = recordingSession?.settings || structuredClone(store.data.settings);
   const dictionary = recordingSession?.dictionary || structuredClone(store.data.dictionary);
   const snippets = (recordingSession?.snippets || structuredClone(store.data.snippets)).map(({trigger, text}) => ({trigger, text}));
+  // `source` is never journaled: for an imported file it is the user's file name.
+  const report = {result: 'error', model: settings.model, language: settings.language, mode: settings.mode,
+    formattingRequested: settings.formatting, translate: settings.translate};
+  if (recordingSession) Object.assign(report, {trigger: recordingSession.global ? 'hotkey' : 'window', record: recordingSession.record,
+    app: recordingSession.app?.name, appId: recordingSession.app?.id, profile: recordingSession.app?.profile});
   if (recordingSession) {
     recordingSession.phase = 'transcribing';
     if (recordingSession.global) { hideWidget(); showWidget({phase: 'transcribing', message: '', level: 0}, false); }
@@ -286,29 +365,41 @@ async function runTranscription(filePath, source, recordingSession = null, retry
       store.data.pendingRecordings.push({id: crypto.randomUUID(), audioFile, source, createdAt: new Date().toISOString()});
       store.save();
     }
+    const requested = performance.now();
     const result = await worker.request('transcribe', {audioFile, ...settings, dictionary, snippets});
-    if (currentJob !== job) { canceled = task.canceled; return {canceled: true}; }
+    if (currentJob !== job) { canceled = task.canceled; report.result = 'canceled'; return {canceled: true}; }
+    Object.assign(report, resultFields(result, (performance.now() - requested) / 1000));
+    // Only a dictation sends a preload (beginCapture); for a file or a retry it would be a canceled dictation's.
+    if (recordingSession) report.preload = result.preloadElapsed;
     if (result.noSpeech) {
-      completed = true;
+      completed = true; report.result = 'no-speech';
       if (recordingSession) finishCapture({phase: 'error', message: 'Речь не обнаружена', hint: 'Попробуй говорить ближе к микрофону'});
       return {noSpeech: true};
     }
+    // History shows loadElapsed as a part of the recognition time («из них загрузка модели»); the preload ran
+    // while the user spoke, outside that time, so its seconds stay in the journal.
+    const {preloadElapsed, ...recognized} = result;
     const entry = {id: crypto.randomUUID(), createdAt: new Date().toISOString(), source,
-      mode: settings.mode, ...result, audioFile: settings.keepAudio ? path.basename(filePath) : null, app: recordingSession?.app ?? null};
+      mode: settings.mode, ...recognized, audioFile: settings.keepAudio ? path.basename(filePath) : null, app: recordingSession?.app ?? null};
     store.addHistory(entry);
     completed = true;
+    const pasteStarted = performance.now();
     const delivery = await paste.deliver(entry.text, {autoCopy: settings.autoCopy,
       autoPaste: Boolean(recordingSession?.global && settings.autoPaste), target: recordingSession?.target}, () => currentJob === job);
+    Object.assign(report, {result: 'ok', paste: delivery.code, pasteTime: (performance.now() - pasteStarted) / 1000});
     // Kept for diagnosing why auto-paste did not happen on a user's machine.
     entry.delivery = delivery.code; store.save();
     send('snapshot', snapshot());
     if (recordingSession && currentJob === job) finishCapture({phase: delivery.pasted || ['saved', 'copied'].includes(delivery.code) ? 'success' : 'error', message: delivery.message, hint: delivery.pasted ? 'Можно продолжать писать' : 'Текст доступен в истории'});
     return {entry, ...delivery};
   } catch (error) {
-    if (currentJob !== job) { canceled = task.canceled; return {canceled: true}; }
+    if (currentJob !== job) { canceled = task.canceled; report.result = 'canceled'; return {canceled: true}; }
+    Object.assign(report, errorFields(error));
+    if (error && typeof error === 'object') error.journaled = true;
     if (recordingSession) finishCapture({phase: 'error', message: 'Не удалось распознать запись', hint: 'Аудио сохранено. Повтори распознавание в Шёпоте.'});
     throw error;
   } finally {
+    journal.write(retry ? 'retry' : recordingSession ? 'dictation' : 'file', report);
     if (activeTranscription === task) activeTranscription = null;
     if (completed || (canceled && !retry)) forgetRecording(audioFile);
     const retained = [...store.data.history, ...store.data.pendingRecordings].some(e => e.audioFile === audioFile);
@@ -320,13 +411,25 @@ async function runTranscription(filePath, source, recordingSession = null, retry
 
 if (!app.requestSingleInstanceLock()) { app.quit(); }
 else {
+  // The same system version as in «Сообщить о проблеме»: on macOS os.release() is the Darwin kernel's.
+  journal.write('app-start', {version: appVersion, electron: process.versions.electron, os: process.getSystemVersion(), platform: process.platform,
+    arch: process.arch, memoryGb: Math.round(os.totalmem() / 2 ** 30), packaged: app.isPackaged, hidden: startHidden,
+    // A non-ASCII or spaced path to the data folder is a common cause of install-specific failures; the path itself stays out.
+    dataDirNonAscii: /[^\x20-\x7e]/.test(dataDir), dataDirSpace: /\s/.test(dataDir)});
+  // Observers only: Electron keeps its own handling (an uncaught exception shows its error dialog and the app
+  // keeps running; a rejection only warns).
+  process.on('uncaughtExceptionMonitor', (error, origin) => journalMainError(origin, error));
+  process.on('unhandledRejection', reason => {
+    journalMainError('unhandledRejection', reason);
+    console.error('Unhandled rejection:', reason);
+  });
   app.on('second-instance', () => { window?.show(); window?.focus(); });
   app.whenReady().then(() => {
     // The interface is dark only; this also darkens the native title bar and dialogs.
     nativeTheme.themeSource = 'dark';
     fs.mkdirSync(audioDir, {recursive: true});
     try { store = new Store(dataDir); }
-    catch (error) { dialog.showErrorBox('Шёпот', error.message); app.quit(); return; }
+    catch (error) { journalMainError('store', error); dialog.showErrorBox('Шёпот', error.message); app.quit(); return; }
     // Recover interrupted captures, including files saved just before a crash.
     const retained = new Set(store.data.history.map(e => e.audioFile).filter(Boolean));
     const previousPending = JSON.stringify(store.data.pendingRecordings);
@@ -353,13 +456,13 @@ else {
     paste = new PasteService({clipboard, native});
     createWindow();
     worker = new Worker({root, dataDir, resourcesPath: process.resourcesPath, packaged: app.isPackaged});
-    worker.on('ready', status => { engineError = null; send('engine', {status}); });
+    worker.on('ready', status => { engineError = null; journal.write('engine-ready', engineFields(status)); send('engine', {status}); });
     worker.on('progress', event => {
       send('progress', event);
       if (capture?.global && capture.phase === 'transcribing') showWidget({phase: 'transcribing', message: event.message || 'Распознаю на устройстве'}, false);
     });
-    worker.on('offline', error => { engineError = error; send('engine', {error}); });
-    try { worker.start(); } catch (error) { engineError = error.message; }
+    worker.on('offline', (error, info = {}) => { engineError = error; journal.write('engine-offline', info); send('engine', {error}); });
+    try { startEngine(); } catch (error) { engineError = error.message; journal.write('engine-offline', {cause: 'missing'}); }
 
     // NativeImage supports PNG reliably on all desktop targets; generated asset is bundled.
     const trayPath = path.join(root, 'renderer', 'tray.png');
@@ -379,10 +482,18 @@ else {
       trusted(event);
       if (!capture || value?.id !== capture.id) return;
       if (['error', 'canceled'].includes(value.phase)) {
+        // A failure comes with its type (a denied or busy microphone, a recorder error, an empty recording); a cancel
+        // by the user comes without one. The message stays out.
+        if (value.phase === 'canceled' && value.kind === undefined) journalCancel();
+        else journal.write('capture-error', {phase: capture.phase, kind: value.kind});
         finishCapture({phase: value.phase, message: value.phase === 'canceled' ? 'Запись отменена' : 'Микрофон недоступен', hint: String(value.message || '').slice(0, 240)});
       } else if ((value.phase === 'recording' && ['requesting', 'recording'].includes(capture.phase)) ||
                  (value.phase === 'stopping' && ['recording', 'stopping'].includes(capture.phase))) {
+        // A microphone that went away stops the recording; what was recorded is still recognized.
+        if (value.kind !== undefined) journal.write('capture-error', {phase: capture.phase, kind: value.kind});
+        if (value.phase === 'stopping') capture.stoppedFrom ??= capture.phase;
         capture.phase = value.phase;
+        capture.record = Math.max(0, Math.min(900, Number(value.elapsed) || 0));
         if (value.phase === 'stopping') { releaseEscape(); hideWidget(); }
         if (capture.global) showWidget({phase: value.phase, message: '', elapsed: Math.max(0, Math.min(900, Number(value.elapsed) || 0)), level: Math.max(0, Math.min(1, Number(value.level) || 0))}, value.phase === 'recording');
         updateTray(value.phase === 'recording' ? 'Шёпот — идёт запись. Escape: отмена' : 'Шёпот — распознаю запись');
@@ -400,7 +511,7 @@ else {
     ipc('profiles', value => store.setProfiles(value));
     ipc('download', async id => {
       if (busy || capture) throw new Error('Дождись завершения текущей операции');
-      const currentJob = ++job;
+      const currentJob = ++job, started = Date.now(), report = {model: id, result: 'error'};
       setBusy(true); downloading = true;
       try {
         // 'formatter' is the optional layout model (llama.cpp runtime + Qwen), 'gpu' the NVIDIA libraries;
@@ -408,14 +519,22 @@ else {
         const status = id === 'formatter' ? await worker.request('download-formatter')
           : id === 'gpu' ? await worker.request('download-gpu')
           : await worker.request('download', {model: modelId(id)});
-        worker.status = status; send('engine', {status}); return status;
-      } finally { downloading = false; if (currentJob === job) setBusy(false); }
+        worker.status = status; send('engine', {status}); report.result = 'ok'; return status;
+      } catch (error) {
+        if (currentJob !== job) report.result = 'canceled'; else Object.assign(report, errorFields(error));
+        if (error && typeof error === 'object') error.journaled = true;
+        throw error;
+      } finally {
+        journal.write('download', {...report, elapsed: (Date.now() - started) / 1000});
+        downloading = false; if (currentJob === job) setBusy(false);
+      }
     });
     ipc('cancel', () => {
+      journalCancel();
       if (activeTranscription) activeTranscription.canceled = true;
       ++job;
       // A download can only be interrupted by killing the engine; transcription stops cooperatively.
-      if (downloading) { worker.restart(); send('engine', {status: null}); }
+      if (downloading) { restartEngine('download-canceled'); send('engine', {status: null}); }
       else if (busy) worker.cancel();
       busy = false; finishCapture({phase: 'canceled', message: 'Операция отменена', hint: 'Микрофон выключен'});
       return true;
@@ -502,23 +621,43 @@ else {
       if (!Number.isFinite(offset) || offset < 0 || offset > 24 * 3600) throw new Error('Недопустимое время куска');
       const file = path.join(audioDir, crypto.randomUUID() + '.webm');
       fs.writeFileSync(file, audio, {mode: 0o600});
-      const current = meeting, record = {file, ok: false};
+      const current = meeting, record = {file, ok: false}, index = current.files.length;
       current.files.push(record);
       // One engine request at a time, in recording order, while the call goes on.
-      meetingQueue = meetingQueue.then(async () => { record.ok = await transcribeMeetingChunk(current, file, offset); if (!record.ok) current.failed++; });
+      meetingQueue = meetingQueue.then(async () => { record.ok = await transcribeMeetingChunk(current, file, offset, index); if (!record.ok) current.failed++; });
       return true;
     });
     ipc('meeting-done', value => {
       if (!meeting || value?.id !== meeting.id) return false;
       const current = meeting;
       current.stopping = true; clearTimeout(current.endTimer);
-      finishMeeting(current, value.error ? String(value.error).slice(0, 200) : '').catch(error => console.error('Созвон не сохранён:', error));
+      finishMeeting(current, value.error ? String(value.error).slice(0, 200) : '', value.kind).catch(error => console.error('Созвон не сохранён:', error));
       return true;
     });
     ipc('copy-summary', async id => {
       const entry = entryFor(id);
       await clipboard.writeText(clipboardText(summaryPrompt(entry.text, entry.meeting?.app)));
       return true;
+    });
+    // The journal and «Сообщить о проблеме» (PRD 6.27). The window passes nothing: main knows the folder and builds the link.
+    ipc('journal-open', async () => {
+      try { fs.mkdirSync(journal.dir, {recursive: true}); } catch (error) { throw fileError('Не удалось открыть папку журнала', error); }
+      if (await shell.openPath(journal.dir)) throw new Error('Не удалось открыть папку журнала');
+      return true;
+    });
+    ipc('journal-save', async () => {
+      const name = `Шёпот-журнал-${timestamp(new Date()).slice(0, 10)}.txt`;
+      const result = await dialog.showSaveDialog(window, {defaultPath: path.join(app.getPath('downloads'), name), filters: [{name: 'Текст', extensions: ['txt']}]});
+      if (result.canceled) return false;
+      let text;
+      try { text = journal.read(); } catch (error) { throw fileError('Не удалось сохранить полный журнал. Попробуйте позже', error); }
+      try { fs.writeFileSync(result.filePath, text, 'utf8'); } catch (error) { throw fileError('Не удалось сохранить журнал. Выбери другую папку', error); }
+      return true;
+    });
+    ipc('report-problem', async () => {
+      const link = issueUrl({version: appVersion, system: systemName(process.platform, process.getSystemVersion()), arch: process.arch});
+      try { await shell.openExternal(link); return true; }
+      catch { clipboard.writeText(link); return false; }
     });
     if (MEETINGS) {
       // System audio for a call being recorded, and only for the main window: Chromium needs a screen source
@@ -538,9 +677,10 @@ else {
       });
       micWatcher.start();
     }
+    journal.write('app-ready', {hotkey: hotkeyRegistered, native: nativeAvailable, meetings: MEETINGS});
   });
 }
 app.on('activate', () => { if (window) window.show(); });
 app.on('before-quit', () => { quitting = true; });
-app.on('will-quit', () => { clearTimeout(widgetTimer); micWatcher?.stop(); globalShortcut.unregisterAll(); worker?.stop(); if (capture?.target) paste?.release(capture.target); });
+app.on('will-quit', () => { journal.write('quit', {uptime: (Date.now() - launchedAt) / 1000}); clearTimeout(widgetTimer); micWatcher?.stop(); globalShortcut.unregisterAll(); worker?.stop(); if (capture?.target) paste?.release(capture.target); });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

@@ -90,12 +90,25 @@ class Canceled(Exception):
     pass
 
 
+class UserError(ValueError):
+    """A refusal the engine words itself, for the user. Library errors can quote paths, so only these
+    messages are marked expected and may reach the app's diagnostic journal."""
+
+
 def emit(value):
     with _output_lock:
         try:
             print(json.dumps(value, ensure_ascii=False, allow_nan=False), flush=True)
         except OSError:
             os._exit(0)  # The app is gone and nobody reads the answers any more.
+
+
+def error_reply(request_id, error):
+    reply = {"id": request_id, "error": str(error) or type(error).__name__, "kind": type(error).__name__,
+             "expected": isinstance(error, (UserError, Canceled))}
+    if isinstance(error, Canceled):
+        reply["canceled"] = True
+    return reply
 
 
 def finite(value):
@@ -122,6 +135,8 @@ class Engine:
         self.idle_unload_seconds = LOW_MEMORY_IDLE_UNLOAD_SECONDS if memory.is_low_memory() else IDLE_UNLOAD_SECONDS
         # Peak RAM of the last model load; it counts toward the dictation the model was loaded for.
         self.load_peak = 0
+        # Seconds the last hotkey preload spent loading; reported once, with the next transcription.
+        self.preload_elapsed = 0.0
         self.formatter_dir = self.data_dir / "formatter"
         self.formatter = None
         self.gpu = gpu_runtime.Component(self.data_dir / "gpu")
@@ -131,17 +146,17 @@ class Engine:
     def audio_path(self, filename):
         if not isinstance(filename, str) or not re.fullmatch(
                 r"[a-fA-F0-9-]+\.(?:wav|webm|mp3|m4a|ogg|flac|mp4)", filename):
-            raise ValueError("Недопустимое имя аудиозаписи.")
+            raise UserError("Недопустимое имя аудиозаписи.")
         candidate = (self.audio_dir / filename).resolve()
         if not candidate.is_relative_to(self.audio_dir):
-            raise ValueError("Аудиофайл должен находиться в папке записей приложения.")
+            raise UserError("Аудиофайл должен находиться в папке записей приложения.")
         if not candidate.is_file():
-            raise ValueError("Аудиофайл не найден.")
+            raise UserError("Аудиофайл не найден.")
         return candidate
 
     def model_path(self, key):
         if key not in MODELS:
-            raise ValueError("Неизвестная модель")
+            raise UserError("Неизвестная модель")
         return self.models_dir / key
 
     def is_installed(self, key):
@@ -158,7 +173,7 @@ class Engine:
     def status(self):
         return {"models": [{"id": key, "name": value["name"], "size": value["size"], "engine": value["engine"],
                             "languages": value["languages"], "translates": bool(value.get("translates")),
-                            "installed": self.is_installed(key)}
+                            "installed": self.is_installed(key), "revision": value["revision"]}
                            for key, value in MODELS.items()],
                 "device": "cpu", "computeType": "int8", "loadedModel": self.loaded_key,
                 "threads": THREADS, "formatter": self.formatter_status(), "gpu": self.gpu_status()}
@@ -232,7 +247,7 @@ class Engine:
     def download_formatter(self, request_id=None):
         spec = self.formatter_runtime_spec()
         if not spec:
-            raise ValueError("Умное оформление пока доступно только на Windows x64.")
+            raise UserError("Умное оформление пока доступно только на Windows x64.")
         if self.formatter_installed():
             return self.status()
         runtime, model, marker = self.formatter_paths()
@@ -252,7 +267,7 @@ class Engine:
                           "message": "Скачиваем движок оформления…", "completed": done, "total": total, "unit": "B"})
         if digest.hexdigest() != spec["sha256"]:
             archive.unlink(missing_ok=True)
-            raise ValueError("Архив движка оформления не прошёл проверку. Попробуй скачать ещё раз.")
+            raise UserError("Архив движка оформления не прошёл проверку. Попробуй скачать ещё раз.")
         staging = self.formatter_dir / "runtime.part"
         if staging.exists():
             import shutil
@@ -276,7 +291,7 @@ class Engine:
               "message": "Проверяем модель оформления…"})
         if file_sha256(model) != FORMATTER["model"]["sha256"]:
             model.unlink(missing_ok=True)
-            raise ValueError("Модель оформления не прошла проверку. Попробуй скачать ещё раз.")
+            raise UserError("Модель оформления не прошла проверку. Попробуй скачать ещё раз.")
         marker.write_text(json.dumps({"runtime": spec["sha256"], "model": FORMATTER["model"]["sha256"]}), "utf-8")
         # The GPU driver compiles shaders on first use (~20 s once per executable); do it now, not on a dictation.
         emit({"event": "progress", "id": request_id, "stage": "download", "model": "formatter",
@@ -319,31 +334,31 @@ class Engine:
     def transcribe(self, request):
         key = request.get("model", "turbo")
         if not self.is_installed(key):
-            raise ValueError("Сначала скачай выбранную модель в разделе «Модели».")
+            raise UserError("Сначала скачай выбранную модель в разделе «Модели».")
         audio_path = self.audio_path(request.get("audioFile"))
         language = request.get("language", "ru")
         if language not in ("ru", "en", "auto"):
-            raise ValueError("Неизвестный язык")
+            raise UserError("Неизвестный язык")
         if language not in MODELS[key]["languages"]:
-            raise ValueError(f"{MODELS[key]['name']} распознаёт только русский. "
+            raise UserError(f"{MODELS[key]['name']} распознаёт только русский. "
                              "Для других языков выбери Whisper в разделе «Модели».")
         entries = request.get("dictionary", [])
         snippets = request.get("snippets") or []
         if not isinstance(snippets, list) or len(snippets) > 50 or not all(
                 isinstance(s, dict) and isinstance(s.get("trigger"), str) and isinstance(s.get("text"), str)
                 and len(s["trigger"]) <= 60 and len(s["text"]) <= 4000 for s in snippets):
-            raise ValueError("Некорректные сниппеты")
+            raise UserError("Некорректные сниппеты")
         request = {**request, "snippets": snippets}
         # Meeting recordings are stereo: the microphone on the left, the other side of the call on the right.
         if request.get("channel") not in (None, "left", "right"):
-            raise ValueError("Неизвестный канал записи")
+            raise UserError("Неизвестный канал записи")
         if request.get("translate") and not MODELS[key].get("translates"):
-            raise ValueError("Перевод на английский работает с моделями Whisper small и large-v3.")
+            raise UserError("Перевод на английский работает с моделями Whisper small и large-v3.")
         mode = request.get("mode", "natural")
         if mode not in ("natural", "minimal", "raw"):
-            raise ValueError("Неизвестный режим текста")
+            raise UserError("Неизвестный режим текста")
         if request.get("formatting", "rules") not in ("rules", "off", "llm"):
-            raise ValueError("Неизвестный режим оформления")
+            raise UserError("Неизвестный режим оформления")
         request_id = request.get("id")
         with self.model_lock:
             self.cancel_idle_unload()
@@ -353,6 +368,9 @@ class Engine:
                 # Shown in history: what this dictation cost in RAM, including a load at the hotkey (preload).
                 result["memoryPeak"] = max(sampler.peak, self.load_peak) or None
                 self.load_peak = 0
+                # For the app's journal only: history's loadElapsed is the part of `elapsed` spent loading.
+                result["preloadElapsed"] = finite(self.preload_elapsed)
+                self.preload_elapsed = 0.0
                 return result
             finally:
                 self.schedule_idle_unload()
@@ -397,11 +415,14 @@ class Engine:
         """Warm the models while the user is still speaking."""
         with self.model_lock:
             self.cancel_idle_unload()
+            started = time.monotonic()
             try:
                 self.load(key)
                 if formatting == "llm" and self.formatter_installed():
                     self.load_formatter()
             finally:
+                # A short dictation can wait for this; a preload that finds the models loaded reports about 0.
+                self.preload_elapsed = time.monotonic() - started
                 self.schedule_idle_unload()
 
     def shutdown(self, through):
@@ -475,15 +496,15 @@ class Engine:
             audio = decode_audio(str(audio_path), sampling_rate=16000)
         duration = len(audio) / 16000
         if not len(audio):
-            raise ValueError("Аудиофайл пуст.")
+            raise UserError("Аудиофайл пуст.")
         if duration > 30 * 60:
-            raise ValueError("Пока поддерживаются записи до 30 минут.")
+            raise UserError("Пока поддерживаются записи до 30 минут.")
         if not np.isfinite(audio).all():
-            raise ValueError("Аудиофайл содержит повреждённые данные.")
+            raise UserError("Аудиофайл содержит повреждённые данные.")
         if float(np.max(np.abs(audio))) < 0.0001:
             return {"text": "", "rawText": "", "words": [], "segments": [], "replacements": [],
                     "duration": duration, "elapsed": finite(time.monotonic() - started),
-                    "language": language, "model": key, "noSpeech": True}
+                    "language": language, "model": key, "noSpeech": True, "loadElapsed": finite(load_elapsed)}
         names = [e["word"] for e in entries]
         if MODELS[key]["engine"] == "gigaam":
             parsed = self._gigaam_segments(audio, duration, request_id)
@@ -705,14 +726,14 @@ def main():
             elif command == "transcribe":
                 result = engine.transcribe(request)
             else:
-                raise ValueError("Неизвестная команда")
+                raise UserError("Неизвестная команда")
             emit({"id": request.get("id"), "result": result})
         except Canceled as error:
-            emit({"id": request.get("id"), "error": str(error), "canceled": True})
+            emit(error_reply(request.get("id"), error))
         except Exception as error:
             traceback.print_exc(file=sys.stderr)
             if request.get("id") is not None:
-                emit({"id": request.get("id"), "error": str(error) or type(error).__name__})
+                emit(error_reply(request.get("id"), error))
 
 
 if __name__ == "__main__":

@@ -1,14 +1,25 @@
 // Isolated UI harness: production IPC/controller, fake ASR, actual OS input backend.
 require('./offscreen.cjs');
-const {globalShortcut} = require('electron');
+const {globalShortcut, dialog} = require('electron');
 // Tests pick the machine size: warnings for heavy models depend on it.
 if (process.env.SHOPOT_TEST_TOTAL_MEMORY) require('node:os').totalmem = () => Number(process.env.SHOPOT_TEST_TOTAL_MEMORY);
+// A failed start shows a native error box, which no test may put on the desktop: a test of one sets this.
+if (process.env.SHOPOT_TEST_NO_ERROR_BOX === '1') dialog.showErrorBox = () => {};
 const {Worker} = require('../../electron/worker.cjs');
-const status = {formatter: {name: 'Qwen3-4B', size: '2,4 ГБ', supported: true, installed: false}, models: [{id: 'gigaam', installed: true, languages: ['ru']}, {id: 'turbo', installed: true, languages: ['ru', 'en', 'auto']}, {id: 'small', installed: true, languages: ['ru', 'en', 'auto'], translates: true}], device: 'cpu', computeType: 'int8'};
+const status = {formatter: {name: 'Qwen3-4B', size: '2,4 ГБ', supported: true, installed: false}, models: [{id: 'gigaam', installed: true, languages: ['ru'], revision: '322c3b294926a5c8'}, {id: 'turbo', installed: true, languages: ['ru', 'en', 'auto']}, {id: 'small', installed: true, languages: ['ru', 'en', 'auto'], translates: true}], device: 'cpu', computeType: 'int8'};
 globalThis.__test = {requests: [], notifications: [], nativeCalls: []};
 // Tests pick the video card; by default there is no NVIDIA card.
 status.gpu = {device: null, enoughMemory: false, minMemoryGb: 4, installed: false, size: '1,3 ГБ', installedSize: '1,8 ГБ',
   ...(process.env.SHOPOT_TEST_GPU ? JSON.parse(process.env.SHOPOT_TEST_GPU) : {})};
+// Simulate Windows denying a pending journal rename before the app's first write.
+if (process.env.SHOPOT_TEST_JOURNAL_LOCK === '1') {
+  const fs = require('node:fs'), rename = fs.renameSync;
+  fs.renameSync = (from, to) => {
+    if (from.endsWith('shopot.log.rotating')) throw Object.assign(new Error('locked'), {code: 'EBUSY'});
+    return rename(from, to);
+  };
+  globalThis.__test.unlockJournal = () => { fs.renameSync = rename; };
+}
 globalThis.__test.status = status;
 const nativeModule = require('../../electron/native-input.cjs');
 const createNative = nativeModule.createNativeBackend;
@@ -44,6 +55,8 @@ Worker.prototype.request = function (command, payload) {
     globalThis.__test.resolve = value => resolve(value);
     globalThis.__test.finish = () => resolve({text: 'Видосы для GitHub готовы.', rawText: 'Видосы для GitHub готовы.', duration: 2, elapsed: .1, model: 'turbo', words: []});
     globalThis.__test.fail = () => reject(new Error('Тестовая ошибка распознавания'));
+    // An engine error as worker.cjs builds it from the reply: its type and whether the engine worded it itself.
+    globalThis.__test.failWith = ({message, kind, expected}) => reject(Object.assign(new Error(message), {engine: true, kind, expected}));
     globalThis.__test.progress = () => this.emit('progress', {stage: 'transcribe', fraction: .5, message: 'Тестовый прогресс'});
     globalThis.__test.emitProgress = event => this.emit('progress', event);
     this.testReject = reject;

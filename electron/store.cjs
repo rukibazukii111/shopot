@@ -8,6 +8,8 @@ const DEFAULT_SETTINGS = {
   voiceCommands: true, meetingOffers: true, meetingIgnore: [], translate: false, useGpu: true,
 };
 const MODEL_IDS = ['gigaam', 'small', 'turbo', 'large-v3'];
+const LANGUAGES = ['ru', 'en', 'auto'];
+const MODES = ['natural', 'minimal', 'raw'];
 const RUSSIAN_ONLY = ['gigaam'];
 // Whisper models that can translate speech into English (turbo cannot).
 const TRANSLATING = ['small', 'large-v3'];
@@ -18,7 +20,7 @@ const INITIAL_DICTIONARY = ['Whisper', 'GitHub', 'iOS', 'iPhone', 'Reels', 'TikT
 function validateSettings(input) {
   if (!input || typeof input !== 'object') throw new Error('Некорректные настройки');
   const result = {...DEFAULT_SETTINGS};
-  for (const [key, values] of Object.entries({model: MODEL_IDS, language: ['ru', 'en', 'auto'], mode: ['natural', 'minimal', 'raw'], formatting: FORMATTING})) {
+  for (const [key, values] of Object.entries({model: MODEL_IDS, language: LANGUAGES, mode: MODES, formatting: FORMATTING})) {
     if (!values.includes(input[key] ?? result[key])) throw new Error('Некорректное значение: ' + key);
     result[key] = input[key] ?? result[key];
   }
@@ -87,7 +89,7 @@ function validateProfiles(input) {
     if (apps.has(app)) throw new Error('Это приложение уже настроено');
     apps.add(app);
     const mode = entry.mode ?? null, formatting = entry.formatting ?? null;
-    if (mode !== null && !['natural', 'minimal', 'raw'].includes(mode)) throw new Error('Некорректный режим текста');
+    if (mode !== null && !MODES.includes(mode)) throw new Error('Некорректный режим текста');
     if (formatting !== null && !FORMATTING.includes(formatting)) throw new Error('Некорректное оформление');
     if ('dropFinalPeriod' in entry && typeof entry.dropFinalPeriod !== 'boolean') throw new Error('Некорректное значение: dropFinalPeriod');
     return {app, name: String(entry.name ?? '').trim().slice(0, 80) || app, mode, formatting, dropFinalPeriod: Boolean(entry.dropFinalPeriod)};
@@ -133,4 +135,4 @@ class Store {
   addHistory(entry) { this.data.history.unshift(entry); this.save(); return entry; }
 }
 
-module.exports = {Store, validateSettings, validateDictionary, validateSnippets, validateProfiles, settingsFor, DEFAULT_SETTINGS, MODEL_IDS};
+module.exports = {Store, validateSettings, validateDictionary, validateSnippets, validateProfiles, settingsFor, DEFAULT_SETTINGS, MODEL_IDS, LANGUAGES, MODES, FORMATTING};

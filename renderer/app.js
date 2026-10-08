@@ -299,13 +299,15 @@ async function startRecording(session) {
     if (operation !== state.operation) { acquired.getTracks().forEach(track => track.stop()); return; }
     stream = acquired;
     const chunks = [];
+    // A recording that ends by failure, not by the user, tells main its type (`kind`) for the journal.
+    let failure;
     const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
     recorder = new MediaRecorder(stream, {mimeType: mime, audioBitsPerSecond: 96000});
     recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
     recorder.onstop = async () => {
       releaseMicrophone();
       if (recordingCanceled) {
-        api.captureUpdate({id: session.id, phase: 'canceled'}); captureId = null;
+        api.captureUpdate({id: session.id, phase: 'canceled', kind: failure}); captureId = null;
         state.phase = 'idle'; refreshControls(); notify('Запись отменена', 'muted'); return;
       }
       state.phase = 'transcribing'; refreshControls();
@@ -313,7 +315,7 @@ async function startRecording(session) {
       try {
         const audio = new Uint8Array(await new Blob(chunks, {type: mime}).arrayBuffer());
         if (!audio.length) {
-          api.captureUpdate({id: session.id, phase: 'canceled'});
+          api.captureUpdate({id: session.id, phase: 'canceled', kind: 'EmptyRecording'});
           state.phase = 'idle'; notify('Запись слишком короткая. Попробуй ещё раз.', 'muted'); return;
         }
         const result = await api.transcribe(session.id, audio);
@@ -321,10 +323,10 @@ async function startRecording(session) {
       } catch (error) { if (operation === state.operation) { api.captureUpdate({id: session.id, phase: 'error', message: error.message}); showError(error); } }
       finally { if (operation === state.operation) { captureId = null; state.phase = 'idle'; refreshControls(); } }
     };
-    recorder.onerror = event => { showError(event.error || new Error('Запись прервалась')); recordingCanceled = true; if (recorder.state !== 'inactive') recorder.stop(); else { releaseMicrophone(); api.captureUpdate({id: session.id, phase: 'error'}); captureId = null; state.phase = 'idle'; refreshControls(); } };
+    recorder.onerror = event => { failure = event.error?.name || 'RecorderError'; showError(event.error || new Error('Запись прервалась')); recordingCanceled = true; if (recorder.state !== 'inactive') recorder.stop(); else { releaseMicrophone(); api.captureUpdate({id: session.id, phase: 'error', kind: failure}); captureId = null; state.phase = 'idle'; refreshControls(); } };
     stream.getAudioTracks().forEach(track => track.onended = () => {
       showError(new Error('Микрофон отключён. Запись остановлена.'));
-      if (recorder?.state === 'recording') stopRecording();
+      if (recorder?.state === 'recording') stopRecording(false, 'TrackEnded');
     });
     audioContext = new AudioContext(); analyser = audioContext.createAnalyser(); analyser.fftSize = 256;
     audioContext.createMediaStreamSource(stream).connect(analyser);
@@ -343,14 +345,15 @@ async function startRecording(session) {
     releaseMicrophone(); state.phase = 'idle'; refreshControls();
     const messages = {NotAllowedError: 'Нет доступа к микрофону. Разреши доступ для Шёпота в настройках системы и попробуй снова.', NotFoundError: 'Микрофон не найден. Подключи его и попробуй снова.', NotReadableError: 'Микрофон занят или недоступен. Проверь другое приложение и повтори запись.', OverconstrainedError: 'Выбранный микрофон недоступен. Выбери системный микрофон в настройках.'};
     const message = messages[error.name] || error.message;
-    if (session) api.captureUpdate({id: session.id, phase: 'error', message});
+    if (session) api.captureUpdate({id: session.id, phase: 'error', message, kind: error.name});
     captureId = null; showError(new Error(message));
   }
 }
-function stopRecording(cancel = false) {
+// `kind` names a failure that stopped the recording (the microphone went away); a stop by the user has none.
+function stopRecording(cancel = false, kind) {
   if (state.phase !== 'recording' || !recorder || recorder.state === 'inactive') return;
   recordingCanceled = cancel; state.phase = 'stopping'; clearInterval(recordingTimer);
-  api.captureUpdate({id: captureId, phase: 'stopping', elapsed: (Date.now() - startedAt) / 1000});
+  api.captureUpdate({id: captureId, phase: 'stopping', elapsed: (Date.now() - startedAt) / 1000, kind});
   refreshControls(); recorder.stop();
 }
 function toggleRecording(session) { if (state.phase === 'recording') stopRecording(); else if (state.phase === 'requesting') guard(cancelOperation); else if (state.phase === 'idle') guard(() => startRecording(session)); }
@@ -404,7 +407,7 @@ async function recordMeeting({id, chunkMs}) {
     if (session.finishing) await finishMeetingRecording();
   } catch (error) {
     releaseMeeting(session); if (meetingSession === session) meetingSession = null;
-    await api.meetingDone(id, error.message || 'Не удалось начать запись');
+    await api.meetingDone(id, error.message || 'Не удалось начать запись', error.name);
   }
 }
 function meetingChunk(session) {
@@ -896,6 +899,12 @@ $('#save-context').addEventListener('click', () => guard(async () => {
   button.classList.add('done'); button.innerHTML = `${icon('check')}<span>Сохранено</span>`;
   clearTimeout(button.doneTimer);
   button.doneTimer = setTimeout(() => { button.classList.remove('done'); button.textContent = 'Сохранить контекст'; }, 1800);
+}));
+$('#journal-open').addEventListener('click', () => guard(() => api.openJournal()));
+$('#journal-save').addEventListener('click', () => guard(async () => { if (await api.saveJournal()) toast('Журнал сохранён'); }));
+$('#report-problem').addEventListener('click', () => guard(async () => {
+  if (await api.reportProblem()) toast('Открыл страницу в браузере');
+  else toast('Не удалось открыть браузер. Ссылка скопирована, вставь её в адресную строку', 'muted');
 }));
 $('#history-search').addEventListener('input', renderHistory);
 function newDictionaryItem() { if (state.dictionaryTab === 'snippets') openSnippet(null, true); else openWord(null, true); }
