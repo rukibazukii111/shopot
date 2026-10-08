@@ -5,6 +5,8 @@ const {timestamp} = require('../../electron/log.cjs');
 const root = path.resolve(__dirname, '../..');
 const env = {...process.env}; delete env.ELECTRON_RUN_AS_NODE;
 const DAY = 864e5;
+// How long a seeded entry has left before its period ends: room for a slow start and first render on CI.
+const MARGIN = 20e3;
 
 // A data folder as an earlier run left it: history of the given ages, pending recordings and a journal line.
 function seed(name, {days, history, pending = [], logAge}) {
@@ -91,15 +93,17 @@ test('history past its period goes with its audio at start, a shorter period ask
 });
 
 test('a running app removes history once it passes its period, without a restart', async () => {
-  const data = seed('retention-daily', {days: 7, history: [{id: 'edge', age: 7 * DAY - 3000, text: 'Запись на краю срока'}]});
+  const data = seed('retention-daily', {days: 7, history: [{id: 'edge', age: 7 * DAY - MARGIN, text: 'Запись на краю срока'}]});
   const app = await electron.launch({args: [path.join(root, 'tests/fixtures/harness.cjs')], env: {...env, SHOPOT_DATA_DIR: data.dataDir, SHOPOT_HISTORY_PRUNE_MS: '500'}});
   try {
     const page = await app.firstWindow();
     await page.locator('[data-page="history"]').click();
     await expect(page.locator('#history-list .history-row')).toHaveCount(1);
-    await expect(page.locator('#history-list .history-row')).toHaveCount(0, {timeout: 10000});
+    await expect(page.locator('#history-list .history-row')).toHaveCount(0, {timeout: MARGIN + 10000});
     expect(data.saved().history).toEqual([]);
+    // The timer removed it, not the start.
     expect(data.journal()).toMatch(/ history-prune trigger=daily days=7 removed=1$/m);
+    expect(data.journal()).not.toContain('trigger=start');
   } finally { await app.close(); }
 });
 
@@ -171,19 +175,20 @@ test('an entry whose audio cannot be deleted stays until a later run; audio anot
 
 test('history past its period goes when the computer wakes, before the daily timer', async () => {
   const seeded = Date.now();
-  const data = seed('retention-resume', {days: 7, history: [{id: 'edge', age: 7 * DAY - 3000, text: 'Запись на краю срока'}]});
+  const data = seed('retention-resume', {days: 7, history: [{id: 'edge', age: 7 * DAY - MARGIN, text: 'Запись на краю срока'}]});
   const app = await electron.launch({args: [path.join(root, 'tests/fixtures/harness.cjs')], env: {...env, SHOPOT_DATA_DIR: data.dataDir}});
   try {
     const page = await app.firstWindow();
     await page.locator('[data-page="history"]').click();
     await expect(page.locator('#history-list .history-row')).toHaveCount(1);
     // The entry passes its period while the computer sleeps; the default timer is a day away.
-    await page.waitForTimeout(Math.max(0, seeded + 3500 - Date.now()));
+    await page.waitForTimeout(Math.max(0, seeded + MARGIN + 500 - Date.now()));
     expect(data.saved().history.map(e => e.id)).toEqual(['edge']);
     await app.evaluate(({powerMonitor}) => powerMonitor.emit('resume'));
     await expect(page.locator('#history-list .history-row')).toHaveCount(0);
     expect(data.saved().history).toEqual([]);
     expect(data.journal()).toMatch(/ history-prune trigger=daily days=7 removed=1$/m);
+    expect(data.journal()).not.toContain('trigger=start');
   } finally { await app.close(); }
 });
 

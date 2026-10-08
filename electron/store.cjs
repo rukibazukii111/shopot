@@ -140,10 +140,17 @@ class Store {
     fs.writeFileSync(temp, JSON.stringify(this.data, null, 2), {mode: 0o600});
     fs.renameSync(temp, this.file);
   }
-  setSettings(settings) { this.data.settings = validateSettings(settings); this.save(); return this.data.settings; }
-  setDictionary(entries) { this.data.dictionary = validateDictionary(entries); this.save(); return this.data.dictionary; }
-  setSnippets(entries) { this.data.snippets = validateSnippets(entries); this.save(); return this.data.snippets; }
-  setProfiles(entries) { this.data.profiles = validateProfiles(entries); this.save(); return this.data.profiles; }
+  // A failed save keeps the stored value in memory too: a period that was not saved must not prune history later.
+  replace(key, value) {
+    const stored = this.data[key];
+    this.data[key] = value;
+    try { this.save(); } catch (error) { this.data[key] = stored; throw error; }
+    return value;
+  }
+  setSettings(settings) { return this.replace('settings', validateSettings(settings)); }
+  setDictionary(entries) { return this.replace('dictionary', validateDictionary(entries)); }
+  setSnippets(entries) { return this.replace('snippets', validateSnippets(entries)); }
+  setProfiles(entries) { return this.replace('profiles', validateProfiles(entries)); }
   addHistory(entry) { this.data.history.unshift(entry); this.save(); return entry; }
   // Removes the entries past the retention period and returns them. `removeAudio(entry)` deletes an entry's audio first
   // and says whether it is gone: an entry whose audio stays waits for the next run, so its audio never outlives it.

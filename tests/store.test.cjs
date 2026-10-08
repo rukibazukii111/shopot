@@ -154,3 +154,26 @@ test('a failed save leaves the history as it is stored', () => {
     assert.deepEqual(store.data.history.map(e => e.id), ['fresh', 'old']);
   } finally { fs.rmSync(root, {recursive: true, force: true}); }
 });
+test('a failed save keeps the stored settings, dictionary, snippets and profiles, so a later prune uses the stored period', () => {
+  const now = Date.parse('2026-10-08T12:00:00Z'), day = 864e5;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shopot-settings-save-'));
+  try {
+    const store = new Store(root);
+    store.setSettings({...store.data.settings, historyDays: 30});
+    store.data.history = [{id: 'mid', createdAt: new Date(now - 10 * day).toISOString()}];
+    store.save();
+    const before = structuredClone({settings: store.data.settings, dictionary: store.data.dictionary, snippets: store.data.snippets, profiles: store.data.profiles});
+    // A folder where store.json goes: the rename fails, as when another program holds the file.
+    store.file = path.join(root, 'held');
+    fs.mkdirSync(store.file);
+    assert.throws(() => store.setSettings({...store.data.settings, historyDays: 7}));
+    assert.throws(() => store.setDictionary([{word: 'Шёпот', aliases: []}]));
+    assert.throws(() => store.setSnippets([{trigger: 'моя почта', text: 'ivan@example.com'}]));
+    assert.throws(() => store.setProfiles([{app: 'code.exe'}]));
+    assert.deepEqual({settings: store.data.settings, dictionary: store.data.dictionary, snippets: store.data.snippets, profiles: store.data.profiles}, before);
+    // Once the file is free, the next run keeps the stored 30 days and removes nothing.
+    store.file = path.join(root, 'store.json');
+    assert.deepEqual(store.pruneHistory(store.data.settings.historyDays, () => true, now), []);
+    assert.deepEqual(new Store(root).data.history.map(e => e.id), ['mid']);
+  } finally { fs.rmSync(root, {recursive: true, force: true}); }
+});
