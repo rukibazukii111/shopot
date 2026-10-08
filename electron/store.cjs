@@ -145,6 +145,11 @@ class Store {
   setSnippets(entries) { this.data.snippets = validateSnippets(entries); this.save(); return this.data.snippets; }
   setProfiles(entries) { this.data.profiles = validateProfiles(entries); this.save(); return this.data.profiles; }
   addHistory(entry) { this.data.history.unshift(entry); this.save(); return entry; }
+  // A re-recognition sits right above the entry it came from (PRD 6.20); with that entry gone, on top.
+  insertHistoryBefore(id, entry) {
+    const index = this.data.history.findIndex(e => e.id === id);
+    this.data.history.splice(Math.max(0, index), 0, entry); this.save(); return entry;
+  }
   // Removes the entries past the retention period and returns them. `removeAudio(entry)` deletes an entry's audio first
   // and says whether it is gone: an entry whose audio stays waits for the next run, so its audio never outlives it.
   // Audio that a kept entry or a pending recording still uses is not deleted.

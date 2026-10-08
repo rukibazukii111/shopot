@@ -140,3 +140,17 @@ test('expired audio is deleted before its entry goes, unless a kept entry or a p
     assert.equal(store.data.pendingRecordings.length, 1);
   } finally { fs.rmSync(root, {recursive: true, force: true}); }
 });
+
+test('a re-recognition goes right above the entry it came from, or on top when that entry is gone', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shopot-store-'));
+  try {
+    const store = new Store(root);
+    const entry = id => ({id, createdAt: '2026-09-01T10:00:00.000Z', text: id, rawText: id});
+    store.data.history = [entry('newest'), entry('original'), entry('oldest')];
+    store.insertHistoryBefore('original', entry('again'));
+    assert.deepEqual(store.data.history.map(e => e.id), ['newest', 'again', 'original', 'oldest']);
+    store.insertHistoryBefore('missing', entry('orphan'));
+    assert.equal(store.data.history[0].id, 'orphan');
+    assert.deepEqual(new Store(root).data.history.map(e => e.id), ['orphan', 'newest', 'again', 'original', 'oldest']);
+  } finally { fs.rmSync(root, {recursive: true, force: true}); }
+});
