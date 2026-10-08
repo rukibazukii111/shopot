@@ -33,8 +33,8 @@
           <div class="recorder-top"><span id="record-status" class="record-status"></span><span id="record-time" class="record-time">00:00</span></div>
           <div id="waveform" class="waveform" aria-hidden="true"></div>
           <div class="recorder-body">
-            <div class="recorder-caption"><h1 id="record-heading">Говори как есть</h1><p id="record-description">Сочетание работает в любом окне. Текст вставится туда, где стоит курсор.</p></div>
-            <div class="hero-keys" id="hero-keys"><kbd class="modifier-key">Ctrl</kbd><kbd>Shift</kbd><kbd class="key-wide">Space</kbd></div>
+            <div class="recorder-caption"><h1 id="record-heading">Говори как есть</h1><p id="record-description">Сочетание работает в любом окне. Текст вставится туда, где стоит курсор.</p><button id="hotkey-fix" class="button" type="button" hidden>Изменить сочетание</button></div>
+            <div class="hero-keys" id="hero-keys"></div>
           </div>
           <div class="recorder-actions">
             <button id="record-button" class="button-primary"><span data-icon="mic"></span><span id="record-label">Начать диктовку</span></button>
@@ -159,7 +159,7 @@
           </div>
           <div class="settings-row">
             <span class="setting-label">Горячая клавиша</span>
-            <div class="setting-control"><div class="hotkey-field"><kbd class="modifier-key">Ctrl</kbd><kbd>Shift</kbd><kbd class="key-wide">Space</kbd><span id="hotkey-state" class="hotkey-state"></span></div><p id="hotkey-description" class="help"></p></div>
+            <div class="setting-control"><div class="hotkey-row"><div class="hotkey-field" id="hotkey-field" tabindex="-1"><span id="hotkey-keys" class="hotkey-keys"></span><span id="hotkey-state" class="hotkey-state"></span></div><button id="hotkey-change" class="button" type="button">Изменить</button><button id="hotkey-reset" class="button" type="button">Сбросить</button></div><p id="hotkey-description" class="help"></p></div>
           </div>
           <div class="settings-row">
             <label class="setting-label" for="remove-fillers">Убирать звуки-заполнители</label>

@@ -126,8 +126,10 @@ const phaseText = {
   canceling: {status: 'Отменяю', heading: 'Останавливаем запись', text: 'Подожди немного.', label: 'Отменяем'},
   downloading: {status: 'Загружаю модель', label: 'Модель загружается'},
 };
+const HOTKEY_TAKEN = 'Сочетание занято другой программой. Нажми «Изменить» и выбери другое.';
+const HOTKEY_HELP = 'Нажми, чтобы начать запись, и ещё раз, чтобы закончить. Или держи, пока говоришь, и отпусти. Esc во время записи отменяет её.';
 function idleDescription() {
-  if (!state.hotkeyRegistered) return 'Сочетание занято другим приложением. Используй кнопку записи или освободи сочетание и перезапусти Шёпот.';
+  if (!state.hotkeyRegistered) return HOTKEY_TAKEN;
   const where = state.settings.autoPaste ? 'Текст вставится туда, где стоит курсор.' : state.settings.autoCopy ? 'Готовый текст окажется в буфере обмена.' : 'Готовый текст сохранится в истории.';
   return `Сочетание работает в любом окне. ${where}`;
 }
@@ -158,6 +160,7 @@ function refreshControls() {
     : ready ? 'Аудио или видео, до 100 МБ'
     : state.engine ? [modelNames[state.settings.model], modelSize(state.settings.model)].filter(Boolean).join(', ') : '';
   $('#quick-language').disabled = isBusy();
+  syncHotkey();
   syncTranslate();
   $$('input[name="mode"]').forEach(input => input.disabled = isBusy());
   $('#record-progress').hidden = !processing;
@@ -206,12 +209,89 @@ function syncSettings() {
   $('#accessibility-row').hidden = state.platform !== 'darwin';
   $('#accessibility-status').textContent = state.pastePermission ? 'Доступ разрешён. Автовставка готова.' : 'Разреши Шёпоту управление в Системных настройках → Конфиденциальность и безопасность → Универсальный доступ.';
   if (state.platform === 'darwin') { $$('.modifier-key').forEach(el => el.textContent = '⌘'); $$('.paste-hint').forEach(el => el.textContent = '⌘V'); }
-  $('#hotkey-description').textContent = state.hotkeyRegistered ? 'Нажми, чтобы начать запись, и ещё раз, чтобы закончить. Или держи, пока говоришь, и отпусти. Esc во время записи отменяет её.' : 'Сочетание занято другим приложением. Используй кнопку записи или освободи сочетание и перезапусти Шёпот.';
+  syncHotkey(); renderProfiles(); syncMeetingSettings();
+}
+
+// --- The dictation shortcut: shown as keycaps, changed by pressing a new one in Settings ---
+let hotkeyCapture = false, hotkeySending = false;
+const HOTKEY_FIELDS = ['hotkey', 'hotkeyKeys', 'hotkeyDefault', 'hotkeyRegistered'];
+const takeHotkey = from => HOTKEY_FIELDS.forEach(key => { if (key in from) state[key] = from[key]; });
+function keycaps(keys) { return keys.map(key => `<kbd${key === 'Space' ? ' class="key-wide"' : ''}>${escapeHtml(key)}</kbd>`).join(''); }
+function syncHotkey() {
+  const keys = state.hotkeyKeys || [];
+  $('#hero-keys').innerHTML = keycaps(keys);
+  $('#hero-keys').classList.toggle('unavailable', !state.hotkeyRegistered);
+  $('#hotkey-fix').hidden = !keys.length || state.hotkeyRegistered;
+  $('#hotkey-change').disabled = isBusy();
+  $('#hotkey-reset').disabled = isBusy() || (state.hotkeyDefault && state.hotkeyRegistered);
   $('#hotkey-state').className = 'hotkey-state ' + (state.hotkeyRegistered ? 'ok' : 'warn');
   $('#hotkey-state').innerHTML = state.hotkeyRegistered ? `${icon('check')}Работает` : `${icon('alert')}Занято`;
-  $('#hero-keys').classList.toggle('unavailable', !state.hotkeyRegistered);
-  renderProfiles(); syncMeetingSettings();
+  if (hotkeyCapture) return;
+  $('#hotkey-keys').innerHTML = keycaps(keys);
+  $('#hotkey-description').className = 'help';
+  $('#hotkey-description').textContent = state.hotkeyRegistered ? HOTKEY_HELP : HOTKEY_TAKEN;
 }
+// Modifiers held so far, named as the shortcut labels name them on this system.
+function heldModifiers(event) {
+  const mac = state.platform === 'darwin';
+  return [mac && event.metaKey && '⌘', event.ctrlKey && (mac ? '⌃' : 'Ctrl'), event.altKey && (mac ? '⌥' : 'Alt'),
+    event.shiftKey && 'Shift', !mac && event.metaKey && 'Win'].filter(Boolean);
+}
+function showHotkeyKeys(held = []) {
+  $('#hotkey-keys').innerHTML = held.length ? keycaps([...held, '…']) : '<span class="hotkey-prompt">Нажми новое сочетание</span>';
+}
+async function startHotkeyCapture() {
+  if (hotkeyCapture) return;
+  await api.pauseHotkey(true);
+  hotkeyCapture = true;
+  $('#hotkey-field').classList.add('capturing');
+  showHotkeyKeys();
+  $('#hotkey-description').className = 'help';
+  $('#hotkey-description').textContent = 'Esc — отмена';
+  $('#hotkey-field').focus();
+}
+async function stopHotkeyCapture() {
+  if (!hotkeyCapture) return;
+  hotkeyCapture = false;
+  $('#hotkey-field').classList.remove('capturing');
+  syncHotkey();
+  await api.pauseHotkey(false);
+}
+// A rule the keys break keeps Settings waiting; anything else ends the wait.
+function applyHotkey(result, reset = false) {
+  if (!result.ok && result.retry) {
+    showHotkeyKeys();
+    $('#hotkey-description').className = 'help warn';
+    $('#hotkey-description').textContent = result.error;
+    return;
+  }
+  hotkeyCapture = false;
+  $('#hotkey-field').classList.remove('capturing');
+  if (result.ok) takeHotkey(result.snapshot);
+  syncHotkey(); refreshControls();
+  if (result.ok) toast(reset ? 'Вернули стандартное сочетание' : 'Сочетание изменено');
+  else showError(new Error(result.error));
+}
+async function sendHotkey(value, reset = false) {
+  hotkeySending = true;
+  try { applyHotkey(await api.setHotkey(value), reset); } finally { hotkeySending = false; }
+}
+// Runs before the page's own shortcuts, so nothing pressed while waiting reaches them.
+window.addEventListener('keydown', event => {
+  if (!hotkeyCapture) return;
+  event.preventDefault(); event.stopImmediatePropagation();
+  if (event.repeat || hotkeySending) return;
+  const {code, ctrlKey, altKey, shiftKey, metaKey} = event;
+  if (code === 'Escape' && !ctrlKey && !altKey && !shiftKey && !metaKey) { guard(stopHotkeyCapture); return; }
+  if (/^(Control|Shift|Alt|Meta|OS)(Left|Right)?$/.test(code)) { showHotkeyKeys(heldModifiers(event)); return; }
+  guard(() => sendHotkey({code, ctrlKey, altKey, shiftKey, metaKey}));
+}, true);
+window.addEventListener('keyup', event => { if (hotkeyCapture && !hotkeySending) showHotkeyKeys(heldModifiers(event)); }, true);
+// Clicking anywhere else or leaving the window stops waiting and gives the current shortcut back.
+document.addEventListener('mousedown', event => {
+  if (hotkeyCapture && !event.target.closest('#hotkey-field, #hotkey-change')) guard(stopHotkeyCapture);
+}, true);
+window.addEventListener('blur', () => guard(stopHotkeyCapture));
 
 function syncMeetingSettings() {
   $('#meeting-row').hidden = !state.meetingsSupported;
@@ -846,6 +926,9 @@ document.addEventListener('keydown', event => {
 $('#record-button').addEventListener('click', () => toggleRecording());
 $('#cancel-button').addEventListener('click', () => guard(cancelOperation));
 $('#import-button').addEventListener('click', () => guard(importAudio));
+$('#hotkey-change').addEventListener('click', () => guard(startHotkeyCapture));
+$('#hotkey-reset').addEventListener('click', () => guard(() => sendHotkey({reset: true}, true)));
+$('#hotkey-fix').addEventListener('click', () => { page('settings'); $('#hotkey-field').scrollIntoView({block: 'center'}); guard(startHotkeyCapture); });
 $('#model-link').addEventListener('click', () => page('models'));
 $('#dismiss-error').addEventListener('click', () => $('#error-banner').hidden = true);
 $('#quick-language').addEventListener('change', event => guard(() => saveSettings({language: event.target.value})));
@@ -925,6 +1008,7 @@ api.onToggle(toggleRecording); api.onCancel(() => guard(cancelOperation));
 api.onEngine(({status, error}) => { state.engine = status || null; state.engineError = error; updateEngine(); if (error) showError(new Error(error)); });
 api.onSnapshot(snapshot => {
   Object.assign(state, {history: snapshot.history, pendingRecordings: snapshot.pendingRecordings, meeting: snapshot.meeting, settings: snapshot.settings});
+  takeHotkey(snapshot); syncHotkey();
   renderResults(); renderRecovery(); renderProfiles(); renderMeeting(); syncMeetingSettings();
 });
 api.onMeetingRecord(value => guard(() => recordMeeting(value)));

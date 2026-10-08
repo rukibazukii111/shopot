@@ -13,16 +13,11 @@ const waveShape = [7, 13, 19, 24, 17, 11, 6];
 let state;
 function keycap(text) { const key = document.createElement('kbd'); key.textContent = text; return key; }
 function note(text, gap = false) { const span = document.createElement('span'); span.textContent = text; if (gap) span.className = 'gap'; return span; }
-// 'Ctrl⇧Space' becomes Ctrl, Shift, Space; '⌘⇧Space' becomes ⌘, ⇧, Space.
-function shortcutKeys(shortcut = '') {
-  const mac = shortcut.includes('⌘');
-  return shortcut.replace('⇧', ' ⇧ ').split(/\s+/).filter(Boolean).map(key => key === '⇧' && !mac ? 'Shift' : key);
-}
 function renderHint(value) {
   const hint = $('hint');
   // Push-to-talk: the keys are held down, so releasing them is the way to finish.
   if (value.phase === 'recording' && value.holding) hint.replaceChildren(note('Отпусти клавиши, чтобы закончить', true), keycap('Esc'), note('отменить'));
-  else if (value.phase === 'recording') hint.replaceChildren(...shortcutKeys(value.shortcut).map(keycap), note('закончить', true), keycap('Esc'), note('отменить'));
+  else if (value.phase === 'recording') hint.replaceChildren(...(value.keys || []).map(keycap), note('закончить', true), keycap('Esc'), note('отменить'));
   else if (value.phase === 'requesting') hint.replaceChildren(keycap('Esc'), note('отменить'));
   else if (value.phase === 'meeting') hint.replaceChildren(note('Предупреди собеседников о записи'));
   else if (terminal.includes(value.phase)) hint.replaceChildren(note(value.hint || 'Текст доступен в истории'));
