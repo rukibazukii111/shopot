@@ -214,7 +214,7 @@ function syncSettings() {
 
 // --- The dictation shortcut: shown as keycaps, changed by pressing a new one in Settings ---
 let hotkeyCapture = false, hotkeySending = false;
-const HOTKEY_FIELDS = ['hotkey', 'hotkeyKeys', 'hotkeyDefault', 'hotkeyRegistered'];
+const HOTKEY_FIELDS = ['hotkeyKeys', 'hotkeyDefault', 'hotkeyRegistered'];
 const takeHotkey = from => HOTKEY_FIELDS.forEach(key => { if (key in from) state[key] = from[key]; });
 function keycaps(keys) { return keys.map(key => `<kbd${key === 'Space' ? ' class="key-wide"' : ''}>${escapeHtml(key)}</kbd>`).join(''); }
 function syncHotkey() {
@@ -254,8 +254,9 @@ async function stopHotkeyCapture() {
   if (!hotkeyCapture) return;
   hotkeyCapture = false;
   $('#hotkey-field').classList.remove('capturing');
-  syncHotkey();
-  await api.pauseHotkey(false);
+  // Giving the shortcut back can fail if another program took it meanwhile.
+  takeHotkey(await api.pauseHotkey(false));
+  syncHotkey(); refreshControls();
 }
 // A rule the keys break keeps Settings waiting; anything else ends the wait.
 function applyHotkey(result, reset = false) {
@@ -267,7 +268,7 @@ function applyHotkey(result, reset = false) {
   }
   hotkeyCapture = false;
   $('#hotkey-field').classList.remove('capturing');
-  if (result.ok) takeHotkey(result.snapshot);
+  if (result.ok) { takeHotkey(result.snapshot); state.settings = {...state.settings, hotkey: result.snapshot.settings.hotkey}; }
   syncHotkey(); refreshControls();
   if (result.ok) toast(reset ? 'Вернули стандартное сочетание' : 'Сочетание изменено');
   else showError(new Error(result.error));

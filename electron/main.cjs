@@ -87,7 +87,7 @@ function resultFields(result, requestSeconds) {
 }
 function pastePermission() { return process.platform !== 'darwin' || systemPreferences.isTrustedAccessibilityClient(false); }
 function meetingState() { return meeting ? {app: meeting.app?.name ?? null, startedAt: meeting.startedAt, stopping: meeting.stopping} : null; }
-function snapshot() { return {...store.data, ...hotkeyView(), engine: worker.status, engineError, busy, hotkeyRegistered, nativeAvailable, pastePermission: pastePermission(), platform: process.platform, totalMemory: os.totalmem(), meeting: meetingState(), meetingsSupported: MEETINGS}; }
+function snapshot() { return {...store.data, ...hotkeyView(), engine: worker.status, engineError, busy, nativeAvailable, pastePermission: pastePermission(), platform: process.platform, totalMemory: os.totalmem(), meeting: meetingState(), meetingsSupported: MEETINGS}; }
 function modelId(id) { if (!MODEL_IDS.includes(id)) throw new Error('Неизвестная модель'); return id; }
 function textValue(value) { if (typeof value !== 'string' || value.length > 200000) throw new Error('Недопустимый текст'); return value; }
 function entryFor(id) { const entry = store.data.history.find(e => e.id === id); if (!entry) throw new Error('Запись не найдена'); return entry; }
@@ -176,9 +176,10 @@ function beginCapture(global = false) {
   if (global) showWidget({phase: 'requesting', elapsed: 0, level: 0, message: '', hint: '', holding: false});
   return {id: capture.id, settings: capture.settings};
 }
+// How the shortcut in settings.hotkey looks and whether it works; the snapshot and hotkey-pause send it.
 function hotkeyView() {
   const hotkey = store.data.settings.hotkey;
-  return {hotkey, hotkeyKeys: labels(hotkey, process.platform), hotkeyDefault: same(hotkey, DEFAULT_HOTKEY, process.platform)};
+  return {hotkeyKeys: labels(hotkey, process.platform), hotkeyDefault: same(hotkey, DEFAULT_HOTKEY, process.platform), hotkeyRegistered};
 }
 function registerHotkey(accelerator) { return globalShortcut.register(accelerator, toggleGlobalRecording); }
 const RECORDING_HOTKEY = 'Закончи запись, потом меняй сочетание';
@@ -548,7 +549,7 @@ else {
     });
     // Settings change the shortcut only through hotkey-set, which registers it first.
     ipc('settings', value => store.setSettings({...value, hotkey: store.data.settings.hotkey}));
-    ipc('hotkey-pause', on => { pauseHotkey(on === true); return true; });
+    ipc('hotkey-pause', on => { pauseHotkey(on === true); return hotkeyView(); });
     ipc('hotkey-set', setHotkey);
     ipc('dictionary', value => store.setDictionary(value));
     ipc('snippets', value => store.setSnippets(value));

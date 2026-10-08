@@ -28,6 +28,7 @@ async function ready(app) {
 }
 async function openSettings(page) { await page.locator('[data-page="settings"]').click(); await expect(page.locator('#hotkey-change')).toBeVisible(); }
 const keycaps = locator => locator.locator('kbd').allTextContents();
+const journal = dir => fs.existsSync(path.join(dir, 'logs', 'shopot.log')) ? fs.readFileSync(path.join(dir, 'logs', 'shopot.log'), 'utf8') : '';
 
 test('a new shortcut works at once in both modes, frees the old one and survives a restart', async () => {
   const {dir} = dataDir('change');
@@ -46,6 +47,7 @@ test('a new shortcut works at once in both modes, frees the old one and survives
     await expect(page.locator('#toast')).toContainText('Сочетание изменено');
     await expect.poll(() => registered(app)).toBe(NEW);
     expect(stored(dir)).toBe(NEW);
+    await expect.poll(() => journal(dir)).toMatch(/ hotkey-change result=ok reset=false$/m);
     expect(await keycaps(page.locator('#hotkey-keys'))).toEqual(keysOf(NEW));
     expect(await keycaps(page.locator('#hero-keys'))).toEqual(keysOf(NEW));
     await expect(page.locator('#hotkey-reset')).toBeEnabled();
@@ -113,6 +115,36 @@ test('single keys and shortcuts other programs need are refused while Settings k
     await expect.poll(() => registered(app)).toBe(null);
     await page.locator('[data-page="history"]').click();
     await expect.poll(() => registered(app)).toBe(DEFAULT_HOTKEY);
+    // The main window losing focus gives it back as well, in main and on the page.
+    await openSettings(page);
+    await page.locator('#hotkey-change').click();
+    await expect.poll(() => registered(app)).toBe(null);
+    await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith('index.html')).emit('blur'));
+    await expect.poll(() => registered(app)).toBe(DEFAULT_HOTKEY);
+    await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+    await expect(page.locator('#hotkey-field')).not.toHaveClass(/capturing/);
+    await expect(page.locator('#hotkey-state')).toContainText('Работает');
+    expect(stored(dir)).toBe(DEFAULT_HOTKEY);
+  } finally { await app.close(); }
+});
+
+test('if another program takes the shortcut while Settings waits, Esc shows it as taken', async () => {
+  const {dir} = dataDir('lost');
+  const app = await launch(dir);
+  try {
+    const page = await ready(app);
+    await openSettings(page);
+    await page.locator('#hotkey-change').click();
+    await expect.poll(() => registered(app)).toBe(null);
+    await app.evaluate((_, key) => globalThis.__test.busy.add(key), DEFAULT_HOTKEY);
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#hotkey-field')).not.toHaveClass(/capturing/);
+    await expect(page.locator('#hotkey-state')).toContainText('Занято');
+    await expect(page.locator('#hotkey-description')).toHaveText('Сочетание занято другой программой. Нажми «Изменить» и выбери другое.');
+    await page.locator('[data-page="dictation"]').click();
+    await expect(page.locator('#hotkey-fix')).toBeVisible();
+    await expect(page.locator('#record-description')).toHaveText('Сочетание занято другой программой. Нажми «Изменить» и выбери другое.');
+    expect(stored(dir)).toBe(DEFAULT_HOTKEY);
   } finally { await app.close(); }
 });
 
@@ -128,6 +160,7 @@ test('a shortcut another program holds is refused and the old one keeps working;
     await expect(page.locator('#hotkey-field')).not.toHaveClass(/capturing/);
     await expect.poll(() => registered(app)).toBe(DEFAULT_HOTKEY);
     expect(stored(dir)).toBe(DEFAULT_HOTKEY);
+    await expect.poll(() => journal(dir)).toMatch(/ hotkey-change result=taken reset=false$/m);
     await page.locator('#dismiss-error').click();
     await app.evaluate(() => globalThis.__test.toggle());
     await expect(page.locator('#record-label')).toHaveText('Закончить запись');
