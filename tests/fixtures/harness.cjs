@@ -7,7 +7,7 @@ const {Worker} = require('../../electron/worker.cjs');
 const status = {formatter: {name: 'Qwen3-4B', size: '2,4 ГБ', supported: true, installed: false}, models: [{id: 'gigaam', installed: true, languages: ['ru']}, {id: 'turbo', installed: true, languages: ['ru', 'en', 'auto']}, {id: 'small', installed: true, languages: ['ru', 'en', 'auto'], translates: true}], device: 'cpu', computeType: 'int8'};
 globalThis.__test = {requests: [], notifications: [], nativeCalls: []};
 // Tests pick the video card; by default there is no NVIDIA card.
-status.gpu = {supported: true, device: null, enoughMemory: false, minMemoryMb: 3584, installed: false, size: '1,3 ГБ', installedSize: '1,8 ГБ',
+status.gpu = {device: null, enoughMemory: false, minMemoryGb: 4, installed: false, size: '1,3 ГБ', installedSize: '1,8 ГБ',
   ...(process.env.SHOPOT_TEST_GPU ? JSON.parse(process.env.SHOPOT_TEST_GPU) : {})};
 globalThis.__test.status = status;
 const nativeModule = require('../../electron/native-input.cjs');

@@ -742,7 +742,7 @@ function renderGpu(busy) {
     text: 'Модели Whisper распознают речь на видеокарте в несколько раз быстрее, перевод на английский тоже. GigaAM остаётся на процессоре.',
     size: installed ? gpu.installedSize : gpu.size, installed, selected: installed && state.settings.useGpu, downloading: state.download?.id === 'gpu',
     busy, attr: 'data-gpu', source: 'библиотеки NVIDIA с PyPI',
-    ...(gpu.enoughMemory ? {} : {control: '', note: 'Ускорение недоступно', warning: `Нужно минимум 4 ГБ видеопамяти. У этой видеокарты — ${memory}.`}),
+    ...(gpu.enoughMemory ? {} : {control: '', note: 'Ускорение недоступно', warning: `Нужно минимум ${gpu.minMemoryGb} ГБ видеопамяти. У этой видеокарты — ${memory}.`}),
     ...(installed ? {control: toggle} : {})});
 }
 function updateDownloadProgress() {

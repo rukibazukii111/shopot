@@ -638,6 +638,17 @@ def test_small_card_cannot_download_the_component(tmp_path, monkeypatch):
         engine.download_gpu()
 
 
+def test_gpu_memory_minimum_has_one_source(tmp_path, monkeypatch):
+    import gpu_runtime
+    monkeypatch.setattr(gpu_runtime, 'MIN_MEMORY_GB', 6)
+    monkeypatch.setattr(gpu_runtime, 'nvidia_devices', lambda: [{'name': 'RTX', 'memoryMb': 5000, 'driver': '1'}])
+    engine = Engine(tmp_path)
+    gpu = engine.status()['gpu']
+    assert gpu['minMemoryGb'] == 6 and gpu['enoughMemory'] is False and 'supported' not in gpu
+    with pytest.raises(ValueError, match='от 6 ГБ'):
+        engine.download_gpu()
+
+
 def test_no_nvidia_card_means_no_device(tmp_path, monkeypatch):
     import gpu_runtime
     monkeypatch.setattr(gpu_runtime, 'nvidia_devices', lambda: [])

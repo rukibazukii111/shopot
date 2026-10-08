@@ -20,8 +20,12 @@ import urllib.request
 import zipfile
 
 COMPONENT_ID = "cublas-12.8.4.1-cudnn-9.10.2.21"
-# A 4 GB card reports a little under 4096 MiB through NVML.
-MIN_MEMORY_MB = 3584
+MIN_MEMORY_GB = 4
+
+
+def enough_memory(device):
+    # A card reports a little under its nominal size through NVML, so half a gigabyte of slack is allowed.
+    return bool(device) and device["memoryMb"] >= MIN_MEMORY_GB * 1024 - 512
 SIZE = "1,3 ГБ"
 CHUNK = 1 << 20
 WHEELS = [

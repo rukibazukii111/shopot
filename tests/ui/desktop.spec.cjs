@@ -213,3 +213,12 @@ test('NVIDIA card with too little memory explains why there is no download', asy
     await expect(page.locator('button[data-gpu]')).toHaveCount(0);
   } finally { await app.close(); }
 });
+
+test('NVIDIA card states the minimum memory the engine reports', async () => {
+  const app = await launchWithGpu('gpu-minimum', {device: rtx, enoughMemory: false, minMemoryGb: 12});
+  try {
+    const page = await app.firstWindow();
+    await page.locator('[data-page="models"]').click();
+    await expect(page.locator('#gpu-list')).toContainText('Нужно минимум 12 ГБ видеопамяти. У этой видеокарты — 8 ГБ.');
+  } finally { await app.close(); }
+});

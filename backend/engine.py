@@ -184,13 +184,12 @@ class Engine:
         if self.nvidia is None:
             self.nvidia = gpu_runtime.nvidia_devices()
         device = gpu_runtime.best_device(self.nvidia)
-        return {"supported": gpu_runtime.supported(), "device": device, "minMemoryMb": gpu_runtime.MIN_MEMORY_MB,
-                "enoughMemory": bool(device) and device["memoryMb"] >= gpu_runtime.MIN_MEMORY_MB,
+        return {"device": device, "minMemoryGb": gpu_runtime.MIN_MEMORY_GB, "enoughMemory": gpu_runtime.enough_memory(device),
                 "installed": self.gpu.installed(), "size": gpu_runtime.SIZE, "installedSize": gpu_runtime.INSTALLED_SIZE}
 
     def download_gpu(self, request_id=None):
         if not self.gpu_status()["enoughMemory"]:
-            raise ValueError("Для ускорения нужна видеокарта NVIDIA с памятью от 4 ГБ.")
+            raise ValueError(f"Для ускорения нужна видеокарта NVIDIA с памятью от {gpu_runtime.MIN_MEMORY_GB} ГБ.")
         if self.gpu.installed():
             return self.status()
         last = 0.0
