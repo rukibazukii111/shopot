@@ -4,6 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const {pathToFileURL} = require('node:url');
 const crypto = require('node:crypto');
+const {spawn} = require('node:child_process');
 const {Store, MODEL_IDS, settingsFor} = require('./store.cjs');
 const {Worker} = require('./worker.cjs');
 const {PasteService, clipboardText} = require('./paste.cjs');
@@ -13,6 +14,7 @@ const {exportText} = require('./export.cjs');
 const {MicWatcher, meetingTurns, meetingText, summaryPrompt} = require('./meetings.cjs');
 const {createJournal, errorFields, timestamp} = require('./log.cjs');
 const {systemName, issueUrl} = require('./report.cjs');
+const {Updater, allowedUrl, launchInstaller} = require('./updates.cjs');
 
 const root = path.resolve(__dirname, '..');
 // From package.json rather than app.getVersion(), which reports Electron's version when main.cjs is loaded by a test harness.
@@ -41,6 +43,8 @@ const MEETINGS = process.platform === 'win32';
 const MEETING_CHUNK_MS = (Number(process.env.SHOPOT_MEETING_CHUNK_SECONDS) || 300) * 1000;
 const MIC_POLL_MS = Number(process.env.SHOPOT_MIC_POLL_MS) || 4000;
 const WINDOW_GONE = 'Окно записи перезапустилось';
+const UPDATE_EVERY_MS = 24 * 3600 * 1000;
+let updater = null;
 let meeting = null, offer = null, offerTimer, meetingClock, micWatcher = null, meetingQueue = Promise.resolve();
 let widgetState = {phase: 'requesting', shortcut: process.platform === 'darwin' ? '⌘⇧Space' : 'Ctrl⇧Space'};
 
@@ -86,7 +90,21 @@ function resultFields(result, requestSeconds) {
 }
 function pastePermission() { return process.platform !== 'darwin' || systemPreferences.isTrustedAccessibilityClient(false); }
 function meetingState() { return meeting ? {app: meeting.app?.name ?? null, startedAt: meeting.startedAt, stopping: meeting.stopping} : null; }
-function snapshot() { return {...store.data, engine: worker.status, engineError, busy, hotkeyRegistered, nativeAvailable, pastePermission: pastePermission(), platform: process.platform, totalMemory: os.totalmem(), meeting: meetingState(), meetingsSupported: MEETINGS}; }
+function snapshot() { return {...store.data, engine: worker.status, engineError, busy, hotkeyRegistered, nativeAvailable, pastePermission: pastePermission(), platform: process.platform, totalMemory: os.totalmem(), meeting: meetingState(), meetingsSupported: MEETINGS,
+  update: updater?.state ?? {phase: 'none', hidden: false}, version: appVersion}; }
+// An update check (PRD 6.26): at start and daily when the user turned it on, or by «Проверить сейчас».
+async function checkUpdates(trigger) {
+  const started = Date.now();
+  try {
+    const offer = await updater.check({manual: trigger === 'manual', skipped: store.data.updates.skipped});
+    journal.write('update-check', {trigger, result: offer ? 'available' : 'none', version: offer?.version, elapsed: (Date.now() - started) / 1000});
+    return offer;
+  } catch (error) {
+    journal.write('update-check', {trigger, result: 'error', elapsed: (Date.now() - started) / 1000, ...errorFields(error)});
+    error.journaled = true; throw error;
+  }
+}
+function autoCheckUpdates() { if (store.data.settings.checkUpdates) checkUpdates('auto').catch(() => {}); }
 function modelId(id) { if (!MODEL_IDS.includes(id)) throw new Error('Неизвестная модель'); return id; }
 function textValue(value) { if (typeof value !== 'string' || value.length > 200000) throw new Error('Недопустимый текст'); return value; }
 function entryFor(id) { const entry = store.data.history.find(e => e.id === id); if (!entry) throw new Error('Запись не найдена'); return entry; }
@@ -451,6 +469,13 @@ else {
     session.defaultSession.setPermissionCheckHandler((contents, permission) => contents === window?.webContents && contents.getURL() === uiUrl && permission === 'media');
     // The renderer has no reason to contact the network. Downloads live in the worker.
     session.defaultSession.webRequest.onBeforeRequest({urls: ['http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*']}, (_, callback) => callback({cancel: true}));
+    // Update checks go through their own in-memory session, which reaches GitHub alone; the windows stay offline.
+    const updateSession = session.fromPartition('shopot-updates');
+    updateSession.webRequest.onBeforeRequest((details, callback) => callback({cancel: !allowedUrl(details.url)}));
+    updater = new Updater({fetch: (url, init) => updateSession.fetch(url, init), dir: path.join(dataDir, 'updates'),
+      current: appVersion, platform: process.platform, arch: process.arch});
+    updater.clean();
+    updater.on('state', state => send('update', state));
     let native;
     try { native = createNativeBackend(); nativeAvailable = true; nativeBackend = native; } catch (error) { console.error('Автовставка недоступна:', error.message); }
     paste = new PasteService({clipboard, native});
@@ -505,7 +530,11 @@ else {
       if (process.platform === 'darwin') systemPreferences.isTrustedAccessibilityClient(true);
       return pastePermission();
     });
-    ipc('settings', value => store.setSettings(value));
+    ipc('settings', value => {
+      const before = store.data.settings.checkUpdates, settings = store.setSettings(value);
+      if (!before && settings.checkUpdates) autoCheckUpdates();
+      return settings;
+    });
     ipc('dictionary', value => store.setDictionary(value));
     ipc('snippets', value => store.setSnippets(value));
     ipc('profiles', value => store.setProfiles(value));
@@ -657,6 +686,27 @@ else {
       try { await shell.openExternal(link); return true; }
       catch { clipboard.writeText(link); return false; }
     });
+    ipc('update-check', async () => (await checkUpdates('manual'))?.version ?? null);
+    ipc('update-download', async () => {
+      const started = Date.now(), version = updater.offer?.version;
+      try { await updater.download(); journal.write('update-download', {version, result: 'ok', elapsed: (Date.now() - started) / 1000}); return true; }
+      catch (error) { journal.write('update-download', {version, result: 'error', elapsed: (Date.now() - started) / 1000, ...errorFields(error)}); error.journaled = true; throw error; }
+    });
+    ipc('update-later', () => { updater.hide(); return true; });
+    ipc('update-skip', () => { if (updater.offer) store.setSkippedUpdate(updater.offer.version); updater.hide(); return true; });
+    // Installing closes Shopot, so it waits until nothing is being recorded, recognized or downloaded.
+    ipc('update-install', async () => {
+      if (busy || capture || meeting || downloading) throw new Error('Дождись конца записи, распознавания или загрузки модели');
+      const file = updater.readyFile();
+      if (!file) throw new Error('Скачай обновление ещё раз');
+      journal.write('update-install', {version: updater.ready.version});
+      if (await launchInstaller(file, process.platform, {spawn, openPath: target => shell.openPath(target)}) === 'opened') {
+        const answer = await dialog.showMessageBox(window, {type: 'info', message: 'Установщик открыт',
+          detail: 'Перетащи Шёпот в папку «Программы» и замени старую версию. Потом открой Шёпот снова.', buttons: ['Закрыть Шёпот', 'Позже'], defaultId: 0, cancelId: 1});
+        if (answer.response !== 0) return false;
+      }
+      quitting = true; app.quit(); return true;
+    });
     if (MEETINGS) {
       // System audio for a call being recorded, and only for the main window: Chromium needs a screen source
       // with it, and the page stops that video track at once.
@@ -675,6 +725,7 @@ else {
       });
       micWatcher.start();
     }
+    autoCheckUpdates(); setInterval(autoCheckUpdates, UPDATE_EVERY_MS).unref();
     journal.write('app-ready', {hotkey: hotkeyRegistered, native: nativeAvailable, meetings: MEETINGS});
   });
 }

@@ -51,6 +51,10 @@ const EVENTS = {
   // Node's two ways out for an error no code caught, and `store`: store.json failed to load at start, so the app quits.
   'main-error': {origin: oneOf(['uncaughtException', 'unhandledRejection', 'store']), kind: token, code: token, at: token},
   'render-gone': {window: oneOf(['main', 'widget']), reason: token, exitCode: int},
+  // Update checks and installs (PRD 6.26): versions and outcomes only, never a URL or a path.
+  'update-check': {trigger: oneOf(['auto', 'manual']), result: oneOf(['none', 'available', 'error']), version: token, elapsed: sec, ...ERROR},
+  'update-download': {version: token, result: oneOf(['ok', 'error']), elapsed: sec, ...ERROR},
+  'update-install': {version: token},
   quit: {uptime: sec},
 };
 

@@ -177,3 +177,17 @@ test('error fields carry the type and code, never the message or a path', () => 
   assert.deepEqual(errorFields(engine), {kind: 'UserError', expected: true, message: 'Аудиофайл пуст.'});
   assert.deepEqual(errorFields('строка'), {kind: 'string', expected: false});
 });
+
+test('update checks, downloads and installs are journaled by version and outcome only', t => {
+  const f = fixture(t);
+  assert.equal(f.journal.write('update-check', {trigger: 'auto', result: 'error', kind: 'offline', elapsed: .4}), true);
+  f.journal.write('update-download', {version: '1.0.1', result: 'ok', elapsed: 3});
+  f.journal.write('update-install', {version: '1.0.1-beta.2'});
+  f.journal.write('update-check', {trigger: 'evil', result: 'none', url: 'https://github.com/x'});
+  const lines = f.read().trim().split('\n');
+  assert.match(lines[0], / update-check trigger=auto result=error elapsed=0\.4 kind=offline$/);
+  assert.match(lines[1], / update-download version=1\.0\.1 result=ok elapsed=3$/);
+  assert.match(lines[2], / update-install version=1\.0\.1-beta\.2$/);
+  assert.match(lines[3], / update-check result=none rejected=trigger,url$/);
+  assert.doesNotMatch(f.read(), /github/);
+});

@@ -52,4 +52,27 @@ Worker.prototype.request = function (command, payload) {
 Worker.prototype.notify = function (command, payload) { globalThis.__test.notifications.push({command, payload}); };
 Worker.prototype.cancel = function () { this.notify('cancel'); this.testReject?.(new Error('Операция отменена.')); };
 Worker.prototype.stop = function () { this.testReject?.(new Error('Операция отменена.')); this.status = null; };
+// Update checks never reach the network in tests: the update session's fetch answers from __test.routes,
+// records every URL, and fails like a machine offline for anything not set up.
+globalThis.__test.fetches = []; globalThis.__test.routes = {};
+const electron = require('electron');
+const fromPartition = electron.session.fromPartition.bind(electron.session);
+electron.session.fromPartition = (name, options) => {
+  const result = fromPartition(name, options);
+  if (name === 'shopot-updates') result.fetch = async url => {
+    globalThis.__test.fetches.push(url);
+    const route = globalThis.__test.routes[url];
+    if (route === undefined) throw new TypeError('fetch failed');
+    return new Response(typeof route === 'string' ? route : Buffer.isBuffer(route) ? route : JSON.stringify(route));
+  };
+  return result;
+};
+// An installer is never started: the test sees what would have run.
+globalThis.__test.spawned = [];
+const childProcess = require('node:child_process');
+const realSpawn = childProcess.spawn;
+childProcess.spawn = (file, args, options) => {
+  if (!/[\\/]updates[\\/]/.test(String(file))) return realSpawn(file, args, options);
+  globalThis.__test.spawned.push({file, args}); return {unref() {}};
+};
 require('../../electron/main.cjs');
