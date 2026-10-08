@@ -1,6 +1,6 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {MicWatcher, meetingTurns, meetingText, summaryPrompt, clock} = require('../electron/meetings.cjs');
+const {MicWatcher, meetingTurns, meetingText, clock} = require('../electron/meetings.cjs');
 
 test('the watcher reports apps that start and stop using the microphone', () => {
   const reads = [[], [{id: 'discord.exe', name: 'Discord'}], [{id: 'discord.exe', name: 'Discord'}, {id: 'zoom.exe', name: 'Zoom'}], [{id: 'zoom.exe', name: 'Zoom'}], []];
@@ -48,8 +48,7 @@ test('the same words said by the user at another time are not echo', () => {
   assert.deepEqual(turns.map(t => t.speaker), ['them', 'me']);
 });
 
-test('clock and summary prompt', () => {
+test('clock', () => {
   assert.equal(clock(65), '01:05');
   assert.equal(clock(3725), '1:02:05');
-  assert.match(summaryPrompt('[00:00] Я: Привет', 'Discord'), /^Сделай краткое резюме созвона \(Discord\).*\n\n\[00:00\] Я: Привет$/s);
 });

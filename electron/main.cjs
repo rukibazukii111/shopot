@@ -10,7 +10,8 @@ const {PasteService, clipboardText} = require('./paste.cjs');
 const {createNativeBackend} = require('./native-input.cjs');
 const {suggestCorrections} = require('./corrections.cjs');
 const {exportText} = require('./export.cjs');
-const {MicWatcher, meetingTurns, meetingText, summaryPrompt} = require('./meetings.cjs');
+const {MicWatcher, meetingTurns, meetingText} = require('./meetings.cjs');
+const {summaryAvailable, summaryPrompt} = require('./summary.cjs');
 
 const root = path.resolve(__dirname, '..');
 const dataDir = path.resolve(process.env.SHOPOT_DATA_DIR || (app.isPackaged ? path.join(app.getPath('appData'), 'Shopot') : path.join(root, '.local')));
@@ -515,7 +516,8 @@ else {
     });
     ipc('copy-summary', async id => {
       const entry = entryFor(id);
-      await clipboard.writeText(clipboardText(summaryPrompt(entry.text, entry.meeting?.app)));
+      if (!summaryAvailable(entry)) return false;
+      await clipboard.writeText(clipboardText(summaryPrompt(entry)));
       return true;
     });
     if (MEETINGS) {

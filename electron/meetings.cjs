@@ -54,9 +54,4 @@ function clock(seconds) {
 const SPEAKERS = {me: 'Я', them: 'Собеседники'};
 function meetingText(turns) { return turns.map(turn => `[${clock(turn.start)}] ${SPEAKERS[turn.speaker]}: ${turn.text}`).join('\n\n'); }
 
-// What to paste into a chat assistant to get meeting notes; the transcript stays on this computer until the user does so.
-function summaryPrompt(text, app) {
-  return `Сделай краткое резюме созвона${app ? ` (${app})` : ''}: главные темы, принятые решения, задачи с ответственными и сроками, открытые вопросы. «Я» — это я, «Собеседники» — остальные участники.\n\n${text}`;
-}
-
-module.exports = {MicWatcher, meetingTurns, meetingText, summaryPrompt, similarity, clock};
+module.exports = {MicWatcher, meetingTurns, meetingText, similarity, clock};
