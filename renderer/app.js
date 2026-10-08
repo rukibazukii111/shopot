@@ -163,7 +163,7 @@ function refreshControls() {
   $('#record-progress').hidden = !processing;
   if (!processing) $('#transcribe-progress').removeAttribute('value');
   if (phase === 'idle') { $('#record-time').textContent = '00:00'; resetWave(); }
-  renderRecovery(); renderMeeting();
+  renderRecovery(); renderMeeting(); renderUpdate();
 }
 async function saveSettings(changes) {
   state.settings = await api.settings({...state.settings, ...changes});
@@ -210,7 +210,7 @@ function syncSettings() {
   $('#hotkey-state').className = 'hotkey-state ' + (state.hotkeyRegistered ? 'ok' : 'warn');
   $('#hotkey-state').innerHTML = state.hotkeyRegistered ? `${icon('check')}Работает` : `${icon('alert')}Занято`;
   $('#hero-keys').classList.toggle('unavailable', !state.hotkeyRegistered);
-  renderProfiles(); syncMeetingSettings();
+  renderProfiles(); syncMeetingSettings(); syncUpdateSettings();
 }
 
 function syncMeetingSettings() {
@@ -446,6 +446,35 @@ function renderMeeting() {
   const tick = () => { $('#meeting-detail').textContent = [current.app, current.stopping ? 'Текст появится в истории' : duration((Date.now() - current.startedAt) / 1000)].filter(Boolean).join(' · '); };
   tick();
   if (!current.stopping) meetingTimer = setInterval(tick, 1000);
+}
+
+// The offer of a new version (PRD 6.26). Main owns its state; installing waits until nothing is recorded or recognized.
+function renderUpdate() {
+  const update = state.update || {phase: 'none'};
+  $('#update-banner').hidden = update.phase === 'none' || update.hidden;
+  if ($('#update-banner').hidden) return;
+  const mac = state.platform === 'darwin', blocked = isBusy() || Boolean(state.meeting);
+  const name = `${update.beta ? 'пробная версия' : 'версия'} ${update.version}`;
+  $('#update-title').textContent = update.phase === 'ready' ? `${update.beta ? 'Пробная версия' : 'Версия'} ${update.version} готова к установке`
+    : update.phase === 'downloading' ? `Скачиваю ${name}` : `Доступна ${name}`;
+  const detail = update.phase === 'downloading' ? `${update.progress || 0}% · Можно продолжать работать`
+    : update.phase === 'ready' ? (mac ? 'Откроется установщик. Перетащи Шёпот в «Программы» с заменой старой версии.'
+      : 'Шёпот закроется, установит обновление и откроется снова. Настройки, словарь и история сохранятся.') +
+      (blocked ? ' Кнопка станет доступна после записи, распознавания или загрузки модели.' : '')
+    : update.error || '';
+  $('#update-detail').textContent = detail; $('#update-detail').hidden = !detail;
+  $('#update-notes').textContent = update.phase === 'available' ? update.notes || '' : '';
+  $('#update-notes').hidden = !$('#update-notes').textContent;
+  const install = $('#update-install');
+  install.hidden = update.phase === 'downloading';
+  install.textContent = update.phase === 'ready' ? (mac ? 'Открыть установщик' : 'Перезапустить и обновить') : 'Скачать и установить';
+  install.disabled = update.phase === 'ready' && blocked;
+  $('#update-later').hidden = update.phase === 'downloading';
+  $('#update-skip').hidden = update.phase !== 'available';
+}
+function syncUpdateSettings() {
+  $('#check-updates').checked = Boolean(state.settings.checkUpdates);
+  $('#app-version').textContent = `Установлена ${/-beta\./.test(state.version || '') ? 'пробная версия' : 'версия'} ${state.version || ''}`;
 }
 
 function renderRecovery() {
@@ -875,6 +904,16 @@ $('#report-problem').addEventListener('click', () => guard(async () => {
   if (await api.reportProblem()) toast('Открыл страницу в браузере');
   else toast('Не удалось открыть браузер. Ссылка скопирована, вставь её в адресную строку', 'muted');
 }));
+$('#check-updates').addEventListener('change', event => guard(() => saveSettings({checkUpdates: event.target.checked})));
+$('#check-now').addEventListener('click', () => guard(async () => {
+  const button = $('#check-now'); button.disabled = true; button.textContent = 'Проверяю…';
+  try { const version = await api.checkUpdates(); toast(version ? `Доступна версия ${version}` : 'Установлена последняя версия'); }
+  finally { button.disabled = false; button.textContent = 'Проверить сейчас'; }
+}));
+// A failed download shows its reason in the banner itself.
+$('#update-install').addEventListener('click', () => guard(() => state.update?.phase === 'ready' ? api.installUpdate() : api.downloadUpdate().catch(() => {})));
+$('#update-later').addEventListener('click', () => guard(() => api.laterUpdate()));
+$('#update-skip').addEventListener('click', () => guard(() => api.skipUpdate()));
 $('#history-search').addEventListener('input', renderHistory);
 function newDictionaryItem() { if (state.dictionaryTab === 'snippets') openSnippet(null, true); else openWord(null, true); }
 $('#add-word').addEventListener('click', newDictionaryItem);
@@ -924,9 +963,10 @@ $('#dictionary-form').addEventListener('submit', async event => {
 api.onToggle(toggleRecording); api.onCancel(() => guard(cancelOperation));
 api.onEngine(({status, error}) => { state.engine = status || null; state.engineError = error; updateEngine(); if (error) showError(new Error(error)); });
 api.onSnapshot(snapshot => {
-  Object.assign(state, {history: snapshot.history, pendingRecordings: snapshot.pendingRecordings, meeting: snapshot.meeting, settings: snapshot.settings});
-  renderResults(); renderRecovery(); renderProfiles(); renderMeeting(); syncMeetingSettings();
+  Object.assign(state, {history: snapshot.history, pendingRecordings: snapshot.pendingRecordings, meeting: snapshot.meeting, settings: snapshot.settings, update: snapshot.update});
+  renderResults(); renderRecovery(); renderProfiles(); renderMeeting(); syncMeetingSettings(); syncUpdateSettings(); renderUpdate();
 });
+api.onUpdate(update => { state.update = update; renderUpdate(); });
 api.onMeetingRecord(value => guard(() => recordMeeting(value)));
 api.onMeetingFinish(() => guard(finishMeetingRecording));
 api.onProgress(progress => {
@@ -950,7 +990,7 @@ $('#delete-recording').addEventListener('click', () => guard(async () => {
 paintIcons(); resetWave(); refreshControls(); openWord(null); renderResults();
 guard(async () => {
   Object.assign(state, await api.boot());
-  syncSettings(); openWord(state.dictionary[0] || null); renderResults(); updateEngine(); renderMeeting();
+  syncSettings(); openWord(state.dictionary[0] || null); renderResults(); updateEngine(); renderMeeting(); renderUpdate();
   if (state.engineError) showError(new Error(state.engineError));
   await listMicrophones();
 });

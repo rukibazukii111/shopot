@@ -479,6 +479,8 @@ textarea.input { height: auto; padding: 10px 12px 26px; resize: none; line-heigh
 .settings-row:has(.setting-actions) .setting-label { padding-top: 1px; }
 .setting-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .setting-actions .button { height: 32px; font-size: 13px; }
+.setting-actions .help { align-self: center; margin: 0; }
+.update-notes { white-space: pre-line; max-height: 9em; overflow: auto; }
 
 /* Toast */
 .toast {

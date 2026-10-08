@@ -22,7 +22,7 @@ const MESSAGES = {
   open: 'Не удалось открыть установщик',
 };
 class UpdateError extends Error {
-  constructor(kind, code) { super(MESSAGES[kind]); this.name = 'UpdateError'; this.kind = kind; if (code !== undefined) this.code = code; }
+  constructor(kind, code) { super(MESSAGES[kind]); this.kind = kind; if (code !== undefined) this.code = code; }
 }
 
 function parseVersion(text) {

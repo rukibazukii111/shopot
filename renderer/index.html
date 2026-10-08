@@ -25,6 +25,7 @@
       <div id="error-banner" class="banner banner-error" role="alert" hidden><span class="banner-icon" data-icon="alert"></span><span id="error-text" class="banner-text"></span><button id="dismiss-error" class="icon-button" aria-label="Закрыть сообщение"><span data-icon="x"></span></button></div>
       <div id="meeting-banner" class="banner banner-meeting" role="status" hidden><span class="banner-icon"><span class="rec-dot"></span></span><div class="banner-text"><strong id="meeting-title">Идёт запись созвона</strong><p id="meeting-detail"></p></div><div class="banner-actions"><button id="meeting-stop" class="button">Остановить запись</button></div></div>
       <div id="recovery-banner" class="banner" role="status" hidden><span class="banner-icon" data-icon="refresh"></span><div class="banner-text"><strong id="recovery-title"></strong><p id="recovery-detail"></p></div><div class="banner-actions"><button id="retry-recording" class="button">Повторить</button><button id="delete-recording" class="button-ghost danger">Удалить</button></div></div>
+      <div id="update-banner" class="banner" role="status" hidden><span class="banner-icon" data-icon="download"></span><div class="banner-text"><strong id="update-title"></strong><p id="update-detail"></p><p id="update-notes" class="update-notes"></p></div><div class="banner-actions"><button id="update-install" class="button"></button><button id="update-later" class="button-ghost">Позже</button><button id="update-skip" class="button-ghost">Пропустить эту версию</button></div></div>
     </div>
 
     <section id="page-dictation" class="page dictation">
@@ -68,7 +69,7 @@
           <span class="field-label">Модель</span>
           <button id="model-link" class="model-link"><span id="active-model-icon" class="tile" data-icon="bolt"></span><span class="model-link-text"><strong id="active-model">GigaAM v3</strong><small id="active-model-state">Проверяем модель</small></span><span class="chevron" data-icon="chevron"></span></button>
         </div>
-        <p class="privacy-note"><span data-icon="shield"></span><span>Распознавание на устройстве. Интернет нужен только для загрузки моделей.</span></p>
+        <p class="privacy-note"><span data-icon="shield"></span><span>Распознавание на устройстве. Интернет нужен только для загрузки моделей и обновлений.</span></p>
       </aside>
     </section>
 
@@ -211,6 +212,13 @@
           <div id="profiles-list" class="profiles"></div>
         </section>
         <section class="panel settings-group" aria-label="Система">
+          <div class="settings-row">
+            <label class="setting-label" for="check-updates">Проверять обновления</label>
+            <div class="setting-control">
+              <div class="setting-control inline"><span class="switch"><input type="checkbox" id="check-updates" role="switch"><span></span></span><p class="help">При запуске и раз в сутки Шёпот спрашивает у GitHub, вышла ли новая версия. О тебе и твоих диктовках ничего не передаётся.</p></div>
+              <div class="setting-actions"><button id="check-now" class="button">Проверить сейчас</button><span id="app-version" class="help"></span></div>
+            </div>
+          </div>
           <div class="settings-row">
             <span class="setting-label">Журнал</span>
             <div class="setting-control">
