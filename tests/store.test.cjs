@@ -94,3 +94,15 @@ test('per-app profiles override only what they set, for the app that had focus',
   assert.throws(() => validateProfiles([{app: ''}]), /приложение/);
   assert.throws(() => validateProfiles(Array.from({length: 31}, (_, i) => ({app: `app${i}.exe`}))), /30/);
 });
+test('the dictation shortcut survives reopening; a broken one falls back to the default', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shopot-hotkey-'));
+  try {
+    const store = new Store(root);
+    assert.equal(store.data.settings.hotkey, 'CommandOrControl+Shift+Space');
+    store.setHotkey('Control+Alt+K');
+    assert.equal(new Store(root).data.settings.hotkey, 'Control+Alt+K');
+    const data = JSON.parse(fs.readFileSync(path.join(root, 'store.json'), 'utf8'));
+    data.settings.hotkey = 'Control+C'; fs.writeFileSync(path.join(root, 'store.json'), JSON.stringify(data));
+    assert.equal(new Store(root).data.settings.hotkey, 'CommandOrControl+Shift+Space');
+  } finally { fs.rmSync(root, {recursive: true, force: true}); }
+});

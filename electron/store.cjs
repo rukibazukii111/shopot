@@ -1,11 +1,12 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const {DEFAULT_HOTKEY, normalize: normalizeHotkey} = require('./hotkey.cjs');
 
 const DEFAULT_SETTINGS = {
   model: 'gigaam', language: 'ru', mode: 'natural', context: '',
   autoCopy: true, autoPaste: true, keepAudio: false, microphoneId: 'default', formatting: 'rules', removeFillers: true,
-  voiceCommands: true, meetingOffers: true, meetingIgnore: [], translate: false,
+  voiceCommands: true, meetingOffers: true, meetingIgnore: [], translate: false, hotkey: DEFAULT_HOTKEY,
 };
 const MODEL_IDS = ['gigaam', 'small', 'turbo', 'large-v3'];
 const LANGUAGES = ['ru', 'en', 'auto'];
@@ -41,6 +42,7 @@ function validateSettings(input) {
     .filter((app, index, all) => app.id && all.findIndex(other => other.id === app.id) === index);
   result.context = String(input.context ?? '').slice(0, 200);
   result.microphoneId = String(input.microphoneId ?? 'default').slice(0, 256);
+  result.hotkey = normalizeHotkey(input.hotkey ?? DEFAULT_HOTKEY, process.platform);
   return result;
 }
 
@@ -129,6 +131,8 @@ class Store {
     fs.renameSync(temp, this.file);
   }
   setSettings(settings) { this.data.settings = validateSettings(settings); this.save(); return this.data.settings; }
+  // The shortcut is checked and registered by main before it is stored.
+  setHotkey(hotkey) { this.data.settings = {...this.data.settings, hotkey}; this.save(); return hotkey; }
   setDictionary(entries) { this.data.dictionary = validateDictionary(entries); this.save(); return this.data.dictionary; }
   setSnippets(entries) { this.data.snippets = validateSnippets(entries); this.save(); return this.data.snippets; }
   setProfiles(entries) { this.data.profiles = validateProfiles(entries); this.save(); return this.data.profiles; }
