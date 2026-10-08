@@ -69,11 +69,12 @@ function journalCancel() {
   journal.write('cancel', {phase});
 }
 // Stops «Распознать заново»: by its own «Отменить», or by a dictation, which matters more (PRD 6.20).
+// The run ends at once; the engine answers the canceled request later, and that answer is dropped.
 function cancelRetranscription(preempted = false) {
   if (!retranscription) return false;
-  retranscription.canceled = true; retranscription.preempted = preempted;
+  retranscription.preempted = preempted;
   if (!preempted) journal.write('cancel', {phase: 'retranscribing'});
-  ++job; worker.cancel(); setBusy(false);
+  ++job; worker.cancel(); setBusy(false); retranscription.stop();
   return true;
 }
 // A failure outside any command: its type, system code and first frame in our code, never its message.
@@ -455,21 +456,23 @@ async function runTranscription(filePath, source, recordingSession = null, retry
 // «Распознать заново» (PRD 6.20): the entry's own audio through another model. The result is a new entry right above
 // the original, with its date; nothing is pasted or copied, and the audio stays shared by both entries.
 async function retranscribe(original, settings) {
-  const currentJob = ++job, task = {canceled: false, preempted: false, entryId: original.id, model: settings.model};
+  const currentJob = ++job, task = {preempted: false, entryId: original.id, model: settings.model};
+  // A model load or a long segment can keep the engine from answering a cancel for tens of seconds.
+  const stopped = new Promise(resolve => { task.stop = resolve; });
   activeTranscription = retranscription = task; setBusy(true); send('snapshot', snapshot());
   const report = {result: 'error', model: settings.model, from: original.model, language: settings.language, mode: settings.mode,
     formattingRequested: settings.formatting};
   try {
     const requested = performance.now();
-    const result = await worker.request('transcribe', {audioFile: original.audioFile, ...settings,
-      dictionary: structuredClone(store.data.dictionary), snippets: store.data.snippets.map(({trigger, text}) => ({trigger, text}))});
+    const result = await Promise.race([stopped, worker.request('transcribe', {audioFile: original.audioFile, ...settings,
+      dictionary: structuredClone(store.data.dictionary), snippets: store.data.snippets.map(({trigger, text}) => ({trigger, text}))})]);
     if (currentJob !== job) { report.result = 'canceled'; return {canceled: true}; }
     Object.assign(report, resultFields(result, (performance.now() - requested) / 1000));
     if (result.noSpeech) { report.result = 'no-speech'; return {noSpeech: true}; }
     const {preloadElapsed, ...recognized} = result;
     const entry = store.insertHistoryBefore(original.id, {id: crypto.randomUUID(), createdAt: original.createdAt,
       recognizedAt: new Date().toISOString(), source: original.source, mode: settings.mode, ...recognized,
-      audioFile: original.audioFile, app: original.app ?? null, retranscribed: {from: original.id, model: settings.model}});
+      audioFile: original.audioFile, app: original.app ?? null, retranscribedFrom: original.id});
     report.result = 'ok';
     return {entry};
   } catch (error) {

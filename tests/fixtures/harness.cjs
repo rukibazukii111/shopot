@@ -50,6 +50,7 @@ Worker.prototype.request = function (command, payload) {
   });
 };
 Worker.prototype.notify = function (command, payload) { globalThis.__test.notifications.push({command, payload}); };
-Worker.prototype.cancel = function () { this.notify('cancel'); this.testReject?.(new Error('Операция отменена.')); };
+// With __test.slowCancel a cancel only notifies, as the real worker does: the request settles when the test answers it.
+Worker.prototype.cancel = function () { this.notify('cancel'); if (!globalThis.__test.slowCancel) this.testReject?.(new Error('Операция отменена.')); };
 Worker.prototype.stop = function () { this.testReject?.(new Error('Операция отменена.')); this.status = null; };
 require('../../electron/main.cjs');

@@ -141,7 +141,7 @@ test('expired audio is deleted before its entry goes, unless a kept entry or a p
   } finally { fs.rmSync(root, {recursive: true, force: true}); }
 });
 
-test('a re-recognition goes right above the entry it came from, or on top when that entry is gone', () => {
+test('a re-recognition goes right above the entry it came from, and is refused when that entry is gone', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shopot-store-'));
   try {
     const store = new Store(root);
@@ -149,8 +149,7 @@ test('a re-recognition goes right above the entry it came from, or on top when t
     store.data.history = [entry('newest'), entry('original'), entry('oldest')];
     store.insertHistoryBefore('original', entry('again'));
     assert.deepEqual(store.data.history.map(e => e.id), ['newest', 'again', 'original', 'oldest']);
-    store.insertHistoryBefore('missing', entry('orphan'));
-    assert.equal(store.data.history[0].id, 'orphan');
-    assert.deepEqual(new Store(root).data.history.map(e => e.id), ['orphan', 'newest', 'again', 'original', 'oldest']);
+    assert.throws(() => store.insertHistoryBefore('missing', entry('orphan')), /Исходная запись удалена. Результат не сохранён/);
+    assert.deepEqual(new Store(root).data.history.map(e => e.id), ['newest', 'again', 'original', 'oldest']);
   } finally { fs.rmSync(root, {recursive: true, force: true}); }
 });

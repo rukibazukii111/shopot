@@ -65,7 +65,7 @@ test('another model gives a new entry right above the original, with its date, a
     const again = saved[1];
     expect(saved.map(e => e.id)).toEqual(['newest', again.id, 'original', 'oldest']);
     expect(again).toMatchObject({createdAt: data.entries[1].createdAt, text: 'Новый текст', model: 'turbo', audioFile: AUDIO, source: 'Микрофон',
-      retranscribed: {from: 'original', model: 'turbo'}});
+      retranscribedFrom: 'original'});
     expect(Date.parse(again.recognizedAt)).toBeGreaterThan(Date.parse(again.createdAt));
     expect(saved[2]).toEqual(data.entries[1]);
     expect(fs.existsSync(path.join(data.audio, AUDIO))).toBe(true);
@@ -116,10 +116,13 @@ test('GigaAM takes Russian only, «Отменить» stops it, and the entry be
     const deleting = await page.evaluate(() => window.shopot.deleteEntry('original').then(() => '', error => error.message));
     expect(deleting).toContain('Дождись конца повторного распознавания');
 
+    // Like the real engine, the canceled request answers only later: the card is free at once all the same.
+    await app.evaluate(() => { globalThis.__test.slowCancel = true; });
     await detail(page).locator('[data-action="retranscribe-cancel"]').click();
     await expect(page.locator('#toast')).toContainText('Повторное распознавание отменено');
     await expect(detail(page).locator('.retranscribe-status')).toHaveCount(0);
     expect(await notifications(app)).toContain('cancel');
+    expect(await page.evaluate(() => window.shopot.cancelRetranscribe())).toBe(false);
     // A late answer from the engine makes no entry.
     await app.evaluate(() => globalThis.__test.resolve({text: 'Поздно', rawText: 'Поздно', duration: 2, elapsed: .3, model: 'small', words: []}));
     await page.waitForTimeout(300);
@@ -138,29 +141,56 @@ test('a dictation by the hotkey cancels the re-recognition and says so', async (
     await detail(page).locator('[data-action="retranscribe"]').click();
     await detail(page).locator('[data-action="retranscribe-start"]').click();
     await expect(detail(page).locator('.retranscribe-status')).toBeVisible();
-    await app.evaluate(() => globalThis.__test.toggle());
+    await page.evaluate(async () => { const boot = await window.shopot.boot(); await window.shopot.settings({...boot.settings, autoCopy: false, autoPaste: false}); });
+    // Like the real engine, the canceled request answers only later.
+    await app.evaluate(() => { globalThis.__test.slowCancel = true; globalThis.__test.late = globalThis.__test.resolve; globalThis.__test.toggle(); });
     await expect(page.locator('#toast')).toContainText('Повторное распознавание отменено');
     await expect(detail(page).locator('.retranscribe-status')).toHaveCount(0);
     const commands = await notifications(app);
-    expect(commands.indexOf('cancel')).toBeGreaterThanOrEqual(0);
+    expect(commands.filter(c => c === 'cancel')).toHaveLength(1);
     expect(commands.indexOf('preload')).toBeGreaterThan(commands.indexOf('cancel'));
+    // A stale «Отменить» cannot reach the dictation, and the late answer makes no entry.
+    expect(await page.evaluate(() => window.shopot.cancelRetranscribe())).toBe(false);
+    await app.evaluate(() => globalThis.__test.late({text: 'Поздно', rawText: 'Поздно', duration: 2, elapsed: .3, model: 'turbo', words: []}));
+    expect((await notifications(app)).filter(c => c === 'cancel')).toHaveLength(1);
     await expect(page.locator('#record-label')).toHaveText('Закончить запись');
     await expect.poll(() => app.windows().some(p => p.url().endsWith('/widget.html'))).toBe(true);
     const widget = app.windows().find(p => p.url().endsWith('/widget.html'));
     await expect(widget.locator('#label')).toHaveText('Повторное распознавание отменено');
     // After a few seconds the widget is an ordinary recording again.
     await expect(widget.locator('#label')).toHaveText('Слушаю тебя', {timeout: 6000});
-    await app.evaluate(() => globalThis.__test.cancel());
+    // The dictation itself goes through.
+    await app.evaluate(() => globalThis.__test.toggle());
+    await expect.poll(() => app.evaluate(() => globalThis.__test.requests.length)).toBe(2);
+    await app.evaluate(() => globalThis.__test.finish());
     await expect(page.locator('#record-label')).toHaveText('Начать диктовку');
-    expect(data.saved().history.map(e => e.id)).toEqual(['original']);
+    await expect.poll(() => data.saved().history.map(e => e.text)).toEqual(['Видосы для GitHub готовы.', 'original']);
     expect(data.journal()).toMatch(/ retranscribe result=canceled model=turbo .*preempted=true$/m);
     expect(data.journal()).not.toMatch(/ cancel phase=retranscribing$/m);
   } finally { await app.close(); }
 });
 
+test('an original that retention removes during the run takes the result with it', async () => {
+  const data = seed('retranscribe-expired', [{id: 'original', age: 10 * DAY, audioFile: AUDIO}]);
+  const {app, page} = await launch(data);
+  try {
+    await app.evaluate(({dialog}) => { dialog.showMessageBox = async () => ({response: 1}); });
+    await detail(page).locator('[data-action="retranscribe"]').click();
+    await detail(page).locator('[data-action="retranscribe-start"]').click();
+    await expect(detail(page).locator('.retranscribe-status')).toBeVisible();
+    await page.evaluate(async () => { const boot = await window.shopot.boot(); await window.shopot.settings({...boot.settings, historyDays: 7}); });
+    expect(data.saved().history).toEqual([]);
+    await app.evaluate(() => globalThis.__test.resolve({text: 'Новый текст', rawText: 'Новый текст', duration: 2, elapsed: .3, model: 'turbo', words: []}));
+    await expect(page.locator('#error-text')).toHaveText('Исходная запись удалена. Результат не сохранён');
+    expect(data.saved().history).toEqual([]);
+    await expect(page.locator('#history-list .history-row')).toHaveCount(0);
+    expect(data.journal()).toMatch(/ retranscribe result=error model=turbo .*preempted=false$/m);
+  } finally { await app.close(); }
+});
+
 test('shared audio goes with the last entry that uses it; an entry without audio offers no re-recognition', async () => {
   const data = seed('retranscribe-delete', [{id: 'newest', age: 3600e3},
-    {id: 'again', age: DAY, model: 'turbo', audioFile: AUDIO, retranscribed: {from: 'original', model: 'turbo'}},
+    {id: 'again', age: DAY, model: 'turbo', audioFile: AUDIO, retranscribedFrom: 'original'},
     {id: 'original', age: DAY, audioFile: AUDIO}, {id: 'solo', age: 2 * DAY, audioFile: SOLO}]);
   const {app, page} = await launch(data);
   try {

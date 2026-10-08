@@ -485,7 +485,7 @@ function recognitionLabel(entry) {
 }
 const languageNames = {ru: 'Русский', en: 'English', auto: 'Автоопределение'};
 function modelTitle(id) { return modelInfo[id]?.title || modelNames[id] || id; }
-function againLabel(entry) { return entry.retranscribed ? `Повторно: ${modelTitle(entry.retranscribed.model)}` : ''; }
+function againLabel(entry) { return entry.retranscribedFrom ? `Повторно: ${modelTitle(entry.model)}` : ''; }
 function installedModels() { return (state.engine?.models || []).filter(m => m.installed && modelInfo[m.id]); }
 function modelLanguages(id) { return state.engine?.models?.find(m => m.id === id)?.languages || ['ru']; }
 // The active model, unless the entry was made with it: then the first other downloaded one.
@@ -596,7 +596,7 @@ function renderHistory() {
   for (const entry of entries) {
     const label = dayLabel(entry.createdAt), doubts = doubtsOf(entry), selected = entry.id === state.selected;
     if (label !== group) { group = label; html += `<div class="group-label">${escapeHtml(label)}</div>`; }
-    html += `<button class="history-row${selected ? ' selected' : ''}" data-select-entry="${escapeHtml(entry.id)}" aria-pressed="${selected}"><span class="tile">${icon(entry.meeting ? 'users' : isFileSource(entry) ? 'text' : 'mic')}</span><span class="row-text"><span class="row-title">${escapeHtml(entryText(entry).replace(/\s+/g, ' ').trim() || 'Пустая диктовка')}</span><span class="row-meta"><span class="mono">${timeLabel(entry.createdAt)}</span><span class="mono">${duration(entry.duration)}</span>${entry.retranscribed ? `<span class="row-again">${escapeHtml(againLabel(entry))}</span>` : `<span>${escapeHtml(modelNames[entry.model] || entry.model)}</span>`}</span></span>${doubts ? `<span class="badge-warn">${doubts} проверить</span>` : '<span></span>'}</button>`;
+    html += `<button class="history-row${selected ? ' selected' : ''}" data-select-entry="${escapeHtml(entry.id)}" aria-pressed="${selected}"><span class="tile">${icon(entry.meeting ? 'users' : isFileSource(entry) ? 'text' : 'mic')}</span><span class="row-text"><span class="row-title">${escapeHtml(entryText(entry).replace(/\s+/g, ' ').trim() || 'Пустая диктовка')}</span><span class="row-meta"><span class="mono">${timeLabel(entry.createdAt)}</span><span class="mono">${duration(entry.duration)}</span>${entry.retranscribedFrom ? `<span class="row-again">${escapeHtml(againLabel(entry))}</span>` : `<span>${escapeHtml(modelNames[entry.model] || entry.model)}</span>`}</span></span>${doubts ? `<span class="badge-warn">${doubts} проверить</span>` : '<span></span>'}</button>`;
   }
   $('#history-list').innerHTML = html || `<div class="list-empty"><strong>${query ? 'Ничего не нашлось' : 'Пока здесь тихо'}</strong><span>${query ? 'Попробуй другое слово или часть фразы.' : 'Начни с первой диктовки, и она появится здесь.'}</span></div>`;
   renderHistoryDetail();
