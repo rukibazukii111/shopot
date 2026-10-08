@@ -92,9 +92,10 @@ function allowedUrl(url) {
 // The offer shown in the main window and its installer. States: none, available, downloading, ready;
 // `hidden` is «Позже» until the next check, `error` a failed download.
 class Updater extends EventEmitter {
-  constructor({fetch, dir, current, platform, arch}) {
+  // idleMs: a download that receives nothing for this long fails as offline.
+  constructor({fetch, dir, current, platform, arch, idleMs = 60000}) {
     super();
-    Object.assign(this, {fetchImpl: fetch, dir, current, platform, arch});
+    Object.assign(this, {fetchImpl: fetch, dir, current, platform, arch, idleMs});
     this.offer = null; this.ready = null; this.checking = null; this.downloading = null;
     this.state = {phase: 'none', hidden: false};
   }
@@ -104,7 +105,7 @@ class Updater extends EventEmitter {
     return {phase: this.ready?.version === version ? 'ready' : 'available', version, beta, notes, hidden: false, ...extra};
   }
   async request(url, init = {}) {
-    // 30 s for a check or the sums; the installer passes `signal: null` and has no overall limit.
+    // 30 s for a check or the sums; the installer passes its own signal for an idle limit only.
     const signal = 'signal' in init ? init.signal ?? undefined : AbortSignal.timeout(30000);
     let response;
     try { response = await this.fetchImpl(url, {...init, signal}); }
@@ -128,7 +129,14 @@ class Updater extends EventEmitter {
     return offer;
   }
   hide() { if (this.state.phase !== 'none') this.set({...this.state, hidden: true}); }
-  readyFile() { return this.ready && fs.existsSync(this.ready.file) ? this.ready.file : null; }
+  // An installer removed after its download (an antivirus, a cleanup) is offered for download again.
+  readyFile() {
+    if (!this.ready) return null;
+    if (fs.existsSync(this.ready.file)) return this.ready.file;
+    this.ready = null;
+    if (this.offer) this.set(this.offerState());
+    return null;
+  }
   download() {
     if (!this.offer) return Promise.resolve();
     this.downloading ??= this.fetchInstaller(this.offer).finally(() => { this.downloading = null; });
@@ -137,21 +145,25 @@ class Updater extends EventEmitter {
   async fetchInstaller(offer) {
     const file = path.join(this.dir, offer.installer.name), part = file + '.part';
     this.set(this.offerState({phase: 'downloading', progress: 0}));
+    const idle = new AbortController();
+    let timer;
+    const wait = () => { clearTimeout(timer); timer = setTimeout(() => idle.abort(), this.idleMs); };
     try {
       fs.mkdirSync(this.dir, {recursive: true});
       const expected = parseSums(await (await this.request(offer.sums)).text()).get(offer.installer.name);
       if (!expected) throw new UpdateError('format');
-      const response = await this.request(offer.installer.url, {signal: null});
+      wait();
+      const response = await this.request(offer.installer.url, {signal: idle.signal});
       const total = Number(response.headers.get('content-length')) || offer.installer.size;
       const hash = crypto.createHash('sha256');
       let received = 0, shown = 0;
       const count = new Transform({transform: (chunk, _, done) => {
-        hash.update(chunk); received += chunk.length;
+        wait(); hash.update(chunk); received += chunk.length;
         const progress = total ? Math.min(99, Math.floor(received / total * 100)) : 0;
         if (progress !== shown) { shown = progress; this.set(this.offerState({phase: 'downloading', progress})); }
         done(null, chunk);
       }});
-      try { await pipeline(Readable.fromWeb(response.body), count, fs.createWriteStream(part)); }
+      try { await pipeline(Readable.fromWeb(response.body), count, fs.createWriteStream(part), {signal: idle.signal}); }
       catch (error) { throw new UpdateError('offline', error?.code); }
       if (hash.digest('hex') !== expected) throw new UpdateError('checksum');
       fs.renameSync(part, file);
@@ -161,7 +173,7 @@ class Updater extends EventEmitter {
       fs.rmSync(part, {force: true});
       this.set(this.offerState({error: error.message}));
       throw error;
-    }
+    } finally { clearTimeout(timer); }
   }
   // Installers left by the previous update; one still held by a finishing installer stays until next time.
   clean() {

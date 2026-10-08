@@ -110,6 +110,37 @@ test('a wrong checksum deletes the file and offers the version again with an err
     assert.equal(updater.readyFile(), null);
   } finally { fs.rmSync(dir, {recursive: true, force: true}); }
 });
+test('a ready installer that disappeared is offered for download again', async () => {
+  const dir = tempDir(), r = release('v1.0.1'), data = Buffer.from('installer');
+  const fetch = fakeFetch({[u.RELEASES_URL]: [r], [r.assets[2].browser_download_url]: `${sha(data)}  Shopot-1.0.1-win-x64.exe
+`, [r.assets[0].browser_download_url]: data});
+  const updater = new u.Updater({fetch, dir, current: '1.0.0', ...win});
+  try {
+    await updater.check(); await updater.download();
+    fs.rmSync(updater.ready.file);
+    assert.equal(updater.readyFile(), null);
+    assert.equal(updater.state.phase, 'available');
+    await updater.download();
+    assert.equal(updater.state.phase, 'ready');
+    assert.equal(fs.readFileSync(updater.readyFile(), 'utf8'), 'installer');
+  } finally { fs.rmSync(dir, {recursive: true, force: true}); }
+});
+test('a download that stops sending data fails as offline', async () => {
+  const dir = tempDir(), r = release('v1.0.1');
+  const routes = {[u.RELEASES_URL]: [r], [r.assets[2].browser_download_url]: `${'0'.repeat(64)}  Shopot-1.0.1-win-x64.exe
+`};
+  const base = fakeFetch(routes);
+  // The installer answers, then never sends a byte.
+  const fetch = async (url, init) => url === r.assets[0].browser_download_url ? new Response(new ReadableStream({pull: () => new Promise(() => {})})) : base(url, init);
+  const updater = new u.Updater({fetch, dir, current: '1.0.0', ...win, idleMs: 50});
+  try {
+    await updater.check();
+    await assert.rejects(updater.download(), {kind: 'offline'});
+    assert.equal(updater.state.phase, 'available');
+    assert.match(updater.state.error, /интернет/);
+    assert.deepEqual(fs.readdirSync(dir), []);
+  } finally { fs.rmSync(dir, {recursive: true, force: true}); }
+});
 test('a missing sum line, no network and rate limits are update errors', async () => {
   const dir = tempDir(), r = release('v1.0.1');
   try {
