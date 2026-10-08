@@ -139,8 +139,10 @@ function pruneHistory(trigger) {
     refresh();
     throw error;
   }
+  // An entry whose audio another program holds is journaled on every run until it goes, so a stuck file shows.
+  const waiting = expiredHistory(store.data.history, days).length;
+  if (removed.length || waiting) journal.write('history-prune', {trigger, days, removed: removed.length, waiting: waiting || undefined});
   if (!removed.length) return 0;
-  journal.write('history-prune', {trigger, days, removed: removed.length});
   refresh();
   return removed.length;
 }

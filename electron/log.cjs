@@ -51,8 +51,9 @@ const EVENTS = {
   // Node's two ways out for an error no code caught, and `store`: store.json failed to load at start, so the app quits.
   'main-error': {origin: oneOf(['uncaughtException', 'unhandledRejection', 'store']), kind: token, code: token, at: token},
   'render-gone': {window: oneOf(['main', 'widget']), reason: token, exitCode: int},
-  // History removed by its retention period (PRD 6.20): how many entries, never which.
-  'history-prune': {trigger: oneOf(['start', 'daily', 'setting']), days: int, removed: int, ...ERROR},
+  // History removed by its retention period (PRD 6.20): how many entries, never which. `waiting` counts expired
+  // entries kept because their audio could not be deleted yet.
+  'history-prune': {trigger: oneOf(['start', 'daily', 'setting']), days: int, removed: int, waiting: int, ...ERROR},
   quit: {uptime: sec},
 };
 

@@ -38,10 +38,10 @@ test('fields outside the event schema or of the wrong type never reach the file'
 
 test('history removed by its retention period is journaled as a count, never as entries', t => {
   const f = fixture(t);
-  f.journal.write('history-prune', {trigger: 'daily', days: 7, removed: 3, ids: ['abc'], text: 'старая запись'});
+  f.journal.write('history-prune', {trigger: 'daily', days: 7, removed: 3, waiting: 1, ids: ['abc'], text: 'старая запись'});
   f.journal.write('history-prune', {trigger: 'weekly', days: 7, removed: 1});
   const [first, second] = f.read().trim().split('\n');
-  assert.match(first, / history-prune trigger=daily days=7 removed=3 rejected=ids,text$/);
+  assert.match(first, / history-prune trigger=daily days=7 removed=3 waiting=1 rejected=ids,text$/);
   assert.match(second, / history-prune days=7 removed=1 rejected=trigger$/);
 });
 

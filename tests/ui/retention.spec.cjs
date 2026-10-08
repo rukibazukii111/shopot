@@ -161,7 +161,10 @@ test('an entry whose audio cannot be deleted stays until a later run; audio anot
     // The expired twin goes, but the audio the fresh entry still uses stays.
     expect(data.saved().history.map(e => e.id)).toEqual(['keeper', 'locked']);
     expect(fs.existsSync(path.join(data.audio, shared))).toBe(true);
+    // The journal says how many expired entries wait for their audio, never which.
+    expect(data.journal()).toMatch(/ history-prune trigger=start days=7 removed=1 waiting=1$/m);
     await page.waitForTimeout(1200);
+    expect(data.journal()).toMatch(/ history-prune trigger=daily days=7 removed=0 waiting=1$/m);
     expect(data.saved().history.map(e => e.id)).toEqual(['keeper', 'locked']);
     await expect(page.locator('#recovery-banner')).toBeHidden();
     // Once the audio can go, the next run removes the entry.
