@@ -64,3 +64,87 @@ test('checksum files, urls and errors', () => {
   const error = new u.UpdateError('offline');
   assert.equal(error.kind, 'offline'); assert.match(error.message, /интернет/);
 });
+
+const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), crypto = require('node:crypto');
+const sha = data => crypto.createHash('sha256').update(data).digest('hex');
+// GitHub stand-in: a URL maps to JSON, text, bytes, an HTTP status ({status}) or a thrown network error.
+function fakeFetch(routes) {
+  return async url => {
+    const route = routes[url];
+    if (route instanceof Error) throw route;
+    if (route === undefined) return new Response('', {status: 404});
+    if (route?.status) return new Response('', {status: route.status});
+    return new Response(typeof route === 'string' || Buffer.isBuffer(route) ? route : JSON.stringify(route));
+  };
+}
+const tempDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'shopot-update-'));
+
+test('check offers a release, then a verified download becomes ready', async () => {
+  const dir = tempDir(), r = release('v1.0.1'), data = Buffer.from('installer');
+  const fetch = fakeFetch({[u.RELEASES_URL]: [r], [r.assets[2].browser_download_url]: `${sha(data)}  Shopot-1.0.1-win-x64.exe\n`, [r.assets[0].browser_download_url]: data});
+  const updater = new u.Updater({fetch, dir, current: '1.0.0', ...win});
+  const states = []; updater.on('state', s => states.push(s.phase));
+  try {
+    assert.equal((await updater.check()).version, '1.0.1');
+    assert.equal(updater.state.phase, 'available');
+    assert.equal(updater.state.notes, 'Что нового\n• Быстрее запуск');
+    await updater.download();
+    assert.equal(updater.state.phase, 'ready');
+    assert.equal(fs.readFileSync(updater.readyFile(), 'utf8'), 'installer');
+    assert.deepEqual([...new Set(states)], ['available', 'downloading', 'ready']);
+    // A later check of the same version keeps the downloaded installer.
+    await updater.check(); assert.equal(updater.state.phase, 'ready');
+  } finally { fs.rmSync(dir, {recursive: true, force: true}); }
+});
+test('a wrong checksum deletes the file and offers the version again with an error', async () => {
+  const dir = tempDir(), r = release('v1.0.1');
+  const fetch = fakeFetch({[u.RELEASES_URL]: [r], [r.assets[2].browser_download_url]: `${'0'.repeat(64)}  Shopot-1.0.1-win-x64.exe\n`, [r.assets[0].browser_download_url]: 'tampered'});
+  const updater = new u.Updater({fetch, dir, current: '1.0.0', ...win});
+  try {
+    await updater.check();
+    await assert.rejects(updater.download(), {kind: 'checksum'});
+    assert.deepEqual(fs.readdirSync(dir), []);
+    assert.equal(updater.state.phase, 'available');
+    assert.match(updater.state.error, /не прошёл проверку/);
+    assert.equal(updater.readyFile(), null);
+  } finally { fs.rmSync(dir, {recursive: true, force: true}); }
+});
+test('a missing sum line, no network and rate limits are update errors', async () => {
+  const dir = tempDir(), r = release('v1.0.1');
+  try {
+    let updater = new u.Updater({fetch: fakeFetch({[u.RELEASES_URL]: [r], [r.assets[2].browser_download_url]: 'нет строк'}), dir, current: '1.0.0', ...win});
+    await updater.check(); await assert.rejects(updater.download(), {kind: 'format'});
+    updater = new u.Updater({fetch: fakeFetch({[u.RELEASES_URL]: new TypeError('fetch failed')}), dir, current: '1.0.0', ...win});
+    await assert.rejects(updater.check(), {kind: 'offline'});
+    assert.equal(updater.state.phase, 'none');
+    updater = new u.Updater({fetch: fakeFetch({[u.RELEASES_URL]: {status: 403}}), dir, current: '1.0.0', ...win});
+    await assert.rejects(updater.check(), {kind: 'rate-limit'});
+    updater = new u.Updater({fetch: fakeFetch({[u.RELEASES_URL]: 'не json'}), dir, current: '1.0.0', ...win});
+    await assert.rejects(updater.check(), {kind: 'format'});
+  } finally { fs.rmSync(dir, {recursive: true, force: true}); }
+});
+test('later hides the offer until the next check; nothing newer clears it', async () => {
+  const dir = tempDir(), r = release('v1.0.1');
+  const routes = {[u.RELEASES_URL]: [r]}, updater = new u.Updater({fetch: fakeFetch(routes), dir, current: '1.0.0', ...win});
+  await updater.check(); updater.hide();
+  assert.equal(updater.state.hidden, true);
+  await updater.check(); assert.equal(updater.state.hidden, false);
+  routes[u.RELEASES_URL] = [];
+  await updater.check(); assert.equal(updater.state.phase, 'none');
+  fs.rmSync(dir, {recursive: true, force: true});
+});
+test('clean removes leftovers, and installers launch per system', async () => {
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, 'Shopot-1.0.0-win-x64.exe'), 'old'); fs.writeFileSync(path.join(dir, 'x.part'), 'old');
+  new u.Updater({fetch: async () => {}, dir, current: '1.0.0', ...win}).clean();
+  assert.deepEqual(fs.readdirSync(dir), []);
+  new u.Updater({fetch: async () => {}, dir: path.join(dir, 'missing'), current: '1.0.0', ...win}).clean();
+  const spawned = [];
+  const spawn = (file, args, options) => { spawned.push({file, args, options}); return {unref() {}}; };
+  assert.equal(await u.launchInstaller('C:/u/setup.exe', 'win32', {spawn}), 'quit');
+  assert.deepEqual(spawned[0].args, ['--updated', '/S', '--force-run']);
+  assert.equal(spawned[0].options.detached, true);
+  assert.equal(await u.launchInstaller('/u/a.dmg', 'darwin', {openPath: async () => ''}), 'opened');
+  await assert.rejects(u.launchInstaller('/u/a.dmg', 'darwin', {openPath: async () => 'нет'}), {kind: 'open'});
+  fs.rmSync(dir, {recursive: true, force: true});
+});

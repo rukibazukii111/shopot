@@ -1,5 +1,11 @@
 // Updates (PRD 6.26): which GitHub release this install may move to, and its installer with a verified checksum.
 // Only main uses this module, through a session that reaches GitHub alone; the windows still have no network.
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const {EventEmitter} = require('node:events');
+const {Readable, Transform} = require('node:stream');
+const {pipeline} = require('node:stream/promises');
 const {repository} = require('../package.json');
 
 const REPO = new URL(repository.url.replace(/\.git$/, '')).pathname.slice(1);
@@ -83,4 +89,95 @@ function allowedUrl(url) {
   try { const parsed = new URL(url); return parsed.protocol === 'https:' && HOSTS.includes(parsed.hostname); } catch { return false; }
 }
 
-module.exports = {REPO, RELEASES_URL, UpdateError, parseVersion, compareVersions, installerName, notesText, pickRelease, parseSums, allowedUrl};
+// The offer shown in the main window and its installer. States: none, available, downloading, ready;
+// `hidden` is «Позже» until the next check, `error` a failed download.
+class Updater extends EventEmitter {
+  constructor({fetch, dir, current, platform, arch}) {
+    super();
+    Object.assign(this, {fetchImpl: fetch, dir, current, platform, arch});
+    this.offer = null; this.ready = null; this.checking = null; this.downloading = null;
+    this.state = {phase: 'none', hidden: false};
+  }
+  set(state) { this.state = state; this.emit('state', state); }
+  offerState(extra = {}) {
+    const {version, beta, notes} = this.offer;
+    return {phase: this.ready?.version === version ? 'ready' : 'available', version, beta, notes, hidden: false, ...extra};
+  }
+  async request(url, init = {}) {
+    // 30 s for a check or the sums; the installer passes `signal: null` and has no overall limit.
+    const signal = 'signal' in init ? init.signal ?? undefined : AbortSignal.timeout(30000);
+    let response;
+    try { response = await this.fetchImpl(url, {...init, signal}); }
+    catch (error) { throw new UpdateError('offline', error?.code ?? error?.cause?.code); }
+    if ([403, 429].includes(response.status)) throw new UpdateError('rate-limit', response.status);
+    if (!response.ok) throw new UpdateError('http', response.status);
+    return response;
+  }
+  // One check at a time; a download in progress is left alone.
+  check({manual = false, skipped = null} = {}) {
+    this.checking ??= (async () => {
+      let releases;
+      try { releases = await (await this.request(RELEASES_URL, {headers: {accept: 'application/vnd.github+json'}})).json(); }
+      catch (error) { throw error instanceof UpdateError ? error : new UpdateError('format'); }
+      const offer = pickRelease(releases, {current: this.current, platform: this.platform, arch: this.arch, skipped, manual});
+      if (this.downloading) return offer;
+      if (!offer) { this.offer = null; this.set({phase: 'none', hidden: false}); return null; }
+      if (this.ready && this.ready.version !== offer.version) this.ready = null;
+      this.offer = offer; this.set(this.offerState());
+      return offer;
+    })().finally(() => { this.checking = null; });
+    return this.checking;
+  }
+  hide() { if (this.state.phase !== 'none') this.set({...this.state, hidden: true}); }
+  readyFile() { return this.ready && fs.existsSync(this.ready.file) ? this.ready.file : null; }
+  download() {
+    if (!this.offer) return Promise.resolve();
+    this.downloading ??= this.fetchInstaller(this.offer).finally(() => { this.downloading = null; });
+    return this.downloading;
+  }
+  async fetchInstaller(offer) {
+    const file = path.join(this.dir, offer.installer.name), part = file + '.part';
+    this.set(this.offerState({phase: 'downloading', progress: 0}));
+    try {
+      fs.mkdirSync(this.dir, {recursive: true});
+      const expected = parseSums(await (await this.request(offer.sums)).text()).get(offer.installer.name);
+      if (!expected) throw new UpdateError('format');
+      const response = await this.request(offer.installer.url, {signal: null});
+      const total = Number(response.headers.get('content-length')) || offer.installer.size;
+      const hash = crypto.createHash('sha256');
+      let received = 0, shown = 0;
+      const count = new Transform({transform: (chunk, _, done) => {
+        hash.update(chunk); received += chunk.length;
+        const progress = total ? Math.min(99, Math.floor(received / total * 100)) : 0;
+        if (progress !== shown) { shown = progress; this.set(this.offerState({phase: 'downloading', progress})); }
+        done(null, chunk);
+      }});
+      try { await pipeline(Readable.fromWeb(response.body), count, fs.createWriteStream(part)); }
+      catch (error) { throw new UpdateError('offline', error?.code); }
+      if (hash.digest('hex') !== expected) throw new UpdateError('checksum');
+      fs.renameSync(part, file);
+      this.ready = {version: offer.version, file};
+      this.set(this.offerState());
+    } catch (error) {
+      fs.rmSync(part, {force: true});
+      this.set(this.offerState({error: error.message}));
+      throw error;
+    }
+  }
+  // Installers left by the previous update; one still held by a finishing installer stays until next time.
+  clean() {
+    let names = [];
+    try { names = fs.readdirSync(this.dir); } catch { return; }
+    for (const name of names) { try { fs.rmSync(path.join(this.dir, name), {force: true}); } catch {} }
+  }
+}
+
+// Windows: electron-builder's NSIS installer, silent, into the folder the app is in now, then starts Shopot again.
+// macOS: the DMG opens; the user drags Shopot into Applications.
+async function launchInstaller(file, platform, {spawn, openPath}) {
+  if (platform === 'win32') { spawn(file, ['--updated', '/S', '--force-run'], {detached: true, stdio: 'ignore'}).unref(); return 'quit'; }
+  if (await openPath(file)) throw new UpdateError('open');
+  return 'opened';
+}
+
+module.exports = {REPO, RELEASES_URL, UpdateError, Updater, launchInstaller, parseVersion, compareVersions, installerName, notesText, pickRelease, parseSums, allowedUrl};
