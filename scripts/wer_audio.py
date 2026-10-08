@@ -9,14 +9,18 @@ stay the same; a failure is reported and tried again next time, never kept.
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import tempfile
+import time
 import wave
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from importlib import metadata
 from pathlib import Path
 
 import numpy as np
+
+from wer_text import plural
 
 ROOT = Path(__file__).resolve().parents[1]
 CAPTURE = (ROOT / "scripts" / "wer-audio.cjs", ROOT / "scripts" / "wer-audio.html")
@@ -80,17 +84,28 @@ def prepare(source, target):
     return len(audio) / RATE
 
 
+def remove_profile(folder, attempts=10):
+    """Chromium's helper processes may hold the profile for a moment after Electron exits: retry, then leave it."""
+    for _ in range(attempts):
+        shutil.rmtree(folder, ignore_errors=True)
+        if not os.path.exists(folder):
+            return
+        time.sleep(0.2)
+
+
 def run_capture(binary, wav, output, variant, seconds):
     """One hidden Electron process records one variant for `seconds`; returns its report."""
     env = {key: value for key, value in os.environ.items() if key != "ELECTRON_RUN_AS_NODE"}
-    with tempfile.TemporaryDirectory(prefix="shopot-wer-profile-", ignore_cleanup_errors=True) as profile:
-        try:
-            run = subprocess.run([binary, str(CAPTURE[0]), f"--wer-input={wav}", f"--wer-output={output}",
-                                  f"--wer-variant={variant}", f"--wer-seconds={seconds:.3f}",
-                                  f"--wer-profile={profile}"], env=env, capture_output=True, text=True,
-                                 encoding="utf-8", errors="replace", timeout=seconds + 120)
-        except subprocess.TimeoutExpired:
-            raise RuntimeError("Electron не закончил запись вовремя") from None
+    profile = tempfile.mkdtemp(prefix="shopot-wer-profile-")
+    try:
+        run = subprocess.run([binary, str(CAPTURE[0]), f"--wer-input={wav}", f"--wer-output={output}",
+                              f"--wer-variant={variant}", f"--wer-seconds={seconds:.3f}",
+                              f"--wer-profile={profile}"], env=env, capture_output=True, text=True,
+                             encoding="utf-8", errors="replace", timeout=seconds + 120)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Electron не закончил запись вовремя") from None
+    finally:
+        remove_profile(profile)
     answers = [line[len(MARK):] for line in run.stdout.splitlines() if line.startswith(MARK)]
     if not answers:
         raise RuntimeError(f"Electron завершился без ответа, код {run.returncode}: {run.stderr.strip()[-300:]}")
@@ -145,7 +160,8 @@ def process(sources, cache, variants, jobs, log=print, capture=run_capture, bina
                 todo.append((sha, variant))
     if not todo:
         return done, failed
-    log(f"Обработка звука: {len(todo)} записей-вариантов в реальном времени, по {jobs} одновременно.")
+    items = plural(len(todo), "запись-вариант", "записи-варианта", "записей-вариантов")
+    log(f"Обработка звука: {len(todo)} {items} в реальном времени, по {jobs} одновременно.")
     with tempfile.TemporaryDirectory(prefix="shopot-wer-wav-", ignore_cleanup_errors=True) as temp:
         prepared = {}
         for sha in dict.fromkeys(sha for sha, _ in todo):

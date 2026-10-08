@@ -19,7 +19,7 @@ DRAFT_SUFFIX = ".черновик.txt"
 DICTIONARY_FILE = "dictionary.json"
 STATES = {"verified": "проверена", "draft": "только черновик", "missing": "нет расшифровки",
           "duplicate": "два файла записи с одним именем", "unreadable": "расшифровка не в кодировке UTF-8",
-          "empty": "в расшифровке нет слов"}
+          "empty": "в расшифровке нет слов", "unopened": "расшифровку не удалось открыть"}
 
 
 @dataclass
@@ -71,6 +71,8 @@ def _state(files, found):
         reference = found["verified"].read_text("utf-8-sig")
     except UnicodeDecodeError:
         return "unreadable", ""
+    except OSError:  # locked by a sync client or an antivirus: only this recording is left out
+        return "unopened", ""
     return ("verified" if normalize(reference) else "empty"), reference
 
 

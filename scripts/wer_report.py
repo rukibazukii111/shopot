@@ -4,7 +4,7 @@ from collections import Counter
 from pathlib import Path
 
 from wer_set import STATES
-from wer_text import normalize, total
+from wer_text import normalize, plural, total
 
 LABELS = {"file": "Исходный файл", "none": "Всё выключено", "agc": "А", "ns": "Ш", "ec": "Э",
           "agc+ns": "А+Ш", "agc+ec": "А+Э", "ns+ec": "Ш+Э", "agc+ns+ec": "А+Ш+Э (0.3.0)"}
@@ -46,15 +46,17 @@ def markdown(m):
     summaries = {model["id"]: summarize(model["cells"], names, variants) for model in installed}
     lines = [f"# Замер WER, {m['created']:%d.%m.%Y %H:%M}", ""]
     if len(measured) < len(m["recordings"]):
-        lines += [f"> **Проверено {len(measured)} из {len(m['recordings'])} записей — итог неполный.**", ""]
+        lines += [f"> **Проверено {len(measured)} из {len(m['recordings'])} "
+                  f"{plural(len(m['recordings']), 'записи', 'записей', 'записей')} — итог неполный.**", ""]
     last = m["previous"]
     if last and last["fingerprint"] != m["fingerprint"]:
         lines += [f"> **Набор изменился после замера {last['name']}: записи, эталоны или словарь другие. "
                   "Числа этих замеров не сравнимы.**", ""]
     devices = ", ".join(f"{device}: {count}" for device, count in sorted(Counter(r.device for r in measured).items()))
     minutes = f"{sum(m['durations'].values()) / 60:.1f}".replace(".", ",")
-    lines += [f"- Набор: {len(measured)} записей, {minutes} мин ({devices}). Отпечаток набора: {m['fingerprint']}.",
-              f"- Текст: итог Шёпота — русский язык, режим «Естественно», словарь набора ({m['dictionaryWords']} слов), "
+    lines += [f"- Набор: {len(measured)} {plural(len(measured), 'запись', 'записи', 'записей')}, {minutes} мин ({devices}). Отпечаток набора: {m['fingerprint']}.",
+              f"- Текст: итог Шёпота — русский язык, режим «Естественно», словарь набора ({m['dictionaryWords']} "
+              f"{plural(m['dictionaryWords'], 'слово', 'слова', 'слов')}), "
               "чистка «э-э», голосовые команды, без абзацев и списков.",
               f"- Код: {m['commit']}." + (f" Обработка звука: Chromium из Electron {m['electron']}." if m["electron"] else ""),
               "- WER — доля ошибочных слов: замены, пропуски и вставки, делённые на число слов эталонов группы.",

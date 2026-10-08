@@ -57,3 +57,15 @@ def test_saved_reports_are_found_in_order_and_keep_the_numbers(tmp_path):
     assert data["models"][0]["summary"]["file"]["wer"] == 0.01
     assert data["models"][0]["summary"]["agc+ns+ec"]["complete"] is False
     assert previous(tmp_path / "нет") is None
+
+
+def test_counts_in_the_report_agree_with_their_words():
+    text = markdown(measurement())  # 2 measured of 3, a dictionary of 2 words
+    assert "- Набор: 2 записи," in text and "словарь набора (2 слова)" in text
+    one = measurement(recordings=[rec("windows/короткие/01.m4a")], dictionaryWords=1)
+    assert "- Набор: 1 запись," in markdown(one) and "словарь набора (1 слово)" in markdown(one)
+    many = measurement(dictionaryWords=12, recordings=[rec(f"windows/короткие/{i:02}.m4a") for i in range(21)]
+                       + [rec("mac/шум/99.m4a", state="draft")])
+    text = markdown(many)
+    assert "Проверено 21 из 22 записей" in text and "- Набор: 21 запись," in text and "(12 слов)" in text
+    assert "Проверено 0 из 1 записи" in markdown(measurement(recordings=[rec("mac/шум/03.m4a", state="draft")]))

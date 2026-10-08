@@ -4,7 +4,9 @@ import unicodedata
 import pytest
 
 from wer_helpers import ROOT  # noqa: F401
-from wer_set import Recording, fingerprint, import_dictionary, load_dictionary, scan
+from pathlib import Path
+
+from wer_set import STATES, Recording, fingerprint, import_dictionary, load_dictionary, scan
 
 
 def put(root, relative, content=b"x"):
@@ -95,3 +97,21 @@ def test_mac_and_windows_service_files_are_not_recordings(tmp_path):
     recordings, orphans = scan(tmp_path)
     assert [(r.name, r.state) for r in recordings] == [("mac/термины/01.m4a", "verified")]
     assert orphans == []
+
+
+def test_a_transcript_that_cannot_be_opened_marks_only_its_recording(tmp_path, monkeypatch):
+    put(tmp_path, "windows/короткие/01.m4a")
+    put(tmp_path, "windows/короткие/01.txt", "Привет")
+    put(tmp_path, "windows/короткие/02.m4a")
+    locked = put(tmp_path, "windows/короткие/02.txt", "Пока")
+    read_text = Path.read_text
+
+    def guarded(self, *args, **kwargs):
+        if self == locked:  # held open by a sync client or an antivirus on Windows
+            raise PermissionError(13, "Permission denied", str(self))
+        return read_text(self, *args, **kwargs)
+    monkeypatch.setattr(Path, "read_text", guarded)
+    recordings, _ = scan(tmp_path)
+    assert [(r.name, r.state) for r in recordings] == [
+        ("windows/короткие/01.m4a", "verified"), ("windows/короткие/02.m4a", "unopened")]
+    assert STATES["unopened"] == "расшифровку не удалось открыть"

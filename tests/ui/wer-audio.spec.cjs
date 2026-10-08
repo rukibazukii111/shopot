@@ -27,19 +27,24 @@ for (const [variant, settings] of [['none', off], ['agc+ns+ec', all]]) {
   test(`WER capture records a file through Chromium processing: ${variant}`, () => {
     const dir = path.join(root, '.private', 'ui-test', `wer-audio-${Date.now()}`);
     fs.mkdirSync(dir, {recursive: true});
-    const input = path.join(dir, 'tone.wav'), output = path.join(dir, 'out.webm');
-    tone(input, 2);
-    const run = spawnSync(require('electron'), [path.join(root, 'scripts', 'wer-audio.cjs'), `--wer-input=${input}`,
-      `--wer-output=${output}`, `--wer-variant=${variant}`, '--wer-seconds=2.5', `--wer-profile=${path.join(dir, 'profile')}`],
-    {env, encoding: 'utf8', timeout: 60000, windowsHide: true});
-    const line = run.stdout.split(/\r?\n/).find(text => text.startsWith('SHOPOT_WER '));
-    expect(line, run.stdout + run.stderr).toBeTruthy();
-    const report = JSON.parse(line.slice('SHOPOT_WER '.length));
-    expect(report).toMatchObject({ok: true, settings});
-    expect(report.startDelay).toBeLessThan(0.8);  // scripts/wer_audio.py MAX_START_DELAY
-    expect(run.status).toBe(0);
-    const bytes = fs.readFileSync(output);
-    expect(bytes.subarray(0, 4).toString('hex')).toBe('1a45dfa3');  // WebM starts with the EBML header
-    expect(bytes.length).toBeGreaterThan(10000);  // 2.5 s at 96 kbit/s is about 30 KB
+    try {
+      const input = path.join(dir, 'tone.wav'), output = path.join(dir, 'out.webm');
+      tone(input, 2);
+      const run = spawnSync(require('electron'), [path.join(root, 'scripts', 'wer-audio.cjs'), `--wer-input=${input}`,
+        `--wer-output=${output}`, `--wer-variant=${variant}`, '--wer-seconds=2.5', `--wer-profile=${path.join(dir, 'profile')}`],
+      {env, encoding: 'utf8', timeout: 60000, windowsHide: true});
+      const line = run.stdout.split(/\r?\n/).find(text => text.startsWith('SHOPOT_WER '));
+      expect(line, run.stdout + run.stderr).toBeTruthy();
+      const report = JSON.parse(line.slice('SHOPOT_WER '.length));
+      expect(report).toMatchObject({ok: true, settings});
+      expect(report.startDelay).toBeLessThan(0.8);  // scripts/wer_audio.py MAX_START_DELAY
+      expect(run.status).toBe(0);
+      const bytes = fs.readFileSync(output);
+      expect(bytes.subarray(0, 4).toString('hex')).toBe('1a45dfa3');  // WebM starts with the EBML header
+      expect(bytes.length).toBeGreaterThan(10000);  // 2.5 s at 96 kbit/s is about 30 KB
+    } finally {
+      // Chromium's helpers may hold the profile for a moment after Electron exits.
+      fs.rmSync(dir, {recursive: true, force: true, maxRetries: 10, retryDelay: 200});
+    }
   });
 }

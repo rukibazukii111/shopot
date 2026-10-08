@@ -44,3 +44,12 @@ def total(counts):
               for key in ("words", "errors", "substitutions", "deletions", "insertions")}
     result["wer"] = result["errors"] / result["words"] if result["words"] else None
     return result
+
+
+def plural(count, one, few, many):
+    """The Russian word form for a count: 1 запись, 2 записи, 5 записей, 21 запись, 11 записей."""
+    if count % 10 == 1 and count % 100 != 11:
+        return one
+    if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14:
+        return few
+    return many

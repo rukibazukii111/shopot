@@ -110,3 +110,20 @@ def test_kept_audio_follows_the_installed_decoding_libraries(monkeypatch, packag
     real = metadata.version
     monkeypatch.setattr(metadata, "version", lambda name: "99.0.0" if name == package else real(name))
     assert wer_audio.capture_code() != before
+
+
+def test_capture_profile_is_removed_once_electron_lets_go_of_it(tmp_path, monkeypatch):
+    # Chromium's helpers can hold the profile for a moment after Electron exits; the folder must not stay in TEMP.
+    import subprocess
+    import threading
+    profiles = []
+
+    def run(command, **kwargs):
+        profile = next(arg.split("=", 1)[1] for arg in command if arg.startswith("--wer-profile="))
+        profiles.append(Path(profile))
+        handle = open(Path(profile) / "Cookies", "w")
+        threading.Timer(0.5, handle.close).start()
+        return subprocess.CompletedProcess(command, 0, wer_audio.MARK + '{"ok": true}\n', "")
+    monkeypatch.setattr(wer_audio.subprocess, "run", run)
+    assert wer_audio.run_capture("electron", "in.wav", "out.webm", "none", 1.0) == {"ok": True}
+    assert profiles and not profiles[0].exists()
