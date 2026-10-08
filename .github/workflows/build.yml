@@ -45,6 +45,8 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
       - run: npm run test:packaged
+      - if: runner.os == 'Windows'
+        run: node scripts/verify-uninstall.cjs
       - uses: actions/upload-artifact@v4
         with:
           name: Shopot-${{ runner.os }}-${{ matrix.arch }}

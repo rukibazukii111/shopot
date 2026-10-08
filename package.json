@@ -56,7 +56,8 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "include": "packaging/installer.nsh"
     },
     "mac": {
       "target": [
