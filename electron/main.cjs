@@ -11,7 +11,7 @@ const {createNativeBackend} = require('./native-input.cjs');
 const {suggestCorrections} = require('./corrections.cjs');
 const {exportText} = require('./export.cjs');
 const {MicWatcher, meetingTurns, meetingText} = require('./meetings.cjs');
-const {summaryAvailable, summaryPrompt} = require('./summary.cjs');
+const {DICTATION_SOURCES, summaryAvailable, summaryPrompt} = require('./summary.cjs');
 
 const root = path.resolve(__dirname, '..');
 const dataDir = path.resolve(process.env.SHOPOT_DATA_DIR || (app.isPackaged ? path.join(app.getPath('appData'), 'Shopot') : path.join(root, '.local')));
@@ -467,7 +467,7 @@ else {
       const text = textValue(value?.text);
       const entry = value?.id ? entryFor(value.id) : null;
       // A transcribed file suggests its own name; subtitles are offered when the words have timing.
-      const fromFile = entry && !['Микрофон', 'Незавершённая запись'].includes(entry.source);
+      const fromFile = entry && !DICTATION_SOURCES.includes(entry.source);
       const filters = [{name: 'Текст', extensions: ['txt']}, {name: 'Markdown', extensions: ['md']},
         ...(entry?.cues?.length ? [{name: 'Субтитры SRT', extensions: ['srt']}] : [])];
       const result = await dialog.showSaveDialog(window, {defaultPath: `${fromFile ? path.parse(entry.source).name : 'Диктовка'}.txt`, filters});

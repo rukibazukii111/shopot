@@ -1,4 +1,3 @@
-
 // Recordings whose text is worth handing to a chat assistant for notes; renderer/app.js repeats this rule.
 const SUMMARY_MIN_SECONDS = 120;
 const DICTATION_SOURCES = ['Микрофон', 'Незавершённая запись'];
@@ -17,4 +16,4 @@ function summaryPrompt(entry) {
   return `${request}\n\n${entry.text}`;
 }
 
-module.exports = {SUMMARY_MIN_SECONDS, summaryAvailable, summaryPrompt};
+module.exports = {DICTATION_SOURCES, summaryAvailable, summaryPrompt};

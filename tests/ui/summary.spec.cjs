@@ -30,12 +30,17 @@ test('long recordings offer a summary request, short dictations do not', async (
     await page.locator('[data-select-entry="voice-note"]').click();
     await expect(page.locator('#history-detail')).toContainText('Купить хлеб.');
     await expect(button).toBeVisible();
+    // Main refuses a short dictation even if the page asks.
+    expect(await page.evaluate(() => window.shopot.copySummary('short'))).toBe(false);
+    expect(await app.evaluate(() => globalThis.__copied)).toBeUndefined();
     await page.locator('[data-select-entry="long"]').click();
-    await expect(page.locator('#history-detail')).toContainText('Длинная заметка про план.');
+    await expect(page.locator('#history-detail .history-editor')).toHaveValue('Длинная заметка про план.');
+    // The user's edit, still unsaved when the button is pressed, is what gets copied.
+    await page.locator('#history-detail .history-editor').fill('Длинная заметка про новый план.');
     await button.click();
     await expect(page.locator('#toast')).toContainText('Скопировано с просьбой о резюме. Вставь в ChatGPT или Claude');
     // Windows gets CRLF line breaks in the clipboard.
     expect((await app.evaluate(() => globalThis.__copied)).replace(/\r\n/g, '\n')).toBe(
-      'Сделай краткое резюме моей надиктованной заметки: главные мысли, решения, задачи и сроки, открытые вопросы.\n\nДлинная заметка про план.');
+      'Сделай краткое резюме моей надиктованной заметки: главные мысли, решения, задачи и сроки, открытые вопросы.\n\nДлинная заметка про новый план.');
   } finally { await app.close(); }
 });

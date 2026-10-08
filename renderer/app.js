@@ -609,7 +609,10 @@ async function entryAction(button) {
   const action = button.dataset.action;
   if (action === 'copy') { await api.copy(text); markCopied(button); }
   if (action === 'export') { const name = await api.saveText(entry.id, text); if (name) toast(`Сохранено: ${name}`); }
-  if (action === 'summary') { await api.copySummary(entry.id); toast('Скопировано с просьбой о резюме. Вставь в ChatGPT или Claude'); }
+  if (action === 'summary') {
+    if (await api.copySummary(entry.id)) toast('Скопировано с просьбой о резюме. Вставь в ChatGPT или Claude');
+    else showError(new Error('Не удалось скопировать резюме'));
+  }
   if (action === 'delete' && await api.deleteEntry(entry.id)) { state.history = state.history.filter(e => e.id !== entry.id); drafts.delete(entry.id); renderResults(); }
   if (action === 'play') {
     const existing = holder.querySelector('audio'); if (existing) { existing.paused ? await existing.play() : existing.pause(); return; }
