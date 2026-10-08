@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const {Store, validateDictionary, validateSettings, validateSnippets, validateProfiles, settingsFor} = require('../electron/store.cjs');
+const {Store, validateDictionary, validateSettings, validateSnippets, validateProfiles, validateUpdates, settingsFor} = require('../electron/store.cjs');
 
 test('saved corrections and original transcription survive reopening', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shopot-store-'));
@@ -93,4 +93,20 @@ test('per-app profiles override only what they set, for the app that had focus',
   assert.throws(() => validateProfiles([{app: 'a.exe', dropFinalPeriod: 'yes'}]));
   assert.throws(() => validateProfiles([{app: ''}]), /приложение/);
   assert.throws(() => validateProfiles(Array.from({length: 31}, (_, i) => ({app: `app${i}.exe`}))), /30/);
+});
+test('update checks are off by default and a skipped version survives reopening', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shopot-updates-'));
+  try {
+    const store = new Store(root);
+    assert.equal(store.data.settings.checkUpdates, false);
+    assert.deepEqual(store.data.updates, {skipped: null});
+    store.setSettings({...store.data.settings, checkUpdates: true});
+    store.setSkippedUpdate('1.0.1');
+    const reopened = new Store(root);
+    assert.equal(reopened.data.settings.checkUpdates, true);
+    assert.equal(reopened.data.updates.skipped, '1.0.1');
+    assert.throws(() => validateSettings({checkUpdates: 'yes'}));
+    assert.deepEqual(validateUpdates({skipped: '../x'}), {skipped: null});
+    assert.deepEqual(validateUpdates(undefined), {skipped: null});
+  } finally { fs.rmSync(root, {recursive: true, force: true}); }
 });

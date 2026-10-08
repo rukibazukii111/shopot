@@ -5,7 +5,7 @@ const crypto = require('node:crypto');
 const DEFAULT_SETTINGS = {
   model: 'gigaam', language: 'ru', mode: 'natural', context: '',
   autoCopy: true, autoPaste: true, keepAudio: false, microphoneId: 'default', formatting: 'rules', removeFillers: true,
-  voiceCommands: true, meetingOffers: true, meetingIgnore: [], translate: false,
+  voiceCommands: true, meetingOffers: true, meetingIgnore: [], translate: false, checkUpdates: false,
 };
 const MODEL_IDS = ['gigaam', 'small', 'turbo', 'large-v3'];
 const LANGUAGES = ['ru', 'en', 'auto'];
@@ -24,7 +24,7 @@ function validateSettings(input) {
     if (!values.includes(input[key] ?? result[key])) throw new Error('Некорректное значение: ' + key);
     result[key] = input[key] ?? result[key];
   }
-  for (const key of ['autoCopy', 'autoPaste', 'keepAudio', 'removeFillers', 'voiceCommands', 'meetingOffers', 'translate']) {
+  for (const key of ['autoCopy', 'autoPaste', 'keepAudio', 'removeFillers', 'voiceCommands', 'meetingOffers', 'translate', 'checkUpdates']) {
     if (key in input && typeof input[key] !== 'boolean') throw new Error('Некорректное значение: ' + key);
     result[key] = input[key] ?? result[key];
   }
@@ -79,6 +79,12 @@ function validateSnippets(input) {
   });
 }
 
+// Only a version string can be skipped; anything else reads as nothing skipped.
+function validateUpdates(input) {
+  const skipped = input?.skipped;
+  return {skipped: typeof skipped === 'string' && /^\d+\.\d+\.\d+(?:-beta\.\d+)?$/.test(skipped) ? skipped : null};
+}
+
 // Per-app text settings: null means "as in the general settings".
 function validateProfiles(input) {
   if (!Array.isArray(input) || input.length > 30) throw new Error('Можно настроить до 30 приложений');
@@ -119,6 +125,7 @@ class Store {
     this.data.dictionary = validateDictionary(this.data.dictionary);
     this.data.snippets = validateSnippets(this.data.snippets ?? []);
     this.data.profiles = validateProfiles(this.data.profiles ?? []);
+    this.data.updates = validateUpdates(this.data.updates);
     if (!Array.isArray(this.data.history)) throw new Error('Повреждён формат истории');
     this.data.pendingRecordings ??= [];
     if (!Array.isArray(this.data.pendingRecordings)) throw new Error('Повреждён список незавершённых записей');
@@ -132,7 +139,8 @@ class Store {
   setDictionary(entries) { this.data.dictionary = validateDictionary(entries); this.save(); return this.data.dictionary; }
   setSnippets(entries) { this.data.snippets = validateSnippets(entries); this.save(); return this.data.snippets; }
   setProfiles(entries) { this.data.profiles = validateProfiles(entries); this.save(); return this.data.profiles; }
+  setSkippedUpdate(version) { this.data.updates = validateUpdates({skipped: version}); this.save(); }
   addHistory(entry) { this.data.history.unshift(entry); this.save(); return entry; }
 }
 
-module.exports = {Store, validateSettings, validateDictionary, validateSnippets, validateProfiles, settingsFor, DEFAULT_SETTINGS, MODEL_IDS, LANGUAGES, MODES, FORMATTING};
+module.exports = {Store, validateSettings, validateDictionary, validateSnippets, validateProfiles, validateUpdates, settingsFor, DEFAULT_SETTINGS, MODEL_IDS, LANGUAGES, MODES, FORMATTING};
