@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const {Store, validateDictionary, validateSettings, validateSnippets, validateProfiles, settingsFor} = require('../electron/store.cjs');
+const {Store, validateDictionary, validateSettings, validateSnippets, validateProfiles, settingsFor, expiredHistory} = require('../electron/store.cjs');
 
 test('saved corrections and original transcription survive reopening', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shopot-store-'));
@@ -75,6 +75,7 @@ test('stores from older versions open with an empty snippet list', () => {
     fs.writeFileSync(path.join(root, 'store.json'), JSON.stringify({version: 1, settings: {}, dictionary: [], history: []}));
     const store = new Store(root);
     assert.deepEqual(store.data.snippets, []);
+    assert.equal(store.data.settings.historyDays, 0);
     store.setSnippets([{trigger: 'моя почта', text: 'ivan@example.com'}]);
     assert.equal(new Store(root).data.snippets[0].text, 'ivan@example.com');
   } finally { fs.rmSync(root, {recursive: true, force: true}); }
@@ -93,4 +94,27 @@ test('per-app profiles override only what they set, for the app that had focus',
   assert.throws(() => validateProfiles([{app: 'a.exe', dropFinalPeriod: 'yes'}]));
   assert.throws(() => validateProfiles([{app: ''}]), /приложение/);
   assert.throws(() => validateProfiles(Array.from({length: 31}, (_, i) => ({app: `app${i}.exe`}))), /30/);
+});
+test('history retention is "always" by default and only takes the offered periods', () => {
+  assert.equal(validateSettings({}).historyDays, 0);
+  for (const days of [0, 30, 7]) assert.equal(validateSettings({historyDays: days}).historyDays, days);
+  for (const days of [14, '7', -7, 7.5]) assert.throws(() => validateSettings({historyDays: days}), /historyDays/);
+});
+test('entries older than the period expire; undated ones and pending recordings stay', () => {
+  const now = Date.parse('2026-10-08T12:00:00Z'), day = 864e5;
+  const at = ago => new Date(now - ago).toISOString();
+  const history = [{id: 'fresh', createdAt: at(day)}, {id: 'edge', createdAt: at(7 * day - 1000)},
+    {id: 'old', createdAt: at(7 * day + 1000)}, {id: 'undated'}, {id: 'broken', createdAt: 'вчера'}];
+  assert.deepEqual(expiredHistory(history, 7, now).map(e => e.id), ['old']);
+  assert.deepEqual(expiredHistory(history, 0, now), []);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shopot-retention-'));
+  try {
+    const store = new Store(root);
+    store.data.history = history; store.data.pendingRecordings = [{id: 'p', audioFile: 'a.webm', createdAt: at(40 * day)}]; store.save();
+    assert.deepEqual(store.pruneHistory(7, now).map(e => e.id), ['old']);
+    assert.deepEqual(store.pruneHistory(7, now), []);
+    const reopened = new Store(root);
+    assert.deepEqual(reopened.data.history.map(e => e.id), ['fresh', 'edge', 'undated', 'broken']);
+    assert.equal(reopened.data.pendingRecordings.length, 1);
+  } finally { fs.rmSync(root, {recursive: true, force: true}); }
 });

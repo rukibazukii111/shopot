@@ -5,7 +5,7 @@ const crypto = require('node:crypto');
 const DEFAULT_SETTINGS = {
   model: 'gigaam', language: 'ru', mode: 'natural', context: '',
   autoCopy: true, autoPaste: true, keepAudio: false, microphoneId: 'default', formatting: 'rules', removeFillers: true,
-  voiceCommands: true, meetingOffers: true, meetingIgnore: [], translate: false,
+  voiceCommands: true, meetingOffers: true, meetingIgnore: [], translate: false, historyDays: 0,
 };
 const MODEL_IDS = ['gigaam', 'small', 'turbo', 'large-v3'];
 const LANGUAGES = ['ru', 'en', 'auto'];
@@ -14,6 +14,8 @@ const RUSSIAN_ONLY = ['gigaam'];
 // Whisper models that can translate speech into English (turbo cannot).
 const TRANSLATING = ['small', 'large-v3'];
 const FORMATTING = ['rules', 'off', 'llm'];
+// How long history is kept, in days; 0 keeps it forever (PRD 6.20).
+const HISTORY_DAYS = [0, 30, 7];
 const INITIAL_DICTIONARY = ['Whisper', 'GitHub', 'iOS', 'iPhone', 'Reels', 'TikTok', 'YouTube', 'VPN']
   .map(word => ({id: crypto.randomUUID(), word, aliases: []}));
 
@@ -28,6 +30,9 @@ function validateSettings(input) {
     if (key in input && typeof input[key] !== 'boolean') throw new Error('Некорректное значение: ' + key);
     result[key] = input[key] ?? result[key];
   }
+  const days = input.historyDays ?? result.historyDays;
+  if (!HISTORY_DAYS.includes(days)) throw new Error('Некорректное значение: historyDays');
+  result.historyDays = days;
   if (RUSSIAN_ONLY.includes(result.model) && result.language !== 'ru') {
     throw new Error('GigaAM распознаёт только русский. Для других языков выбери Whisper в разделе «Модели».');
   }
@@ -104,6 +109,13 @@ function settingsFor(settings, profiles, app) {
     dropFinalPeriod: profile.dropFinalPeriod};
 }
 
+// Entries older than `days`, by when they were dictated. Undated entries never expire.
+function expiredHistory(history, days, now = Date.now()) {
+  if (!days) return [];
+  const cutoff = now - days * 864e5;
+  return history.filter(entry => Date.parse(entry.createdAt) < cutoff);
+}
+
 class Store {
   constructor(root) {
     this.root = root;
@@ -133,6 +145,14 @@ class Store {
   setSnippets(entries) { this.data.snippets = validateSnippets(entries); this.save(); return this.data.snippets; }
   setProfiles(entries) { this.data.profiles = validateProfiles(entries); this.save(); return this.data.profiles; }
   addHistory(entry) { this.data.history.unshift(entry); this.save(); return entry; }
+  // Removes the entries past the retention period and returns them, so their audio can go too.
+  pruneHistory(days, now = Date.now()) {
+    const expired = new Set(expiredHistory(this.data.history, days, now));
+    if (!expired.size) return [];
+    this.data.history = this.data.history.filter(entry => !expired.has(entry));
+    this.save();
+    return [...expired];
+  }
 }
 
-module.exports = {Store, validateSettings, validateDictionary, validateSnippets, validateProfiles, settingsFor, DEFAULT_SETTINGS, MODEL_IDS, LANGUAGES, MODES, FORMATTING};
+module.exports = {Store, validateSettings, validateDictionary, validateSnippets, validateProfiles, settingsFor, expiredHistory, DEFAULT_SETTINGS, HISTORY_DAYS, MODEL_IDS, LANGUAGES, MODES, FORMATTING};
