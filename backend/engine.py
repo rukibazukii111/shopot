@@ -124,6 +124,8 @@ class Engine:
         self.load_peak = 0
         self.formatter_dir = self.data_dir / "formatter"
         self.formatter = None
+        self.gpu = gpu_runtime.Component(self.data_dir / "gpu")
+        self.nvidia = None  # asked once per engine start: the driver does not change while the app runs
 
     def audio_path(self, filename):
         if not isinstance(filename, str) or not re.fullmatch(
@@ -158,7 +160,7 @@ class Engine:
                             "installed": self.is_installed(key)}
                            for key, value in MODELS.items()],
                 "device": "cpu", "computeType": "int8", "loadedModel": self.loaded_key,
-                "threads": THREADS, "formatter": self.formatter_status()}
+                "threads": THREADS, "formatter": self.formatter_status(), "gpu": self.gpu_status()}
 
     def download(self, key, request_id=None):
         folder = self.model_path(key)
@@ -173,6 +175,32 @@ class Engine:
         # The marker is written only after the entire snapshot download succeeds.
         marker = folder / "shopot-ready.json"
         marker.write_text(json.dumps({"revision": MODELS[key]["revision"]}), "utf-8")
+        return self.status()
+
+    # --- Optional NVIDIA acceleration ----------------------------------------------------------
+
+    def gpu_status(self):
+        if self.nvidia is None:
+            self.nvidia = gpu_runtime.nvidia_devices()
+        device = gpu_runtime.best_device(self.nvidia)
+        return {"supported": gpu_runtime.supported(), "device": device, "minMemoryMb": gpu_runtime.MIN_MEMORY_MB,
+                "enoughMemory": bool(device) and device["memoryMb"] >= gpu_runtime.MIN_MEMORY_MB,
+                "installed": self.gpu.installed(), "size": gpu_runtime.SIZE}
+
+    def download_gpu(self, request_id=None):
+        if not self.gpu_status()["enoughMemory"]:
+            raise ValueError("Для ускорения нужна видеокарта NVIDIA с памятью от 4 ГБ.")
+        if self.gpu.installed():
+            return self.status()
+        last = 0.0
+
+        def progress(completed, total, message, final=False):
+            nonlocal last
+            if final or time.monotonic() - last > 0.5:
+                last = time.monotonic()
+                emit({"event": "progress", "id": request_id, "stage": "download", "model": "gpu", "message": message,
+                      **({"indeterminate": True} if final else {"completed": completed, "total": total, "unit": "B"})})
+        self.gpu.install(progress)
         return self.status()
 
     # --- Optional layout model -------------------------------------------------------------
@@ -672,6 +700,8 @@ def main():
                 result = engine.download(request["model"], request.get("id"))
             elif command == "download-formatter":
                 result = engine.download_formatter(request.get("id"))
+            elif command == "download-gpu":
+                result = engine.download_gpu(request.get("id"))
             elif command == "transcribe":
                 result = engine.transcribe(request)
             else:

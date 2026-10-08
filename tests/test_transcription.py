@@ -619,3 +619,27 @@ def test_translation_asks_whisper_to_translate_without_a_russian_prompt(tmp_path
             engine.transcribe({**request, 'model': 'turbo', 'translate': True})
     finally:
         engine.cancel_idle_unload()
+
+
+def test_status_reports_the_nvidia_card_and_its_component(tmp_path, monkeypatch):
+    import gpu_runtime
+    monkeypatch.setattr(gpu_runtime, 'nvidia_devices',
+                        lambda: [{'name': 'NVIDIA GeForce RTX 5060', 'memoryMb': 8151, 'driver': '610.88'}])
+    gpu = Engine(tmp_path).status()['gpu']
+    assert gpu['device']['name'] == 'NVIDIA GeForce RTX 5060' and gpu['enoughMemory'] and not gpu['installed']
+
+
+def test_small_card_cannot_download_the_component(tmp_path, monkeypatch):
+    import gpu_runtime
+    monkeypatch.setattr(gpu_runtime, 'nvidia_devices', lambda: [{'name': 'MX250', 'memoryMb': 2048, 'driver': '1'}])
+    engine = Engine(tmp_path)
+    assert engine.status()['gpu']['enoughMemory'] is False
+    with pytest.raises(ValueError, match='от 4 ГБ'):
+        engine.download_gpu()
+
+
+def test_no_nvidia_card_means_no_device(tmp_path, monkeypatch):
+    import gpu_runtime
+    monkeypatch.setattr(gpu_runtime, 'nvidia_devices', lambda: [])
+    gpu = Engine(tmp_path).status()['gpu']
+    assert gpu['device'] is None and gpu['enoughMemory'] is False
