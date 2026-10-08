@@ -16,7 +16,8 @@ const env = {...process.env, SHOPOT_DATA_DIR: dataDir, HF_HUB_OFFLINE: '1'}; del
   const engine = spawnSync(path.join(resources, 'engine', windows ? 'shopot-engine.exe' : 'shopot-engine'), ['--data-dir', dataDir, '--self-check'], {encoding: 'utf8', windowsHide: true, env, timeout: 90000});
   assert.equal(engine.status, 0, engine.stderr || engine.error?.message);
   assert.equal(JSON.parse(engine.stdout).ok, true);
-  const app = await electron.launch({executablePath, env});
+  // Hidden in the tray: the check needs the page, not a window on the desktop of whoever is working.
+  const app = await electron.launch({executablePath, args: ['--hidden'], env});
   try {
     const page = await app.firstWindow();
     await page.waitForFunction(() => document.querySelector('#engine-label')?.textContent === 'Локальный движок');

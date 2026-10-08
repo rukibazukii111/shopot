@@ -33,6 +33,8 @@ test('waiting for microphone can be canceled and late permission cannot start re
 test('global widget keeps main window hidden and cancels transcription cleanly', async () => {
   const {app, page, dataDir} = await launch();
   try {
+    // The main window appears after its first paint; hide it only once it has.
+    await expect.poll(() => app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith('/index.html')).isVisible())).toBe(true);
     await app.evaluate(({BrowserWindow}) => { BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith('/index.html')).hide(); globalThis.__test.toggle(); });
     await expect(page.locator('#record-label')).toHaveText('Закончить запись');
     await expect.poll(() => app.windows().some(p => p.url().endsWith('/widget.html'))).toBe(true);
@@ -43,18 +45,23 @@ test('global widget keeps main window hidden and cancels transcription cleanly',
     expect(windows.find(w => w.url.endsWith('/widget.html'))).toMatchObject({visible: true, focused: false, focusable: false});
     await widget.screenshot({path: path.join(root, '.private/ui-test/widget.png')});
     await expect(page.locator('#record-time')).not.toHaveText('00:00');
+    expect(await app.evaluate(() => globalThis.__test.escape)).toBe(true);
     await app.evaluate(() => globalThis.__test.toggle());
     expect(await widgetVisible(app)).toBe(false);
+    // Once recording stops, Escape goes back to the app the user is typing in.
+    expect(await app.evaluate(() => globalThis.__test.escape)).toBe(false);
     await expect(widget.locator('#widget')).toHaveAttribute('data-phase', 'transcribing');
     // A late microphone tick and ASR progress must not reopen the stopped widget.
     await page.evaluate(() => window.shopot.captureUpdate({id: captureId, phase: 'recording', elapsed: 3, level: 1}));
     await app.evaluate(() => globalThis.__test.progress());
     expect(await widgetVisible(app)).toBe(false);
-    await app.evaluate(() => globalThis.__test.cancel());
+    await page.evaluate(() => cancelOperation());
     await expect(widget.locator('#label')).toHaveText('Операция отменена');
     expect(await widgetVisible(app)).toBe(false);
     await expect(page.locator('#record-label')).toHaveText('Начать диктовку');
     await expect.poll(() => fs.readdirSync(path.join(dataDir, 'audio')).length).toBe(0);
+    // The model is warmed at hotkey time and cancel keeps the engine (and loaded model) alive.
+    expect((await app.evaluate(() => globalThis.__test.notifications)).map(n => n.command)).toEqual(['preload', 'cancel']);
     // A late result from the canceled job must not be inserted or persisted.
     await app.evaluate(() => globalThis.__test.finish());
     await expect(page.locator('#latest-result')).toContainText('Здесь появятся твои слова');
@@ -172,8 +179,11 @@ test('Windows: native paste reaches the original external input exactly once wit
       const saved = [];
       for (const item of await clipboard.read()) {
         const data = {};
-        for (const type of item.types) data[type] = await item.getType(type);
-        saved.push(new ClipboardItem(data));
+        for (const type of item.types) {
+          // An unreadable flavour (a stale or app-private one) must not lose the rest of the clipboard.
+          try { data[type] = await item.getType(type); } catch {}
+        }
+        if (Object.keys(data).length) saved.push(new ClipboardItem(data));
       }
       globalThis.__test.clipboardSnapshot = saved;
     });
@@ -182,6 +192,7 @@ test('Windows: native paste reaches the original external input exactly once wit
     await app.evaluate((_, pid) => { globalThis.__test.targetPid = pid; }, targetPid);
     console.log('Native input test target PID:', targetPid);
     const fieldPage = await target.firstWindow();
+    await expect.poll(() => app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith('/index.html')).isVisible())).toBe(true);
     await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith('/index.html')).hide());
     await target.evaluate(({BrowserWindow}) => { BrowserWindow.getAllWindows()[0].show(); BrowserWindow.getAllWindows()[0].focus(); });
     await fieldPage.locator('textarea').click();
@@ -194,6 +205,14 @@ test('Windows: native paste reaches the original external input exactly once wit
     await expect(page.locator('#record-time')).not.toHaveText('00:00');
     await app.evaluate(() => globalThis.__test.toggle());
     await expect.poll(() => app.evaluate(() => globalThis.__test.requests.length)).toBe(1);
+    // Windows does not let a window opened by a background process hold the foreground while someone
+    // works in another app, and the app then refuses to paste on purpose. Say so instead of failing
+    // on an empty field: the run needs an idle desktop with the test window in front.
+    await target.evaluate(({BrowserWindow}) => { const window = BrowserWindow.getAllWindows()[0]; window.show(); window.focus(); });
+    const foreground = await app.evaluate(() => globalThis.__test.foregroundPid());
+    test.skip(foreground !== targetPid,
+      `Рабочий стол потерял фокус: впереди процесс ${foreground}, а не тестовое окно ${targetPid}. ` +
+      'Запусти на свободном рабочем столе: сверни другие окна, нажми на окно «Shopot — тест вставки» и не трогай мышь и клавиатуру.');
     await app.evaluate(() => globalThis.__test.finish());
     await expect(page.locator('#record-label')).toHaveText('Начать диктовку');
     await expect(fieldPage.locator('textarea')).toHaveValue('Видосы для GitHub готовы.');

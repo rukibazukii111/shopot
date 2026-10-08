@@ -9,13 +9,18 @@ const messages = {
   'clipboard-failed': 'Буфер недоступен · текст в истории',
   canceled: 'Вставка отменена · текст в истории',
 };
+// Windows text controls expect CRLF; formatted dictation has paragraphs and lists.
+function clipboardText(text, platform = process.platform) {
+  return platform === 'win32' ? text.replace(/\r?\n/g, '\r\n') : text;
+}
 class PasteService {
-  constructor({clipboard, native, wait = ms => new Promise(resolve => setTimeout(resolve, ms))}) {
-    this.clipboard = clipboard; this.native = native; this.wait = wait;
+  constructor({clipboard, native, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), platform = process.platform}) {
+    this.clipboard = clipboard; this.native = native; this.wait = wait; this.platform = platform;
   }
   capture() { try { return this.native?.capture() || null; } catch { return null; } }
   release(target) { if (target) this.native?.release(target); }
   async deliver(text, {autoCopy, autoPaste, target}, current = () => true) {
+    text = clipboardText(text, this.platform);
     let copied = false;
     const result = code => ({copied, pasted: code === 'pasted', code, message: messages[code]});
     if (!current()) return result('canceled');
@@ -40,4 +45,4 @@ class PasteService {
     } catch { return result('blocked'); }
   }
 }
-module.exports = {PasteService};
+module.exports = {PasteService, clipboardText};

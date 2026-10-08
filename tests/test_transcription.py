@@ -94,3 +94,528 @@ def test_symlink_cannot_escape_audio_directory_even_with_matching_prefix(tmp_pat
 def test_model_name_cannot_traverse_directories(tmp_path):
     with pytest.raises(ValueError):
         Engine(tmp_path).model_path('../../other')
+
+
+def test_cancel_covers_running_and_queued_requests_but_not_later_ones(tmp_path):
+    from engine import Canceled
+    engine = Engine(tmp_path)
+    engine.canceled_through = 5
+    for request_id in (3, 5):
+        with pytest.raises(Canceled):
+            engine.check_canceled(request_id)
+    engine.check_canceled(6)
+    engine.check_canceled(None)
+
+
+def test_stale_idle_timer_does_not_unload_a_model_used_after_it_fired(tmp_path):
+    engine = Engine(tmp_path)
+    engine.model, engine.loaded_key = object(), 'turbo'
+    engine.schedule_idle_unload()
+    stale = engine.idle_timer
+    engine.schedule_idle_unload()
+    try:
+        engine._idle_unload(stale)
+        assert engine.loaded_key == 'turbo'
+        engine._idle_unload(engine.idle_timer)
+        assert engine.model is None and engine.loaded_key is None
+    finally:
+        engine.cancel_idle_unload()
+
+
+def test_join_segments_drops_chunk_capitals_mid_sentence_only():
+    from text_processing import join_segments
+    chunks = ['Столбики поставить', 'Иконки у меня расположены.', 'Всё готово', 'iPhone и XR', 'Москва ждёт']
+    assert join_segments(chunks, ['Москва']) == (
+        'Столбики поставить иконки у меня расположены. Всё готово iPhone и XR Москва ждёт')
+    assert join_segments(['', '  ', 'Текст']) == 'Текст'
+
+
+def test_speech_windows_merge_regions_without_exceeding_the_limit():
+    from engine import speech_windows
+    speech = [{'start': 0, 'end': 50}, {'start': 60, 'end': 90}, {'start': 95, 'end': 180}, {'start': 200, 'end': 230}]
+    assert speech_windows(speech, 100) == [(0, 90), (95, 180), (200, 230)]
+    assert speech_windows([], 100) == []
+
+
+def test_gigaam_needs_all_onnx_files_and_rejects_other_languages(tmp_path):
+    import json
+    from engine import MODELS, GIGAAM_FILES
+    engine = Engine(tmp_path)
+    folder = engine.model_path('gigaam')
+    folder.mkdir(parents=True)
+    (folder / 'shopot-ready.json').write_text(json.dumps({'revision': MODELS['gigaam']['revision']}), 'utf-8')
+    for name in GIGAAM_FILES[:-1]:
+        (folder / name).write_bytes(b'x')
+    assert not engine.is_installed('gigaam')
+    (folder / GIGAAM_FILES[-1]).write_bytes(b'x')
+    assert engine.is_installed('gigaam')
+    (engine.audio_dir / 'abc.wav').write_bytes(b'x')
+    with pytest.raises(ValueError, match='только русский'):
+        engine.transcribe({'model': 'gigaam', 'audioFile': 'abc.wav', 'language': 'en'})
+
+
+def _words(text):
+    import re
+    text = re.sub(r"(?m)^\s*(?:\d+\.|•)\s+", "", text)
+    return re.findall(r"\w+", text.casefold())
+
+
+LIST_TEXT = ('Давай обсудим план. Во-первых, нужно ускорить распознавание. Это важно. '
+             'Во-вторых, надо поработать со вставкой. В-третьих, проверим память на Mac. '
+             'Теперь про дизайн. Им займусь потом.')
+
+
+def test_ordinals_become_a_numbered_list_without_changing_words():
+    from text_processing import layout_text
+    result = layout_text(LIST_TEXT)
+    assert result == ('Давай обсудим план.\n\n'
+                      '1. Во-первых, нужно ускорить распознавание. Это важно.\n'
+                      '2. Во-вторых, надо поработать со вставкой.\n'
+                      '3. В-третьих, проверим память на Mac.\n\n'
+                      'Теперь про дизайн. Им займусь потом.')
+    assert _words(result) == _words(LIST_TEXT)
+
+
+def test_eto_raz_opens_a_list_and_a_lone_ordinal_does_not():
+    from text_processing import layout_text
+    spoken = 'Надо сделать абзацы, это раз. Второе замечание, нужно ускорить запись. Спасибо тебе большое.'
+    assert layout_text(spoken).startswith('1. Надо сделать абзацы, это раз.\n2. Второе замечание')
+    lone = 'Первое, что я бы хотел, это изучить файл. Потом расскажу о проекте. Вот так.'
+    assert '1.' not in layout_text(lone)
+
+
+def test_short_items_after_a_colon_become_bullets():
+    from text_processing import layout_text
+    result = layout_text('Проверим прогрев. Нужны соцсети: Instagram, TikTok, YouTube и Snapchat.')
+    assert result == 'Проверим прогрев. Нужны соцсети:\n• Instagram\n• TikTok\n• YouTube\n• Snapchat'
+    long_items = 'Смотри. Итог: мы долго думали над этим, потом ещё раз всё проверили, и всё заработало.'
+    assert '•' not in layout_text(long_items)
+
+
+def test_paragraphs_follow_pauses_and_topic_words_but_not_fillers():
+    from text_processing import layout_text, rule_tags, split_sentences
+    sentences = split_sentences('Раз два три. Четыре пять. Шесть семь восемь. Вот. Так, новая тема здесь. Девять десять.')
+    assert rule_tags(sentences) == ['new', 'same', 'same', 'same', 'new', 'same']
+    assert rule_tags(sentences, pauses={2}) == ['new', 'same', 'new', 'same', 'new', 'same']
+    assert layout_text('Короткий текст.') == 'Короткий текст.'
+
+
+def test_invalid_model_tags_fall_back_to_rules():
+    from text_processing import layout_text, rule_tags, split_sentences
+    expected = layout_text(LIST_TEXT)
+    assert layout_text(LIST_TEXT, tags=['new', 'bogus']) == expected
+    tags = ['new'] * len(split_sentences(LIST_TEXT))
+    # Valid model tags are used as given, except that «Это важно.» (a filler) stays attached.
+    assert layout_text(LIST_TEXT, tags=tags).count('\n\n') == len(tags) - 2
+
+
+def test_pause_sentences_only_counts_pauses_after_a_finished_sentence():
+    from text_processing import pause_sentences
+    chunks = ['Первая мысль. Ещё фраза.', 'Вторая мысль', 'продолжается. Конец.']
+    assert pause_sentences(chunks, [False, True, True]) == {2}
+
+
+def test_long_pauses_start_a_new_speech_window():
+    from engine import speech_windows
+    speech = [{'start': 0, 'end': 50}, {'start': 60, 'end': 90}, {'start': 150, 'end': 180}]
+    assert speech_windows(speech, 1000) == [(0, 180)]
+    assert speech_windows(speech, 1000, split_gap=40) == [(0, 90), (150, 180)]
+
+
+def test_model_answer_is_fixed_json_around_the_tags():
+    import json
+    import llm
+    parts = llm.answer_parts(3)
+    answer = parts[0] + 'new' + parts[1] + 'num' + parts[2] + 'num' + parts[3]
+    assert json.loads(answer) == {'tags': [{'n': 1, 't': 'new'}, {'n': 2, 't': 'num'}, {'n': 3, 't': 'num'}]}
+
+
+def test_model_tags_keep_fillers_attached():
+    from text_processing import layout_text
+    text = 'Первая мысль здесь. Вот. Вторая мысль тут.'
+    assert layout_text(text, tags=['new', 'new', 'new']) == 'Первая мысль здесь. Вот.\n\nВторая мысль тут.'
+
+
+def test_llm_failure_falls_back_to_rules(tmp_path, monkeypatch):
+    from text_processing import layout_text
+    engine = Engine(tmp_path)
+    monkeypatch.setattr(engine, 'formatter_installed', lambda: True)
+
+    def broken():
+        raise RuntimeError('no GPU')
+    monkeypatch.setattr(engine, 'load_formatter', broken)
+    assert engine.layout(LIST_TEXT, set(), 'llm', 1) == (layout_text(LIST_TEXT), 'rules')
+    monkeypatch.setattr(engine, 'formatter_installed', lambda: False)
+    assert engine.layout(LIST_TEXT, set(), 'llm', 1)[1] == 'rules'
+
+
+def fake_worker(body):
+    """A stand-in for the formatter process: speaks the same JSON lines without llama.cpp."""
+    return [sys.executable, '-c', 'import json, os, sys, time\n' + body]
+
+
+def test_formatter_process_answers_tags_and_stops_cleanly():
+    import llm
+    formatter = llm.FormatterProcess(fake_worker(
+        "print(json.dumps({'ready': True, 'gpu': True}), flush=True)\n"
+        "for line in sys.stdin:\n"
+        "    request = json.loads(line)\n"
+        "    if request.get('cmd') == 'close': break\n"
+        "    print(json.dumps({'tags': ['new'] * len(request['sentences'])}), flush=True)\n"))
+    try:
+        assert formatter.on_gpu is True
+        assert formatter.tags(['Раз.', 'Два.']) == ['new', 'new']
+    finally:
+        formatter.close()
+    assert formatter.process is None
+
+
+def test_formatter_process_reports_a_killed_child_instead_of_dying_with_it():
+    """An OpenMP clash or any other native abort kills the child only; the engine keeps running."""
+    import llm
+    formatter = llm.FormatterProcess(fake_worker(
+        "print(json.dumps({'ready': True}), flush=True)\n"
+        "sys.stdin.readline()\n"
+        "os._exit(3)\n"))
+    with pytest.raises(RuntimeError):
+        formatter.tags(['Раз.', 'Два.'])
+    with pytest.raises(RuntimeError):
+        formatter.tags(['Раз.', 'Два.'])
+
+
+def test_formatter_process_stops_when_the_dictation_is_canceled():
+    import llm
+    formatter = llm.FormatterProcess(fake_worker(
+        "print(json.dumps({'ready': True}), flush=True)\n"
+        "sys.stdin.readline()\n"
+        "time.sleep(30)\n"))
+    with pytest.raises(TimeoutError):
+        formatter.tags(['Раз.', 'Два.'], should_stop=lambda: True)
+    assert formatter.process is None
+
+
+def test_formatter_process_surfaces_a_load_failure(tmp_path):
+    import llm
+    with pytest.raises(RuntimeError):
+        llm.FormatterProcess(fake_worker("print(json.dumps({'error': 'нет библиотеки'}), flush=True)\n"))
+    # A failed formatter must not take the dictation down with it.
+    engine = Engine(tmp_path)
+    monkey = engine.formatter_command()
+    assert monkey[-1] == '--formatter-worker' and '--data-dir' in monkey
+
+
+def test_shutdown_cancels_running_work_and_stops_the_layout_process(tmp_path):
+    engine = Engine(tmp_path)
+
+    class FakeFormatter:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    formatter = FakeFormatter()
+    engine.formatter = formatter
+    engine.schedule_idle_unload()
+    engine.shutdown(7)
+    assert formatter.closed and engine.formatter is None and engine.idle_timer is None
+    assert engine.is_canceled(7) and engine.is_canceled(3) and not engine.is_canceled(8)
+
+
+def test_engine_leaves_when_the_app_closes_the_pipe(tmp_path):
+    """No orphan engine: closing stdin ends the process instead of finishing the work for nobody."""
+    import subprocess
+    engine_py = Path(__file__).resolve().parents[1] / 'backend' / 'engine.py'
+    done = subprocess.run([sys.executable, str(engine_py), '--data-dir', str(tmp_path)],
+                          stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, timeout=180)
+    assert done.returncode == 0
+
+
+def test_formatter_is_not_installed_without_verified_marker(tmp_path):
+    import json
+    engine = Engine(tmp_path)
+    runtime, model, marker = engine.formatter_paths()
+    runtime.mkdir(parents=True); model.parent.mkdir(parents=True)
+    for name in __import__('llm').library_names():
+        (runtime / name).write_bytes(b'x')
+    model.write_bytes(b'x')
+    assert not engine.formatter_installed()
+    marker.write_text(json.dumps({'runtime': 'other', 'model': 'other'}), 'utf-8')
+    assert not engine.formatter_installed()
+
+
+@pytest.mark.skipif(not __import__('os').environ.get('SHOPOT_LLM_TEST'), reason='needs llama.cpp runtime and Qwen model')
+def test_real_model_tags_an_ordinal_list():
+    import os
+    import llm
+    runtime, model = os.environ['SHOPOT_LLM_TEST'].split(os.pathsep)
+    formatter = llm.Formatter(llm.Runtime(runtime), model, 4)
+    try:
+        tags = formatter.tags(['Давай обсудим план.', 'Во-первых, нужно ускорить распознавание.',
+                               'Во-вторых, надо поработать со вставкой.', 'Теперь про дизайн.'])
+        assert tags[1:3] == ['num', 'num'] and tags[0] == 'new'
+    finally:
+        formatter.close()
+
+
+def test_hesitation_sounds_are_removed_but_real_words_are_not():
+    from text_processing import strip_hesitations
+    assert strip_hesitations('У меня расположены э-э идентично всё, кроме S08.') == 'У меня расположены идентично всё, кроме S08.'
+    assert strip_hesitations('Ааа... И да, кстати, ты прав.') == 'И да, кстати, ты прав.'
+    assert strip_hesitations('А-а, по поводу денег.') == 'По поводу денег.'
+    assert strip_hesitations('Мм, не знаю. Ммм. Хорошо.') == 'Не знаю. Хорошо.'
+    for kept in ('А потом мы на ну и он, а она не тут.', 'Ширина 10 мм и всё.', 'ООО «Ромашка» платит.'):
+        assert strip_hesitations(kept) == kept
+
+
+def test_raw_mode_keeps_hesitations(tmp_path):
+    engine = Engine(tmp_path)
+    spoken = 'Ааа... Видосы готовы.'
+    assert engine.clean(spoken, 'raw', True) == spoken
+    assert engine.clean(spoken, 'natural', False) == spoken
+    assert engine.clean(spoken, 'natural', True) == 'Видосы готовы.'
+
+
+SNIPPETS = [{'trigger': 'моя почта', 'text': 'ivan@example.com'},
+            {'trigger': 'моя рабочая почта', 'text': 'ivan@work.example'},
+            {'trigger': 'моя подпись', 'text': 'С уважением,\nИван Петров'},
+            {'trigger': 'быстрый ответ', 'text': 'Спасибо, получил. Посмотрю вечером.'},
+            {'trigger': 'ещё ссылка', 'text': 'https://example.com'},
+            {'trigger': 'реквизиты', 'text': 'ИНН 7700000000'}]
+
+
+@pytest.mark.parametrize('spoken, expected', [
+    # Inside a sentence the punctuation around the phrase stays; case, «ё» and commas between words do not matter.
+    ('Пиши на моя почта, если что.', 'Пиши на ivan@example.com, если что.'),
+    ('Пиши на Моя, почта.', 'Пиши на ivan@example.com.'),
+    ('Вот еще ссылка.', 'Вот https://example.com.'),
+    # The longer phrase wins.
+    ('Пиши на моя рабочая почта.', 'Пиши на ivan@work.example.'),
+    # A whole sentence at the end loses its period: an address is pasted clean.
+    ('Напиши мне. Моя почта.', 'Напиши мне. ivan@example.com'),
+    # In the middle it keeps the period, so the next sentence does not run into it.
+    ('Моя почта. Жду ответа.', 'ivan@example.com. Жду ответа.'),
+    # A multi-line snippet stands as its own paragraph.
+    ('Спасибо за встречу. Моя подпись.', 'Спасибо за встречу.\n\nС уважением,\nИван Петров'),
+    ('Привет. Моя подпись. Пока.', 'Привет.\n\nС уважением,\nИван Петров\n\nПока.'),
+    # Saved text with its own end punctuation does not get a second one.
+    ('Отвечу так: быстрый ответ.', 'Отвечу так: Спасибо, получил. Посмотрю вечером.'),
+    # Whole words only.
+    ('Моя почтальонша пришла.', 'Моя почтальонша пришла.'),
+    # Said mid-sentence, the model inflects the phrase: «мою почту», «реквизитов».
+    ('Напиши мне на мою почту, если что.', 'Напиши мне на ivan@example.com, если что.'),
+    ('Жду реквизитов.', 'Жду ИНН 7700000000.'),
+    # Derived words are other words.
+    ('Реквизитная часть и почтовый ящик.', 'Реквизитная часть и почтовый ящик.'),
+])
+def test_snippets_replace_spoken_phrases_with_saved_text(spoken, expected):
+    from text_processing import expand_snippets
+    text, used = expand_snippets(spoken, SNIPPETS)
+    assert text == expected
+    assert bool(used) == (spoken != expected)
+
+
+def test_snippets_do_not_chain_and_survive_dictionary_replacements():
+    from text_processing import expand_snippets
+    chained = [{'trigger': 'адрес', 'text': 'моя почта'}, {'trigger': 'моя почта', 'text': 'x@y.z'}]
+    assert expand_snippets('Пиши на адрес.', chained) == ('Пиши на моя почта.', ['адрес'])
+    # The dictionary already turned «гитхаб» into «GitHub»; the spoken phrase still matches.
+    terms = [{'word': 'GitHub', 'aliases': ['гитхаб']}]
+    assert expand_snippets('Смотри мой GitHub.', [{'trigger': 'мой гитхаб', 'text': 'github.com/ivan'}], terms) == (
+        'Смотри github.com/ivan.', ['мой гитхаб'])
+    assert expand_snippets('Текст.', []) == ('Текст.', [])
+
+
+def installed_engine(tmp_path):
+    """An engine whose GigaAM counts as downloaded, with one recording in the audio folder."""
+    import json
+    from engine import GIGAAM_FILES, MODELS
+    engine = Engine(tmp_path)
+    folder = engine.model_path('gigaam')
+    folder.mkdir(parents=True)
+    (folder / 'shopot-ready.json').write_text(json.dumps({'revision': MODELS['gigaam']['revision']}), 'utf-8')
+    for name in GIGAAM_FILES:
+        (folder / name).write_bytes(b'x')
+    (engine.audio_dir / 'abc.wav').write_bytes(b'x')
+    return engine
+
+
+def test_engine_rejects_malformed_snippets(tmp_path):
+    engine = installed_engine(tmp_path)
+    for snippets in ('текст', [{'trigger': 'а' * 61, 'text': 'x'}], [{'trigger': 'фраза'}], [{'trigger': 'ф', 'text': 'x'}] * 51):
+        with pytest.raises(ValueError, match='сниппеты'):
+            engine.transcribe({'model': 'gigaam', 'audioFile': 'abc.wav', 'snippets': snippets})
+
+
+@pytest.mark.parametrize('spoken, expected', [
+    ('Привет. Новый абзац. Как дела?', 'Привет.\n\nКак дела?'),
+    # Commas the model put around the command go with it; the next line starts with a capital.
+    ('Привет, новый абзац, как дела', 'Привет\n\nКак дела'),
+    # A colon before a line break stays.
+    ('Список: с новой строки молоко. С новой строки хлеб.', 'Список:\nМолоко.\nХлеб.'),
+    # A command next to a paragraph the layout already made does not add a second one.
+    ('Раз. Два.\n\nНовый абзац. Три.', 'Раз. Два.\n\nТри.'),
+    # Breaks at the very start or end are dropped.
+    ('Новый абзац. Привет. С новой строки.', 'Привет.'),
+    ('НОВЫЙ, АБЗАЦ ещё текст', 'Ещё текст'),
+    ('с нового абзаца продолжим', 'Продолжим'),
+    # English dictation with Whisper.
+    ('First point. New paragraph. Second point.', 'First point.\n\nSecond point.'),
+    # Whole words only.
+    ('Новый абзацный отступ.', 'Новый абзацный отступ.'),
+])
+def test_voice_commands_break_lines_and_paragraphs(spoken, expected):
+    from text_processing import apply_voice_commands
+    text, used = apply_voice_commands(spoken)
+    assert text == expected
+    assert bool(used) == (spoken != expected)
+
+
+def test_pipeline_applies_commands_then_snippets_and_leaves_raw_mode_alone(tmp_path, monkeypatch):
+    import math
+    import struct
+    import wave
+    engine = installed_engine(tmp_path)
+    with wave.open(str(engine.audio_dir / 'a1b2.wav'), 'wb') as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(16000)
+        out.writeframes(b''.join(struct.pack('<h', int(12000 * math.sin(i / 8))) for i in range(16000)))
+    # Only recognition is faked; decoding, layout, commands and snippets run for real.
+    spoken = 'Привет. Новый абзац. Пиши на моя почта.'
+    monkeypatch.setattr(engine, 'load', lambda key, request_id=None: 0.0)
+    monkeypatch.setattr(engine, '_gigaam_segments', lambda audio, duration, request_id: [
+        {'start': 0.0, 'end': 1.0, 'text': spoken, 'noSpeechProbability': 0.0}])
+    request = {'model': 'gigaam', 'audioFile': 'a1b2.wav', 'language': 'ru',
+               'snippets': [{'trigger': 'моя почта', 'text': 'ivan@example.com'}]}
+    try:
+        result = engine.transcribe(request)
+        assert result['text'] == 'Привет.\n\nПиши на ivan@example.com.'
+        assert result['commands'] == ['новый абзац'] and result['snippets'] == ['моя почта']
+        assert result['rawText'] == spoken
+        # Without word timings the recognized chunks become the subtitle cues, without the spoken commands.
+        assert result['cues'] == [{'start': 0.0, 'end': 1.0, 'text': 'Привет. Пиши на моя почта.'}]
+        assert engine.transcribe({**request, 'voiceCommands': False})['text'] == 'Привет. Новый абзац. Пиши на ivan@example.com.'
+        assert engine.transcribe({**request, 'mode': 'raw'})['text'] == spoken
+        # A messenger profile: no period after the spoken text.
+        assert engine.transcribe({**request, 'dropFinalPeriod': True})['text'] == 'Привет.\n\nПиши на ivan@example.com'
+    finally:
+        engine.cancel_idle_unload()
+
+
+@pytest.mark.parametrize('text, expected', [
+    ('Готово.', 'Готово'), ('Раз.\n\n2. Два.', 'Раз.\n\n2. Два'), ('Ждём...', 'Ждём...'),
+    ('Правда?', 'Правда?'), ('Ура!', 'Ура!'), ('', ''), ('Без точки', 'Без точки'),
+])
+def test_drop_final_period_keeps_ellipsis_and_other_marks(text, expected):
+    from text_processing import drop_final_period
+    assert drop_final_period(text) == expected
+
+
+# Real GigaAM tokens and times for «25 сентября в 15:30 созвон бюджет 120 000₽, это 20%.» (synthesized speech).
+GIGAAM_TOKENS = [(' 2', 0.16), ('5', 0.72), (' с', 1.16), ('ент', 1.36), ('я', 1.52), ('б', 1.6), ('ря', 1.68),
+                 (' в', 1.88), (' 1', 2.0), ('5', 2.24), (':', 2.52), ('30', 2.76), (' со', 3.28), ('звон', 3.48),
+                 (' б', 4.16), ('ю', 4.28), ('д', 4.36), ('же', 4.44), ('т', 4.56), (' 1', 4.76), ('2', 5.04),
+                 ('0', 5.28), (' 000', 5.56), (' ₽', 6.16), (',', 6.72), (' это', 6.96), (' 20', 7.2), ('%', 8.0),
+                 ('.', 9.28)]
+
+
+def test_timed_words_follow_the_decoder_spacing_and_token_times():
+    from text_processing import timed_words
+    words = timed_words([t for t, _ in GIGAAM_TOKENS], [s for _, s in GIGAAM_TOKENS], offset=10.0, end=19.5)
+    # The same text the model returned: the space before «₽» is dropped, «000₽,» is one word.
+    assert ' '.join(w['word'] for w in words) == '25 сентября в 15:30 созвон бюджет 120 000₽, это 20%.'
+    assert [w['start'] for w in words][:3] == [10.16, 11.16, 11.88]
+    # A word ends shortly after its last token, never after the next word starts or the chunk ends.
+    assert words[0]['end'] == 11.12 and words[7] == {'word': '000₽,', 'start': 15.56, 'end': 16.96}
+    assert words[-1]['end'] == 19.5
+    assert all(w['start'] <= w['end'] for w in words)
+
+
+def test_subtitle_cues_break_at_sentences_pauses_and_length():
+    from text_processing import subtitle_cues
+    timed = lambda text, start, step=0.3: [{'word': w, 'start': start + i * step, 'end': start + i * step + 0.25}
+                                           for i, w in enumerate(text.split())]
+    words = (timed('Сегодня мы запускаем новый курс по монтажу видео.', 0.0)
+             + timed('Первый урок уже доступен.', 2.6) + timed('Второй выйдет в пятницу.', 6.0))
+    cues = subtitle_cues(words)
+    assert [c['text'] for c in cues] == ['Сегодня мы запускаем новый курс по монтажу видео.',
+                                          'Первый урок уже доступен.', 'Второй выйдет в пятницу.']
+    assert cues[0]['start'] == 0.0 and cues[1]['start'] == 2.6
+    # Out of room: the cue is cut at its last sentence end, not on a random word.
+    cut = subtitle_cues(timed('Привет! Как дела? Новый абзац. Завтра встречаемся в десять утра.', 0.0, step=0.7))
+    assert [c['text'] for c in cut] == ['Привет! Как дела? Новый абзац.', 'Завтра встречаемся в десять утра.']
+    number = subtitle_cues(timed('Созвон в пятницу, бюджет проекта пока 120 000₽, это двадцать процентов.', 0.0, step=0.9))
+    assert not any(c['text'].endswith('120') for c in number)
+    long = subtitle_cues(timed(' '.join(['слово'] * 40), 0.0, step=0.1))
+    assert all(len(c['text']) <= 84 for c in long) and len(long) > 1
+    assert subtitle_cues([]) == []
+
+
+def test_meeting_channels_are_recognized_separately(tmp_path, monkeypatch):
+    import math
+    import struct
+    import wave
+    engine = installed_engine(tmp_path)
+    # Left: the user's microphone (a tone); right: the other side of the call (silence).
+    with wave.open(str(engine.audio_dir / 'c0ffee.wav'), 'wb') as out:
+        out.setnchannels(2)
+        out.setsampwidth(2)
+        out.setframerate(16000)
+        out.writeframes(b''.join(struct.pack('<hh', int(12000 * math.sin(i / 8)), 0) for i in range(16000)))
+    heard = []
+    monkeypatch.setattr(engine, 'load', lambda key, request_id=None: 0.0)
+    monkeypatch.setattr(engine, '_gigaam_segments', lambda audio, duration, request_id: heard.append(float(abs(audio).max())) or [
+        {'start': 0.0, 'end': 1.0, 'text': 'Да, слышно.', 'noSpeechProbability': 0.0}])
+    request = {'model': 'gigaam', 'audioFile': 'c0ffee.wav', 'language': 'ru', 'formatting': 'off', 'voiceCommands': False}
+    try:
+        assert engine.transcribe({**request, 'channel': 'left'})['text'] == 'Да, слышно.' and heard[-1] > 0.3
+        assert engine.transcribe({**request, 'channel': 'right'})['noSpeech'] is True
+        with pytest.raises(ValueError, match='канал'):
+            engine.transcribe({**request, 'channel': 'center'})
+    finally:
+        engine.cancel_idle_unload()
+
+
+def test_translation_asks_whisper_to_translate_without_a_russian_prompt(tmp_path, monkeypatch):
+    import json
+    import math
+    import struct
+    import wave
+    from types import SimpleNamespace
+    from engine import MODELS, WHISPER_FILES
+    engine = Engine(tmp_path)
+    for key in ('small', 'turbo'):
+        folder = engine.model_path(key)
+        folder.mkdir(parents=True)
+        (folder / 'shopot-ready.json').write_text(json.dumps({'revision': MODELS[key]['revision']}), 'utf-8')
+        for name in WHISPER_FILES:
+            (folder / name).write_bytes(b'x')
+    with wave.open(str(engine.audio_dir / 'ab12.wav'), 'wb') as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(16000)
+        out.writeframes(b''.join(struct.pack('<h', int(12000 * math.sin(i / 8))) for i in range(16000)))
+    calls = []
+
+    class FakeWhisper:
+        def transcribe(self, audio, **options):
+            calls.append(options)
+            segment = SimpleNamespace(start=0.0, end=1.0, text=' Hello, how are you?', no_speech_prob=0.0, words=[])
+            return iter([segment]), SimpleNamespace(language='ru')
+
+    def load(key, request_id=None):
+        engine.model, engine.loaded_key = FakeWhisper(), key
+        return 0.0
+    monkeypatch.setattr(engine, 'load', load)
+    request = {'model': 'small', 'audioFile': 'ab12.wav', 'language': 'ru', 'context': 'Монтаж видео',
+               'dictionary': [{'word': 'GitHub', 'aliases': []}], 'formatting': 'off'}
+    try:
+        result = engine.transcribe({**request, 'translate': True})
+        assert result['text'] == 'Hello, how are you?' and result['translated'] is True
+        assert calls[-1]['task'] == 'translate' and calls[-1]['initial_prompt'] is None and calls[-1]['hotwords'] is None
+        engine.transcribe(request)
+        assert calls[-1]['task'] == 'transcribe' and 'Монтаж' in calls[-1]['initial_prompt']
+        with pytest.raises(ValueError, match='small и large-v3'):
+            engine.transcribe({**request, 'model': 'turbo', 'translate': True})
+    finally:
+        engine.cancel_idle_unload()
