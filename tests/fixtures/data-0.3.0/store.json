@@ -1,0 +1,181 @@
+{
+  "version": 1,
+  "settings": {
+    "model": "small",
+    "language": "auto",
+    "mode": "minimal",
+    "context": "Монтаж, GitHub и сленг",
+    "autoCopy": false,
+    "autoPaste": false,
+    "keepAudio": true,
+    "microphoneId": "usb-microphone-0001",
+    "formatting": "off",
+    "removeFillers": false,
+    "voiceCommands": false,
+    "meetingOffers": false,
+    "meetingIgnore": [
+      {
+        "id": "c:\\games\\game.exe",
+        "name": "Game"
+      }
+    ],
+    "translate": true
+  },
+  "dictionary": [
+    {
+      "id": "0b9f6a52-2f7e-4a39-9d55-1d1c3b7a0001",
+      "word": "LocalSend",
+      "aliases": [
+        "локал сенд",
+        "локалсенд"
+      ]
+    },
+    {
+      "id": "0b9f6a52-2f7e-4a39-9d55-1d1c3b7a0002",
+      "word": "Qwen",
+      "aliases": []
+    }
+  ],
+  "history": [
+    {
+      "id": "9d4e1a20-5c3b-4e7f-8a91-0b2c3d4e0001",
+      "createdAt": "2026-10-01T09:15:00.000Z",
+      "source": "Диктовка",
+      "mode": "minimal",
+      "formatting": "off",
+      "formatElapsed": 0,
+      "text": "Открой LocalSend и отправь видосы.",
+      "rawText": "Открой локал сенд и отправь видосы.",
+      "words": [
+        {"word": " Открой", "start": 0, "end": 0.42, "probability": 0.97},
+        {"word": " локал", "start": 0.42, "end": 0.8, "probability": 0.61},
+        {"word": " сенд", "start": 0.8, "end": 1.1, "probability": 0.58},
+        {"word": " и", "start": 1.1, "end": 1.2, "probability": 0.99},
+        {"word": " отправь", "start": 1.2, "end": 1.6, "probability": 0.95},
+        {"word": " видосы.", "start": 1.6, "end": 2.1, "probability": 0.88}
+      ],
+      "segments": [
+        {"text": "Открой локал сенд и отправь видосы.", "start": 0, "end": 2.1}
+      ],
+      "replacements": [
+        {"from": "локал сенд", "to": "LocalSend"}
+      ],
+      "snippets": [],
+      "commands": [],
+      "cues": [
+        {"start": 0, "end": 2.1, "text": "Открой LocalSend и отправь видосы."}
+      ],
+      "duration": 2.3,
+      "elapsed": 1.4,
+      "language": "ru",
+      "model": "small",
+      "noSpeech": false,
+      "device": "cpu",
+      "translated": false,
+      "loadElapsed": 0.6,
+      "memoryPeak": 734003200,
+      "audioFile": "3f2b8c1e-0a4d-4e6f-9b7a-2c5d8e1f0001.webm",
+      "app": {
+        "id": "telegram.exe",
+        "name": "Telegram"
+      },
+      "delivery": "pasted"
+    },
+    {
+      "id": "9d4e1a20-5c3b-4e7f-8a91-0b2c3d4e0002",
+      "createdAt": "2026-09-30T18:40:00.000Z",
+      "source": "Файл · интервью.mp3",
+      "mode": "natural",
+      "formatting": "rules",
+      "formatElapsed": 0.01,
+      "text": "Первый вопрос про монтаж.\n\nВторой вопрос про звук.",
+      "rawText": "Первый вопрос про монтаж. Второй вопрос про звук.",
+      "words": [],
+      "segments": [
+        {"text": "Первый вопрос про монтаж.", "start": 0, "end": 2.4},
+        {"text": "Второй вопрос про звук.", "start": 4.1, "end": 6.2}
+      ],
+      "replacements": [],
+      "snippets": [],
+      "commands": [],
+      "cues": [
+        {"start": 0, "end": 2.4, "text": "Первый вопрос про монтаж."},
+        {"start": 4.1, "end": 6.2, "text": "Второй вопрос про звук."}
+      ],
+      "duration": 6.5,
+      "elapsed": 0.9,
+      "language": "ru",
+      "model": "gigaam",
+      "noSpeech": false,
+      "device": "cpu",
+      "translated": false,
+      "loadElapsed": 0,
+      "memoryPeak": 412090368,
+      "audioFile": null,
+      "app": null,
+      "delivery": "saved"
+    },
+    {
+      "id": "9d4e1a20-5c3b-4e7f-8a91-0b2c3d4e0003",
+      "createdAt": "2026-09-29T12:00:00.000Z",
+      "source": "Созвон · Telegram",
+      "mode": "natural",
+      "text": "Я: Привет, слышно?\n\nСобеседник: Да, всё слышно.",
+      "rawText": "Я: Привет, слышно?\n\nСобеседник: Да, всё слышно.",
+      "words": [],
+      "duration": 95.2,
+      "elapsed": 0,
+      "model": "gigaam",
+      "replacements": [],
+      "audioFile": null,
+      "app": null,
+      "cues": [
+        {"start": 0.5, "end": 1.6, "text": "Привет, слышно?", "speaker": "me"},
+        {"start": 2, "end": 3.1, "text": "Да, всё слышно.", "speaker": "them"}
+      ],
+      "meeting": {
+        "app": "Telegram",
+        "turns": 2,
+        "failedChunks": 0
+      }
+    },
+    {
+      "id": "record-from-0-2",
+      "createdAt": "2026-09-14T09:00:00Z",
+      "source": "Главное окно",
+      "text": "Старая запись версии 0.2.",
+      "rawText": "Старая запись версии ноль два.",
+      "words": [],
+      "duration": 3,
+      "elapsed": 4.5,
+      "model": "turbo",
+      "mode": "natural",
+      "replacements": [],
+      "audioFile": null
+    }
+  ],
+  "pendingRecordings": [
+    {
+      "id": "7c2e9d14-6b3a-4f81-9e05-a4d8c1b20001",
+      "audioFile": "3f2b8c1e-0a4d-4e6f-9b7a-2c5d8e1f0002.webm",
+      "source": "Диктовка",
+      "createdAt": "2026-10-01T08:30:00.000Z"
+    }
+  ],
+  "snippets": [
+    {
+      "id": "5a1c0f3e-8d2b-4c47-a1e6-3f0b2d9c0001",
+      "trigger": "моя почта",
+      "text": "test@example.com\nВторая строка"
+    }
+  ],
+  "profiles": [
+    {
+      "app": "telegram.exe",
+      "name": "Telegram",
+      "mode": "raw",
+      "formatting": null,
+      "dropFinalPeriod": true
+    }
+  ]
+}
