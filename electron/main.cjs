@@ -86,6 +86,10 @@ function resultFields(result, requestSeconds) {
     transcribe: Number.isFinite(result.elapsed) ? Math.max(0, result.elapsed - load - format) : undefined,
     memoryMb: Number.isFinite(result.memoryPeak) ? Math.round(result.memoryPeak / 2 ** 20) : undefined};
 }
+function recordsLabel(count) {
+  const tail = count % 10, tens = count % 100;
+  return tail === 1 && tens !== 11 ? 'запись' : tail >= 2 && tail <= 4 && (tens < 12 || tens > 14) ? 'записи' : 'записей';
+}
 function pastePermission() { return process.platform !== 'darwin' || systemPreferences.isTrustedAccessibilityClient(false); }
 function meetingState() { return meeting ? {app: meeting.app?.name ?? null, startedAt: meeting.startedAt, stopping: meeting.stopping} : null; }
 function snapshot() { return {...store.data, engine: worker.status, engineError, busy, hotkeyRegistered, nativeAvailable, pastePermission: pastePermission(), platform: process.platform, totalMemory: os.totalmem(), meeting: meetingState(), meetingsSupported: MEETINGS}; }
@@ -533,7 +537,23 @@ else {
       if (process.platform === 'darwin') systemPreferences.isTrustedAccessibilityClient(true);
       return pastePermission();
     });
-    ipc('settings', value => store.setSettings(value));
+    // A shorter retention period asks first when it would remove entries; «Оставить» keeps the old period.
+    ipc('settings', async value => {
+      const next = validateSettings(value), before = store.data.settings.historyDays;
+      const shorter = Boolean(next.historyDays) && (!before || next.historyDays < before);
+      const count = shorter ? expiredHistory(store.data.history, next.historyDays).length : 0;
+      if (count) {
+        const answer = await dialog.showMessageBox(window, {type: 'question', message: `Удалить ${count} ${recordsLabel(count)} старше ${next.historyDays} дней?`,
+          detail: 'Текст и сохранённое аудио будут удалены с этого компьютера. Незавершённые записи останутся.',
+          buttons: ['Оставить', 'Удалить'], defaultId: 0, cancelId: 0});
+        if (answer.response !== 1) return store.data.settings;
+      }
+      const saved = store.setSettings(next);
+      if (shorter) {
+        try { pruneHistory('setting'); } catch (error) { throw fileError('Не удалось удалить старые записи', error); }
+      }
+      return saved;
+    });
     ipc('dictionary', value => store.setDictionary(value));
     ipc('snippets', value => store.setSnippets(value));
     ipc('profiles', value => store.setProfiles(value));
