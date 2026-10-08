@@ -208,6 +208,12 @@ def test_no_nvidia_driver_means_no_devices(monkeypatch):
     assert gpu_runtime.nvidia_devices() == []
 
 
+def test_nominal_4_gb_card_has_enough_memory():
+    # NVML reports a nominal 4 GB card a little under 4096 MiB; the minimum must still accept it.
+    assert gpu_runtime.enough_memory({'memoryMb': 3584}) and gpu_runtime.enough_memory({'memoryMb': 4095})
+    assert not gpu_runtime.enough_memory({'memoryMb': 3583}) and not gpu_runtime.enough_memory(None)
+
+
 def test_real_wheels_are_pinned():
     assert [w['file'] for w in gpu_runtime.WHEELS] == ['nvidia_cublas_cu12-12.8.4.1-py3-none-win_amd64.whl',
                                                        'nvidia_cudnn_cu12-9.10.2.21-py3-none-win_amd64.whl']
