@@ -125,6 +125,7 @@ class Engine:
         self.formatter_dir = self.data_dir / "formatter"
         self.formatter = None
         self.gpu = gpu_runtime.Component(self.data_dir / "gpu")
+        self.gpu.tidy()
         self.nvidia = None  # asked once per engine start: the driver does not change while the app runs
 
     def audio_path(self, filename):
@@ -185,7 +186,7 @@ class Engine:
         device = gpu_runtime.best_device(self.nvidia)
         return {"supported": gpu_runtime.supported(), "device": device, "minMemoryMb": gpu_runtime.MIN_MEMORY_MB,
                 "enoughMemory": bool(device) and device["memoryMb"] >= gpu_runtime.MIN_MEMORY_MB,
-                "installed": self.gpu.installed(), "size": gpu_runtime.SIZE}
+                "installed": self.gpu.installed(), "size": gpu_runtime.SIZE, "installedSize": gpu_runtime.INSTALLED_SIZE}
 
     def download_gpu(self, request_id=None):
         if not self.gpu_status()["enoughMemory"]:

@@ -196,6 +196,8 @@ test('NVIDIA acceleration downloads and then shows the GPU switch', async () => 
     const toggle = page.locator('#use-gpu');
     await expect(toggle).toBeChecked();
     await expect(page.locator('#gpu-list')).toContainText('Использовать видеокарту');
+    // On disk the unpacked libraries take more than the download.
+    await expect(page.locator('#gpu-list .model-meta b')).toHaveText('1,8 ГБ');
     await page.locator('#gpu-list label.toggle-row').click();
     await expect(toggle).not.toBeChecked();
     await expect.poll(async () => (await page.evaluate(() => window.shopot.boot())).settings.useGpu).toBe(false);

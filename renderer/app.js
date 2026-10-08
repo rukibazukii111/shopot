@@ -740,7 +740,7 @@ function renderGpu(busy) {
   const toggle = `<label class="toggle-row"><span class="switch"><input type="checkbox" id="use-gpu" role="switch"${state.settings.useGpu ? ' checked' : ''}${busy ? ' disabled' : ''}><span></span></span><span class="toggle-text"><strong>Использовать видеокарту</strong></span></label>`;
   $('#gpu-list').innerHTML = modelCard({icon: 'cpu', title: 'Ускорение NVIDIA', subtitle: `${escapeHtml(device.name)}, ${memory}`,
     text: 'Модели Whisper распознают речь на видеокарте в несколько раз быстрее, перевод на английский тоже. GigaAM остаётся на процессоре.',
-    size: gpu.size || '1,3 ГБ', installed, selected: installed && state.settings.useGpu, downloading: state.download?.id === 'gpu',
+    size: installed ? gpu.installedSize : gpu.size, installed, selected: installed && state.settings.useGpu, downloading: state.download?.id === 'gpu',
     busy, attr: 'data-gpu', source: 'библиотеки NVIDIA с PyPI',
     ...(gpu.enoughMemory ? {} : {control: '', note: 'Ускорение недоступно', warning: `Нужно минимум 4 ГБ видеопамяти. У этой видеокарты — ${memory}.`}),
     ...(installed ? {control: toggle} : {})});

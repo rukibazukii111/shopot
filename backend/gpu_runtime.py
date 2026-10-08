@@ -54,7 +54,10 @@ def supported():
 
 
 def nvidia_devices():
-    """NVIDIA cards as the driver reports them; empty without the driver. NVML is loaded from System32 only."""
+    """NVIDIA cards as the driver reports them; empty without the driver. NVML is loaded from System32 only.
+
+    Never raises: the engine asks this before it reports ready, and a broken driver must not stop CPU dictation.
+    """
     if not supported():
         return []
     try:
@@ -64,21 +67,30 @@ def nvidia_devices():
     except (OSError, AttributeError):
         return []
     try:
-        count, driver = C.c_uint(), C.create_string_buffer(96)
-        if nvml.nvmlDeviceGetCount_v2(C.byref(count)) != 0:
-            return []
-        nvml.nvmlSystemGetDriverVersion(driver, 96)
-        found = []
-        for index in range(count.value):
-            handle, name, memory = C.c_void_p(), C.create_string_buffer(96), _Memory()
-            if (nvml.nvmlDeviceGetHandleByIndex_v2(index, C.byref(handle)) == 0
-                    and nvml.nvmlDeviceGetName(handle, name, 96) == 0
-                    and nvml.nvmlDeviceGetMemoryInfo(handle, C.byref(memory)) == 0):
-                found.append({"name": name.value.decode("utf-8", "replace"), "memoryMb": memory.total // 2**20,
-                              "driver": driver.value.decode("utf-8", "replace")})
-        return found
+        return _devices(nvml)
+    except (OSError, AttributeError, ValueError):
+        return []
     finally:
-        nvml.nvmlShutdown()
+        try:
+            nvml.nvmlShutdown()
+        except (OSError, AttributeError):
+            pass
+
+
+def _devices(nvml):
+    count, driver = C.c_uint(), C.create_string_buffer(96)
+    if nvml.nvmlDeviceGetCount_v2(C.byref(count)) != 0:
+        return []
+    nvml.nvmlSystemGetDriverVersion(driver, 96)
+    found = []
+    for index in range(count.value):
+        handle, name, memory = C.c_void_p(), C.create_string_buffer(96), _Memory()
+        if (nvml.nvmlDeviceGetHandleByIndex_v2(index, C.byref(handle)) == 0
+                and nvml.nvmlDeviceGetName(handle, name, 96) == 0
+                and nvml.nvmlDeviceGetMemoryInfo(handle, C.byref(memory)) == 0):
+            found.append({"name": name.value.decode("utf-8", "replace"), "memoryMb": memory.total // 2**20,
+                          "driver": driver.value.decode("utf-8", "replace")})
+    return found
 
 
 def best_device(devices):
@@ -95,6 +107,10 @@ def file_sha256(path):
 
 def _gigabytes(size):
     return f"{max(size, 1e8) / 1e9:.1f}".replace(".", ",")
+
+
+# The unpacked DLLs take more than the download; the archives are deleted after the install.
+INSTALLED_SIZE = f"{_gigabytes(sum(sum(wheel['dlls'].values()) for wheel in WHEELS))} ГБ"
 
 
 class Component:
@@ -116,6 +132,14 @@ class Component:
                 for wheel in WHEELS for name, size in wheel["dlls"].items())
         except (OSError, ValueError):
             return False
+
+    def tidy(self):
+        """Remove archives left after a finished install (a locked file or a kill right after the marker).
+
+        A partial download of an unfinished install stays: the next click resumes it.
+        """
+        if self.downloads.exists() and self.installed():
+            shutil.rmtree(self.downloads, ignore_errors=True)
 
     def _have(self, wheel):
         """Bytes already on disk for this wheel; a verified archive counts in full."""

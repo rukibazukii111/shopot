@@ -213,3 +213,46 @@ def test_real_wheels_are_pinned():
                                                        'nvidia_cudnn_cu12-9.10.2.21-py3-none-win_amd64.whl']
     assert all(len(w['sha256']) == 64 and w['url'].startswith('https://files.pythonhosted.org/')
                for w in gpu_runtime.WHEELS)
+
+
+def test_nvml_failure_after_init_means_no_devices_and_status_still_works(tmp_path, monkeypatch):
+    class BrokenNvml:
+        def nvmlInit_v2(self):
+            return 0
+
+        def nvmlDeviceGetCount_v2(self, count):
+            raise OSError('exception: access violation reading 0x0000000000000000')
+
+        def nvmlShutdown(self):
+            raise OSError('exception: access violation')
+    monkeypatch.setattr(gpu_runtime, 'supported', lambda: True)
+    monkeypatch.setattr(gpu_runtime.C, 'WinDLL', lambda path: BrokenNvml(), raising=False)
+    assert gpu_runtime.nvidia_devices() == []
+    from engine import Engine
+    assert Engine(tmp_path).status()['gpu']['device'] is None
+
+
+def test_engine_start_removes_archives_left_after_a_finished_install(tmp_path, wheels):
+    component = Component(tmp_path / 'gpu')
+    component.install(quiet)
+    component.downloads.mkdir()
+    (component.downloads / 'w0.whl').write_bytes(b'left after the install')
+    from engine import Engine
+    Engine(tmp_path)
+    assert not component.downloads.exists()
+    assert component.installed()
+
+
+def test_partial_download_survives_engine_start_until_the_next_attempt(tmp_path, wheels):
+    component = Component(tmp_path / 'gpu')
+    component.downloads.mkdir(parents=True)
+    part = component.downloads / 'w0.whl.part'
+    part.write_bytes(b'half')
+    from engine import Engine
+    Engine(tmp_path)
+    assert part.read_bytes() == b'half'
+
+
+def test_status_reports_the_installed_size_of_the_pinned_dlls():
+    assert sum(sum(w['dlls'].values()) for w in gpu_runtime.WHEELS) == 1795594032
+    assert gpu_runtime.INSTALLED_SIZE == '1,8 ГБ'
