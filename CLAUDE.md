@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+Before repository work, read `PROJECT_CONTEXT.md` and the shared local context it locates. Codex reads the same sources through `AGENTS.md`. Preserve this file's technical guidance when synchronising context.
+
 ## Project
 
 Shopot (Шёпот) is a local dictation desktop app for Windows and macOS. A global hotkey records speech, a Python worker recognises it on the CPU, and the text is pasted into the window that had focus when recording started. What the product does, for whom, and its four rules are in `README.md`; the 1.0 plan is `PRD.md`; what has been verified is `VALIDATION.md`. All user-facing strings, errors and docs are in Russian; keep new UI text in Russian. The code is the reference for limits, thresholds and timings: do not copy them into docs.
