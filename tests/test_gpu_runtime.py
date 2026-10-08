@@ -24,8 +24,11 @@ def wheel(files):
 
 @pytest.fixture
 def server():
-    """Local HTTP server with Range support; tests put files into `files` and see the Range headers."""
-    state = {'files': {}, 'ranges': [], 'ignore_range': False}
+    """Local HTTP server with Range support; tests put files into `files` and see the Range headers.
+
+    `truncate`: send only that many bytes of the body, then close. `portal`: answer a Range request with a short page.
+    """
+    state = {'files': {}, 'ranges': [], 'ignore_range': False, 'truncate': None, 'portal': False}
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -35,7 +38,10 @@ def server():
             data = state['files'][self.path]
             header = self.headers.get('Range')
             state['ranges'].append(header)
-            if header and not state['ignore_range']:
+            if header and state['portal']:
+                self.send_response(200)
+                body = b'<html>login</html>'
+            elif header and not state['ignore_range']:
                 self.send_response(206)
                 body = data[int(header.split('=')[1].split('-')[0]):]
             else:
@@ -43,7 +49,8 @@ def server():
                 body = data
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
-            self.wfile.write(body)
+            self.wfile.write(body if state['truncate'] is None else body[:state['truncate']])
+            self.close_connection = True
 
     httpd = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
@@ -101,6 +108,32 @@ def test_server_ignoring_range_restarts_the_file(tmp_path, wheels, server):
     (component.downloads / 'w0.whl.part').write_bytes(server['files']['/w0.whl'][:wheels[0]['bytes'] // 2])
     component.install(quiet)
     assert component.installed()
+
+
+def test_dropped_connection_keeps_the_partial_file_and_resumes(tmp_path, wheels, server):
+    half = wheels[0]['bytes'] // 2
+    server['truncate'] = half  # the server closes the connection after half of the first archive
+    component = Component(tmp_path / 'gpu')
+    with pytest.raises(ValueError, match='продолжится с того же места'):
+        component.install(quiet)
+    part = component.downloads / 'w0.whl.part'
+    assert part.stat().st_size == half
+    server['truncate'], requests = None, len(server['ranges'])
+    component.install(quiet)
+    assert server['ranges'][requests] == f'bytes={half}-'
+    assert component.installed()
+
+
+def test_resume_answered_with_a_short_page_keeps_the_partial_file(tmp_path, wheels, server):
+    server['portal'] = True
+    component = Component(tmp_path / 'gpu')
+    component.downloads.mkdir(parents=True)
+    part = component.downloads / 'w0.whl.part'
+    original = server['files']['/w0.whl'][:wheels[0]['bytes'] // 2]
+    part.write_bytes(original)
+    with pytest.raises(ValueError, match='продолжится с того же места'):
+        component.install(quiet)
+    assert part.read_bytes() == original
 
 
 def test_corrupted_download_is_deleted_and_nothing_is_installed(tmp_path, wheels, server):

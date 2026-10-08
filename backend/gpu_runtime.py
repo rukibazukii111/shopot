@@ -7,11 +7,13 @@ A partial file is resumed with an HTTP Range request; the ready marker is writte
 import ctypes as C
 import errno
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
 import platform
 import shutil
+import ssl
 import sys
 import urllib.error
 import urllib.request
@@ -39,6 +41,8 @@ WHEELS = [
          ("cudnn_graph64_9", 2420256), ("cudnn_heuristic64_9", 56823328), ("cudnn_ops64_9", 126508576)]}},
 ]
 BROKEN = "Библиотеки NVIDIA не прошли проверку. Попробуй скачать ещё раз."
+NETWORK = ("Не удалось скачать библиотеки NVIDIA. Проверь интернет и нажми «Скачать» ещё раз — "
+           "загрузка продолжится с того же места.")
 
 
 class _Memory(C.Structure):
@@ -156,16 +160,21 @@ class Component:
             try:
                 headers = {"Range": f"bytes={done}-"} if done else {}
                 with urllib.request.urlopen(urllib.request.Request(wheel["url"], headers=headers), timeout=60) as response:
-                    if done and response.status != 206:
-                        completed, done = completed - done, 0  # the server sent the whole file: start over
+                    if not (done and response.status == 206):
+                        # Only the whole archive may replace what we have, not a login page or a proxy reply.
+                        if response.status != 200 or response.headers.get("Content-Length") != str(wheel["bytes"]):
+                            raise ValueError(NETWORK)
+                        completed, done = completed - done, 0
                     with open(part, "ab" if done else "wb") as out:
                         while chunk := response.read(CHUNK):
                             out.write(chunk)
                             done, completed = done + len(chunk), completed + len(chunk)
                             progress(completed, total, "Скачиваем библиотеки NVIDIA…")
-            except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
-                raise ValueError("Не удалось скачать библиотеки NVIDIA. Проверь интернет и нажми «Скачать» ещё раз — "
-                                 "загрузка продолжится с того же места.") from error
+            except (urllib.error.URLError, http.client.HTTPException, ssl.SSLError, TimeoutError,
+                    ConnectionError) as error:
+                raise ValueError(NETWORK) from error
+            if done < wheel["bytes"]:
+                raise ValueError(NETWORK)  # the connection closed early: the part stays for the next try
         progress(completed, total, "Проверяем библиотеки NVIDIA…", final=True)
         if part.stat().st_size != wheel["bytes"] or file_sha256(part) != wheel["sha256"]:
             part.unlink(missing_ok=True)
