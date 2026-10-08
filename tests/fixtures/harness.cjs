@@ -18,7 +18,10 @@ nativeModule.createNativeBackend = () => {
   // Apps using the microphone come from the test, never from the machine running it.
   native.micUsers = () => globalThis.__test.micUsers || [];
   const hotkeyDown = native.hotkeyDown;
-  native.hotkeyDown = () => globalThis.__test.keysDown !== undefined ? Boolean(globalThis.__test.keysDown) : hotkeyDown();
+  native.hotkeyDown = accelerator => {
+    globalThis.__test.holdKeys = accelerator;
+    return globalThis.__test.keysDown !== undefined ? Boolean(globalThis.__test.keysDown) : hotkeyDown(accelerator);
+  };
   for (const method of ['capture', 'sameTarget', 'paste']) {
     const original = native[method];
     native[method] = (...args) => {
@@ -30,12 +33,17 @@ nativeModule.createNativeBackend = () => {
   }
   return native;
 };
+// Shortcuts another app holds, for tests of a taken shortcut. The registered dictation shortcut is __test.hotkey, pressed by __test.toggle.
+globalThis.__test.busy = new Set((process.env.SHOPOT_TEST_BUSY_SHORTCUTS || '').split(',').filter(Boolean));
 globalShortcut.register = (key, callback) => {
-  if (key === 'CommandOrControl+Shift+Space') globalThis.__test.toggle = callback;
-  if (key === 'Escape') { globalThis.__test.cancel = callback; globalThis.__test.escape = true; }
-  return true;
+  if (key === 'Escape') { globalThis.__test.cancel = callback; globalThis.__test.escape = true; return true; }
+  if (globalThis.__test.busy.has(key)) return false;
+  globalThis.__test.hotkey = key; globalThis.__test.toggle = callback; return true;
 };
-globalShortcut.unregister = key => { if (key === 'Escape') globalThis.__test.escape = false; };
+globalShortcut.unregister = key => {
+  if (key === 'Escape') globalThis.__test.escape = false;
+  else if (key === globalThis.__test.hotkey) { globalThis.__test.hotkey = null; globalThis.__test.toggle = undefined; }
+};
 Worker.prototype.start = function () { this.status = status; setImmediate(() => this.emit('ready', status)); };
 Worker.prototype.request = function (command, payload) {
   globalThis.__test.requests.push({command, payload});

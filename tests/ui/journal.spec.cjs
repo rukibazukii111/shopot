@@ -151,7 +151,7 @@ test('the journal records every step of real work and none of what the user said
   has(new RegExp(` command-error command=hotkey kind=Error expected=false at=main\\.cjs:${refusal}$`));
   // A failed dictation is journaled once, as the dictation, not again as a failed window command.
   expect(journal).not.toContain('ipc-error channel=transcribe');
-  has(/ app-ready hotkey=true native=(true|false) meetings=(true|false)$/);
+  has(/ app-ready hotkey=true customHotkey=false native=(true|false) meetings=(true|false)$/);
   expect(lines.filter(line => / dictation result=error .*kind=KeyError/.test(line))[0]).not.toContain('message=');
   expect(journal).not.toContain('rejected=');
   // The preload's time is the journal's: history keeps showing the load inside the recognition time.

@@ -13,6 +13,7 @@ const {exportText} = require('./export.cjs');
 const {MicWatcher, meetingTurns, meetingText, summaryPrompt} = require('./meetings.cjs');
 const {createJournal, errorFields, timestamp} = require('./log.cjs');
 const {systemName, issueUrl} = require('./report.cjs');
+const {DEFAULT_HOTKEY, fromKeyEvent, same, labels} = require('./hotkey.cjs');
 
 const root = path.resolve(__dirname, '..');
 // From package.json rather than app.getVersion(), which reports Electron's version when main.cjs is loaded by a test harness.
@@ -26,11 +27,11 @@ let engineStartedAt = 0;
 const audioDir = path.join(dataDir, 'audio');
 const uiUrl = pathToFileURL(path.join(root, 'renderer', 'index.html')).href;
 const widgetUrl = pathToFileURL(path.join(root, 'renderer', 'widget.html')).href;
-const shortcut = 'CommandOrControl+Shift+Space';
 // `--hidden` starts in the tray without opening the window: for autostart and for smoke tests on a desktop in use.
 const startHidden = process.argv.includes('--hidden');
 let window, widget, tray, worker, store, paste, capture, busy = false, blocker, quitting = false, engineError = null;
-let hotkeyRegistered = false;
+// The dictation shortcut lives in settings.hotkey. While Settings waits for a new one it is paused, so pressing it does not record.
+let hotkeyRegistered = false, hotkeyPaused = false;
 let nativeAvailable = false, nativeBackend = null;
 // Holding the hotkey longer than this makes it push-to-talk: letting go ends the recording.
 const HOLD_MS = 450;
@@ -42,7 +43,7 @@ const MEETING_CHUNK_MS = (Number(process.env.SHOPOT_MEETING_CHUNK_SECONDS) || 30
 const MIC_POLL_MS = Number(process.env.SHOPOT_MIC_POLL_MS) || 4000;
 const WINDOW_GONE = 'Окно записи перезапустилось';
 let meeting = null, offer = null, offerTimer, meetingClock, micWatcher = null, meetingQueue = Promise.resolve();
-let widgetState = {phase: 'requesting', shortcut: process.platform === 'darwin' ? '⌘⇧Space' : 'Ctrl⇧Space'};
+let widgetState = {phase: 'requesting', keys: []};
 
 function send(channel, value) { if (window && !window.isDestroyed()) window.webContents.send(channel, value); }
 function trusted(event) {
@@ -86,7 +87,7 @@ function resultFields(result, requestSeconds) {
 }
 function pastePermission() { return process.platform !== 'darwin' || systemPreferences.isTrustedAccessibilityClient(false); }
 function meetingState() { return meeting ? {app: meeting.app?.name ?? null, startedAt: meeting.startedAt, stopping: meeting.stopping} : null; }
-function snapshot() { return {...store.data, engine: worker.status, engineError, busy, hotkeyRegistered, nativeAvailable, pastePermission: pastePermission(), platform: process.platform, totalMemory: os.totalmem(), meeting: meetingState(), meetingsSupported: MEETINGS}; }
+function snapshot() { return {...store.data, ...hotkeyView(), engine: worker.status, engineError, busy, hotkeyRegistered, nativeAvailable, pastePermission: pastePermission(), platform: process.platform, totalMemory: os.totalmem(), meeting: meetingState(), meetingsSupported: MEETINGS}; }
 function modelId(id) { if (!MODEL_IDS.includes(id)) throw new Error('Неизвестная модель'); return id; }
 function textValue(value) { if (typeof value !== 'string' || value.length > 200000) throw new Error('Недопустимый текст'); return value; }
 function entryFor(id) { const entry = store.data.history.find(e => e.id === id); if (!entry) throw new Error('Запись не найдена'); return entry; }
@@ -140,7 +141,7 @@ function watchHotkeyHold() {
   const startedAt = Date.now();
   const current = hold = {holding: false, timer: setInterval(() => {
     let down = false;
-    try { down = nativeBackend.hotkeyDown(); } catch { down = false; }
+    try { down = nativeBackend.hotkeyDown(store.data.settings.hotkey); } catch { down = false; }
     const held = Date.now() - startedAt;
     if (down) {
       if (!current.holding && held >= HOLD_MS) { current.holding = true; showWidget({holding: true}, capture?.phase === 'recording'); }
@@ -174,6 +175,41 @@ function beginCapture(global = false) {
   globalShortcut.register('Escape', () => { journalCancel(); hideWidget(); send('cancel-recording'); });
   if (global) showWidget({phase: 'requesting', elapsed: 0, level: 0, message: '', hint: '', holding: false});
   return {id: capture.id, settings: capture.settings};
+}
+function hotkeyView() {
+  const hotkey = store.data.settings.hotkey;
+  return {hotkey, hotkeyKeys: labels(hotkey, process.platform), hotkeyDefault: same(hotkey, DEFAULT_HOTKEY, process.platform)};
+}
+function registerHotkey(accelerator) { return globalShortcut.register(accelerator, toggleGlobalRecording); }
+const RECORDING_HOTKEY = 'Закончи запись, потом меняй сочетание';
+// Settings waits for a new shortcut: the current one must not start a recording meanwhile. Any way out of waiting resumes it.
+function pauseHotkey(on) {
+  if (on && capture) throw new Error(RECORDING_HOTKEY);
+  if (on && hotkeyRegistered && !hotkeyPaused) { globalShortcut.unregister(store.data.settings.hotkey); hotkeyPaused = true; }
+  else if (!on && hotkeyPaused) { hotkeyPaused = false; hotkeyRegistered = registerHotkey(store.data.settings.hotkey); }
+}
+// A key pressed in Settings, or «Сбросить». A rule the keys break keeps Settings waiting (retry); a shortcut another program
+// holds ends the wait with the previous shortcut working again.
+function setHotkey(value) {
+  if (capture) { pauseHotkey(false); return {ok: false, retry: false, error: RECORDING_HOTKEY}; }
+  const reset = value?.reset === true;
+  const built = reset ? {accelerator: DEFAULT_HOTKEY} : fromKeyEvent({code: value?.code, ctrlKey: value?.ctrlKey === true, altKey: value?.altKey === true,
+    shiftKey: value?.shiftKey === true, metaKey: value?.metaKey === true}, process.platform);
+  if (built.error) return {ok: false, retry: true, error: built.error};
+  const current = store.data.settings.hotkey, next = built.accelerator;
+  if (same(next, current, process.platform) && (hotkeyRegistered || hotkeyPaused)) { pauseHotkey(false); return {ok: true, snapshot: snapshot()}; }
+  // The old one goes first: Electron refuses to register a shortcut this app already holds, even spelled differently.
+  if (hotkeyRegistered && !hotkeyPaused) globalShortcut.unregister(current);
+  hotkeyPaused = false;
+  if (!registerHotkey(next)) {
+    hotkeyRegistered = registerHotkey(current);
+    journal.write('hotkey-change', {result: 'taken', reset});
+    return {ok: false, retry: false, error: 'Сочетание занято другой программой или системой. Оставили прежнее'};
+  }
+  hotkeyRegistered = true; store.setHotkey(next);
+  journal.write('hotkey-change', {result: 'ok', reset});
+  widgetState = {...widgetState, keys: hotkeyView().hotkeyKeys};
+  return {ok: true, snapshot: snapshot()};
 }
 function toggleGlobalRecording() {
   if (capture) {
@@ -338,6 +374,10 @@ function createWindow() {
   window.once('ready-to-show', () => { if (!startHidden) window.show(); });
   window.on('close', event => { if (!quitting && tray) { event.preventDefault(); window.hide(); } });
   window.webContents.once('did-finish-load', createWidget);
+  // Leaving Settings while it waits for a new shortcut, by any way, gives the current one back.
+  window.on('blur', () => pauseHotkey(false));
+  window.on('hide', () => pauseHotkey(false));
+  window.webContents.on('did-start-loading', () => pauseHotkey(false));
   window.loadURL(uiUrl);
 }
 
@@ -476,7 +516,8 @@ else {
       ]));
       tray.on('click', () => { window.show(); window.focus(); });
     }
-    hotkeyRegistered = globalShortcut.register(shortcut, toggleGlobalRecording);
+    hotkeyRegistered = registerHotkey(store.data.settings.hotkey);
+    widgetState.keys = hotkeyView().hotkeyKeys;
     ipc('begin-recording', () => beginCapture());
     ipcMain.on('capture-update', (event, value) => {
       trusted(event);
@@ -505,7 +546,10 @@ else {
       if (process.platform === 'darwin') systemPreferences.isTrustedAccessibilityClient(true);
       return pastePermission();
     });
-    ipc('settings', value => store.setSettings(value));
+    // Settings change the shortcut only through hotkey-set, which registers it first.
+    ipc('settings', value => store.setSettings({...value, hotkey: store.data.settings.hotkey}));
+    ipc('hotkey-pause', on => { pauseHotkey(on === true); return true; });
+    ipc('hotkey-set', setHotkey);
     ipc('dictionary', value => store.setDictionary(value));
     ipc('snippets', value => store.setSnippets(value));
     ipc('profiles', value => store.setProfiles(value));
@@ -675,7 +719,7 @@ else {
       });
       micWatcher.start();
     }
-    journal.write('app-ready', {hotkey: hotkeyRegistered, native: nativeAvailable, meetings: MEETINGS});
+    journal.write('app-ready', {hotkey: hotkeyRegistered, customHotkey: !hotkeyView().hotkeyDefault, native: nativeAvailable, meetings: MEETINGS});
   });
 }
 app.on('activate', () => { if (window) window.show(); });

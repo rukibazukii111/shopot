@@ -1,5 +1,6 @@
 // Only OS window identity and the standard paste shortcut cross this boundary.
 // No text is typed as commands and Enter is never generated.
+const {windowsKeys, macKeys} = require('./hotkey.cjs');
 // Readable names for common Windows programs; anything else shows its executable name.
 const WINDOWS_APP_NAMES = {
   'chrome.exe': 'Google Chrome', 'msedge.exe': 'Microsoft Edge', 'firefox.exe': 'Firefox', 'browser.exe': 'Яндекс Браузер',
@@ -106,8 +107,12 @@ function windowsBackend(koffi) {
       return !now.focus || !target.focus || now.focus === target.focus;
     },
     modifiersDown: () => [0x10, 0x11, 0x12, 0x5B, 0x5C].some(vk => (keyState(vk) & 0x8000) !== 0),
-    // Ctrl+Shift+Space still held: the user is dictating push-to-talk style.
-    hotkeyDown: () => [0x11, 0x10, 0x20].every(vk => (keyState(vk) & 0x8000) !== 0),
+    // Every key of the dictation shortcut still held: the user is dictating push-to-talk style. Win is either Windows key.
+    hotkeyDown(accelerator) {
+      const down = vk => (keyState(vk) & 0x8000) !== 0;
+      const keys = windowsKeys(accelerator);
+      return keys.length > 0 && keys.every(vk => vk === 0x5B ? down(0x5B) || down(0x5C) : down(vk));
+    },
     paste: () => sendInput(4, [key(0x11), key(0x56), key(0x56, true), key(0x11, true)], koffi.sizeof(Input)) === 4,
   };
 }
@@ -170,8 +175,12 @@ function macBackend(koffi) {
       finally { if (now) release(now); }
     },
     modifiersDown: () => (BigInt(flags(0)) & 0x1E0000n) !== 0n,
-    // ⌘⇧Space still held (Space is key code 49); command 0x100000 and shift 0x20000 in the flags.
-    hotkeyDown: () => Boolean(keyDown) && (BigInt(flags(0)) & 0x120000n) === 0x120000n && keyDown(0, 49),
+    // Every key of the dictation shortcut still held: its modifier bits in the flags and its key by key code.
+    // A key without a macOS key code leaves the shortcut working as start/stop only.
+    hotkeyDown(accelerator) {
+      const {flags: need, key} = macKeys(accelerator);
+      return Boolean(keyDown) && key !== null && (BigInt(flags(0)) & need) === need && keyDown(0, key);
+    },
     paste() {
       const down = event(null, 9, true), up = event(null, 9, false);
       try {

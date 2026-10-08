@@ -30,7 +30,9 @@ const TRANSCRIPTION = {
 const EVENTS = {
   'app-start': {version: token, electron: token, os: token, platform: token, arch: token, memoryGb: int,
     packaged: bool, hidden: bool, dataDirNonAscii: bool, dataDirSpace: bool},
-  'app-ready': {hotkey: bool, native: bool, meetings: bool},
+  'app-ready': {hotkey: bool, customHotkey: bool, native: bool, meetings: bool},
+  // A new dictation shortcut from Settings: whether it took, and whether it was «Сбросить».
+  'hotkey-change': {result: oneOf(['ok', 'taken']), reset: bool},
   'engine-start': {},
   'engine-ready': {models: tokens, threads: int, device: token, compute: token,
     formatter: oneOf(['installed', 'absent', 'unsupported']), startup: sec},

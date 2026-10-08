@@ -7,6 +7,8 @@ const subscribe = (channel, callback) => {
 contextBridge.exposeInMainWorld('shopot', {
   boot: () => ipcRenderer.invoke('boot'),
   settings: value => ipcRenderer.invoke('settings', value),
+  pauseHotkey: on => ipcRenderer.invoke('hotkey-pause', on),
+  setHotkey: value => ipcRenderer.invoke('hotkey-set', value),
   dictionary: value => ipcRenderer.invoke('dictionary', value),
   snippets: value => ipcRenderer.invoke('snippets', value),
   profiles: value => ipcRenderer.invoke('profiles', value),
