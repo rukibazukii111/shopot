@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+Before repository work, read `PROJECT_CONTEXT.md` and the shared local context it locates. Codex reads the same sources through `AGENTS.md`. Preserve this file's technical guidance when synchronising context.
+
 ## Project
 
 Shopot (Шёпот) is a local dictation desktop app for Windows and macOS. Electron is the UI and controller. A Python worker runs GigaAM v3 (default, Russian only, via onnx-asr) or Whisper (faster-whisper) on the CPU (INT8). A global hotkey (`CommandOrControl+Shift+Space`) records audio, and the resulting text is auto-pasted into the window that had focus when recording started. All user-facing strings, error messages and docs are in Russian; keep new UI text in Russian.
