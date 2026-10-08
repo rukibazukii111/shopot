@@ -65,6 +65,7 @@ test('checksum files, urls and errors', () => {
   assert.equal(error.kind, 'offline'); assert.match(error.message, /интернет/);
 });
 
+const {EventEmitter} = require('node:events');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), crypto = require('node:crypto');
 const sha = data => crypto.createHash('sha256').update(data).digest('hex');
 // GitHub stand-in: a URL maps to JSON, text, bytes, an HTTP status ({status}) or a thrown network error.
@@ -133,6 +134,19 @@ test('later hides the offer until the next check; nothing newer clears it', asyn
   await updater.check(); assert.equal(updater.state.phase, 'none');
   fs.rmSync(dir, {recursive: true, force: true});
 });
+test('a manual check during an automatic one still offers a skipped version', async () => {
+  const dir = tempDir(), r = release('v1.0.1');
+  let resolve; const answer = new Promise(done => { resolve = done; }); let calls = 0;
+  const updater = new u.Updater({fetch: async () => { calls++; await answer; return new Response(JSON.stringify([r])); }, dir, current: '1.0.0', ...win});
+  try {
+    const auto = updater.check({skipped: '1.0.1'}), manual = updater.check({manual: true, skipped: '1.0.1'});
+    resolve();
+    assert.equal(await auto, null);
+    assert.equal((await manual).version, '1.0.1');
+    assert.equal(calls, 1);
+    assert.equal(updater.state.phase, 'available');
+  } finally { fs.rmSync(dir, {recursive: true, force: true}); }
+});
 test('clean removes leftovers, and installers launch per system', async () => {
   const dir = tempDir();
   fs.writeFileSync(path.join(dir, 'Shopot-1.0.0-win-x64.exe'), 'old'); fs.writeFileSync(path.join(dir, 'x.part'), 'old');
@@ -140,10 +154,18 @@ test('clean removes leftovers, and installers launch per system', async () => {
   assert.deepEqual(fs.readdirSync(dir), []);
   new u.Updater({fetch: async () => {}, dir: path.join(dir, 'missing'), current: '1.0.0', ...win}).clean();
   const spawned = [];
-  const spawn = (file, args, options) => { spawned.push({file, args, options}); return {unref() {}}; };
+  // Like a real ChildProcess: 'spawn' or 'error' arrives after spawn() returns.
+  const child = event => Object.assign(new EventEmitter(), {unref() {}, event});
+  const spawn = (file, args, options) => {
+    spawned.push({file, args, options}); const c = child();
+    setImmediate(() => file.includes('blocked') ? c.emit('error', Object.assign(new Error('spawn EACCES'), {code: 'EACCES'})) : c.emit('spawn'));
+    return c;
+  };
   assert.equal(await u.launchInstaller('C:/u/setup.exe', 'win32', {spawn}), 'quit');
   assert.deepEqual(spawned[0].args, ['--updated', '/S', '--force-run']);
   assert.equal(spawned[0].options.detached, true);
+  // A launch that fails (antivirus, missing file) is an error, not a quit without an update.
+  await assert.rejects(u.launchInstaller('C:/u/blocked.exe', 'win32', {spawn}), {kind: 'open', code: 'EACCES'});
   assert.equal(await u.launchInstaller('/u/a.dmg', 'darwin', {openPath: async () => ''}), 'opened');
   await assert.rejects(u.launchInstaller('/u/a.dmg', 'darwin', {openPath: async () => 'нет'}), {kind: 'open'});
   fs.rmSync(dir, {recursive: true, force: true});

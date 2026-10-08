@@ -113,20 +113,19 @@ class Updater extends EventEmitter {
     if (!response.ok) throw new UpdateError('http', response.status);
     return response;
   }
-  // One check at a time; a download in progress is left alone.
-  check({manual = false, skipped = null} = {}) {
+  // Checks at the same time share one request; each picks with its own options. A download in progress is left alone.
+  async check({manual = false, skipped = null} = {}) {
     this.checking ??= (async () => {
-      let releases;
-      try { releases = await (await this.request(RELEASES_URL, {headers: {accept: 'application/vnd.github+json'}})).json(); }
+      try { return await (await this.request(RELEASES_URL, {headers: {accept: 'application/vnd.github+json'}})).json(); }
       catch (error) { throw error instanceof UpdateError ? error : new UpdateError('format'); }
-      const offer = pickRelease(releases, {current: this.current, platform: this.platform, arch: this.arch, skipped, manual});
-      if (this.downloading) return offer;
-      if (!offer) { this.offer = null; this.set({phase: 'none', hidden: false}); return null; }
-      if (this.ready && this.ready.version !== offer.version) this.ready = null;
-      this.offer = offer; this.set(this.offerState());
-      return offer;
     })().finally(() => { this.checking = null; });
-    return this.checking;
+    const releases = await this.checking;
+    const offer = pickRelease(releases, {current: this.current, platform: this.platform, arch: this.arch, skipped, manual});
+    if (this.downloading) return offer;
+    if (!offer) { this.offer = null; this.set({phase: 'none', hidden: false}); return null; }
+    if (this.ready && this.ready.version !== offer.version) this.ready = null;
+    this.offer = offer; this.set(this.offerState());
+    return offer;
   }
   hide() { if (this.state.phase !== 'none') this.set({...this.state, hidden: true}); }
   readyFile() { return this.ready && fs.existsSync(this.ready.file) ? this.ready.file : null; }
@@ -175,7 +174,15 @@ class Updater extends EventEmitter {
 // Windows: electron-builder's NSIS installer, silent, into the folder the app is in now, then starts Shopot again.
 // macOS: the DMG opens; the user drags Shopot into Applications.
 async function launchInstaller(file, platform, {spawn, openPath}) {
-  if (platform === 'win32') { spawn(file, ['--updated', '/S', '--force-run'], {detached: true, stdio: 'ignore'}).unref(); return 'quit'; }
+  if (platform === 'win32') {
+    // Shopot quits only once the installer has started; a failed start (antivirus, missing file) keeps it open with an error.
+    const child = spawn(file, ['--updated', '/S', '--force-run'], {detached: true, stdio: 'ignore'});
+    await new Promise((resolve, reject) => {
+      child.once('spawn', resolve);
+      child.once('error', error => reject(new UpdateError('open', error?.code)));
+    });
+    child.unref(); return 'quit';
+  }
   if (await openPath(file)) throw new UpdateError('open');
   return 'opened';
 }

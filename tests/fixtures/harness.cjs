@@ -73,6 +73,8 @@ const childProcess = require('node:child_process');
 const realSpawn = childProcess.spawn;
 childProcess.spawn = (file, args, options) => {
   if (!/[\\/]updates[\\/]/.test(String(file))) return realSpawn(file, args, options);
-  globalThis.__test.spawned.push({file, args}); return {unref() {}};
+  globalThis.__test.spawned.push({file, args});
+  const child = Object.assign(new (require('node:events').EventEmitter)(), {unref() {}});
+  setImmediate(() => child.emit('spawn')); return child;
 };
 require('../../electron/main.cjs');
