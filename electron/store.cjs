@@ -2,6 +2,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
+// Format 2 is 1.0. Data of 0.3.0 and earlier is format 1 and gets one untouched copy (PRD, section 10).
+const STORE_VERSION = 2;
+const BACKUP_FILE = 'store.before-1.0.json';
 const DEFAULT_SETTINGS = {
   model: 'gigaam', language: 'ru', mode: 'natural', context: '',
   autoCopy: true, autoPaste: true, keepAudio: false, microphoneId: 'default', formatting: 'rules', removeFillers: true,
@@ -112,7 +115,7 @@ class Store {
       try { state = JSON.parse(fs.readFileSync(this.file, 'utf8')); }
       catch { throw new Error('Не удалось прочитать историю. Файл store.json сохранён без изменений.'); }
     }
-    this.data = state ?? {version: 1, settings: DEFAULT_SETTINGS, dictionary: INITIAL_DICTIONARY, history: []};
+    this.data = state ?? {version: STORE_VERSION, settings: DEFAULT_SETTINGS, dictionary: INITIAL_DICTIONARY, history: []};
     this.data.settings = validateSettings(this.data.settings);
     this.data.dictionary = validateDictionary(this.data.dictionary);
     this.data.snippets = validateSnippets(this.data.snippets ?? []);
@@ -120,6 +123,14 @@ class Store {
     if (!Array.isArray(this.data.history)) throw new Error('Повреждён формат истории');
     this.data.pendingRecordings ??= [];
     if (!Array.isArray(this.data.pendingRecordings)) throw new Error('Повреждён список незавершённых записей');
+    if (state && !(state.version >= STORE_VERSION)) this.keepOldCopy();
+  }
+  // Copy the file exactly as the old version wrote it; an existing copy is never replaced.
+  // If copying fails (a full disk), the app still starts and the next start tries again.
+  keepOldCopy() {
+    try { fs.copyFileSync(this.file, path.join(this.root, BACKUP_FILE), fs.constants.COPYFILE_EXCL); }
+    catch (error) { if (error.code !== 'EEXIST') return; }
+    this.data.version = STORE_VERSION;
   }
   save() {
     const temp = this.file + '.tmp';
@@ -133,4 +144,4 @@ class Store {
   addHistory(entry) { this.data.history.unshift(entry); this.save(); return entry; }
 }
 
-module.exports = {Store, validateSettings, validateDictionary, validateSnippets, validateProfiles, settingsFor, DEFAULT_SETTINGS, MODEL_IDS};
+module.exports = {Store, validateSettings, validateDictionary, validateSnippets, validateProfiles, settingsFor, DEFAULT_SETTINGS, MODEL_IDS, STORE_VERSION, BACKUP_FILE};
