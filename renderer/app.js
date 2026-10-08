@@ -46,7 +46,9 @@ const modelInfo = {
 };
 // Measured peaks of the Whisper models; on an 8 GB machine they compete with the browser and the system.
 const heavyModels = {turbo: 'При загрузке модели нужно до 1,9 ГБ, остальные программы могут тормозить.', 'large-v3': 'Модели нужно около 3,3 ГБ, система может зависать.'};
-const state = {settings: {}, dictionary: [], snippets: [], profiles: [], suggestions: new Map(), dictionaryTab: 'words', history: [], pendingRecordings: [], engine: null, page: 'dictation', phase: 'idle', operation: 0, hotkeyRegistered: false, selected: null, download: null, flash: null, confirmModel: null, totalMemory: 0};
+const state = {settings: {}, dictionary: [], snippets: [], profiles: [], suggestions: new Map(), dictionaryTab: 'words', history: [], pendingRecordings: [], engine: null, page: 'dictation', phase: 'idle', operation: 0, hotkeyRegistered: false, selected: null, download: null, flash: null, confirmModel: null, totalMemory: 0,
+  // «Распознать заново»: the one running ({entryId, model}, from main), the entry whose choice is open and what is chosen there.
+  retranscribing: null, retranscribeOpen: null, retranscribeChoice: null};
 let recorder, stream, audioContext, analyser, raf, recordingTimer, startedAt, recordingCanceled = false;
 let editingWord = null, editingSnippet = null, wordAliases = [], toastTimer, flashTimer, blobUrls = [], contextDirty = false, captureId = null;
 const drafts = new Map();
@@ -152,7 +154,7 @@ function refreshControls() {
   $('#record-button [data-icon]').innerHTML = icon(recordingNow ? 'stop' : phase === 'idle' && state.engine && !ready ? 'download' : 'mic');
   $('#cancel-button').hidden = !['requesting', 'recording', 'transcribing'].includes(phase);
   $('#import-button').hidden = phase !== 'idle' || !ready;
-  $('#import-button').disabled = !state.engine;
+  $('#import-button').disabled = !state.engine || Boolean(state.retranscribing);
   $('#record-hint').textContent = recordingNow ? 'Не дольше 15 минут'
     : phase !== 'idle' ? ''
     : ready ? 'Аудио или видео, до 100 МБ'
@@ -455,7 +457,7 @@ function renderRecovery() {
   if (!entries.length) return;
   $('#recovery-title').textContent = entries.length === 1 ? 'Запись сохранена, можно повторить распознавание' : `Ожидают распознавания: ${entries.length}`;
   $('#recovery-detail').textContent = `${dateLabel(entries[0].createdAt)}, ${entries[0].source}. После распознавания текст появится в истории.`;
-  $('#retry-recording').disabled = !state.engine || !installed();
+  $('#retry-recording').disabled = !state.engine || !installed() || Boolean(state.retranscribing);
 }
 async function retryRecording() {
   if (isBusy() || !state.pendingRecordings.length) return;
@@ -480,6 +482,34 @@ function rawHtml(entry) {
 }
 function recognitionLabel(entry) {
   return secondsLabel(entry.elapsed) + (entry.loadElapsed >= 0.1 ? `, из них загрузка модели ${secondsLabel(entry.loadElapsed)}` : '');
+}
+const languageNames = {ru: 'Русский', en: 'English', auto: 'Автоопределение'};
+function modelTitle(id) { return modelInfo[id]?.title || modelNames[id] || id; }
+function againLabel(entry) { return entry.retranscribed ? `Повторно: ${modelTitle(entry.retranscribed.model)}` : ''; }
+function installedModels() { return (state.engine?.models || []).filter(m => m.installed && modelInfo[m.id]); }
+function modelLanguages(id) { return state.engine?.models?.find(m => m.id === id)?.languages || ['ru']; }
+// The active model, unless the entry was made with it: then the first other downloaded one.
+function defaultRetranscribeModel(entry) {
+  const ids = installedModels().map(m => m.id);
+  if (ids.includes(state.settings.model) && state.settings.model !== entry.model) return state.settings.model;
+  return ids.find(id => id !== entry.model) || ids[0];
+}
+function retranscribeNote(languages) { return `${languages.length === 1 ? 'Быстрая модель понимает только русский. ' : ''}Исходная запись не изменится. Новая появится над ней.`; }
+function retranscribeHtml(entry) {
+  const running = state.retranscribing;
+  if (running?.entryId === entry.id) return `<div class="retranscribe-status" role="status"><span>Распознаю заново · ${escapeHtml(modelTitle(running.model))}</span><progress id="retranscribe-progress"></progress><button class="button" data-action="retranscribe-cancel">Отменить</button></div>`;
+  if (state.retranscribeOpen !== entry.id || running) return '';
+  const chosen = state.retranscribeChoice || {};
+  const model = installedModels().some(m => m.id === chosen.model) ? chosen.model : defaultRetranscribeModel(entry), languages = modelLanguages(model);
+  const language = [chosen.language, entry.language, state.settings.language].find(value => languages.includes(value)) || 'ru';
+  const models = installedModels().map(m => `<option value="${escapeHtml(m.id)}"${m.id === model ? ' selected' : ''}>${escapeHtml(modelTitle(m.id))}${m.id === entry.model ? ' — как в этой записи' : ''}</option>`).join('');
+  const langs = Object.entries(languageNames).map(([id, name]) => `<option value="${id}"${id === language ? ' selected' : ''}${languages.includes(id) ? '' : ' disabled'}>${name}</option>`).join('');
+  const select = (field, options) => `<div class="select"><select data-retranscribe="${field}">${options}</select><span data-icon="chevron-down">${icon('chevron-down')}</span></div>`;
+  return `<div class="retranscribe"><h2>Распознать заново</h2>
+    <label class="retranscribe-field"><span>Модель</span>${select('model', models)}</label>
+    <label class="retranscribe-field"><span>Язык речи</span>${select('language', langs)}</label>
+    <p class="retranscribe-note">${retranscribeNote(languages)}</p>
+    <div class="retranscribe-actions"><button class="button" data-action="retranscribe-close">Закрыть</button><button class="button-primary" data-action="retranscribe-start">Распознать</button></div></div>`;
 }
 // Peak RAM of the engine for this dictation (Windows: working set, macOS: the Activity Monitor footprint).
 function memoryLabel(entry) {
@@ -532,7 +562,10 @@ function entryActions(entry, primary) {
     : `<button class="button copy-button" data-action="copy"><span class="copy-icon">${icon('copy')}</span><span class="copy-check">${icon('check')}</span><span class="copy-label">Скопировать</span></button>`;
   // A call transcript goes to a chat assistant for notes only when the user pastes it there.
   const summary = entry.meeting ? `<button class="icon-button" data-action="summary" aria-label="Скопировать с просьбой сделать резюме" title="Скопировать для резюме в ChatGPT или Claude">${icon('sparkles')}</button>` : '';
-  return `${summary}${entry.audioFile ? `<button class="icon-button" data-action="play" aria-label="Прослушать запись" title="Прослушать">${icon('play')}</button>` : ''}<button class="icon-button" data-action="export" aria-label="Сохранить в файл: текст, Markdown или субтитры" title="Сохранить в файл">${icon('download')}</button><button class="icon-button" data-action="delete" aria-label="Удалить диктовку" title="Удалить">${icon('trash')}</button>${copy}`;
+  // «Распознать заново» lives in the history card, where its choice and progress are shown (PRD 6.20).
+  const again = primary && entry.audioFile ? `<button class="icon-button" data-action="retranscribe" aria-label="Распознать заново" title="Распознать заново"${state.retranscribing ? ' disabled' : ''}>${icon('refresh')}</button>` : '';
+  const locked = state.retranscribing?.entryId === entry.id ? ' disabled' : '';
+  return `${summary}${again}${entry.audioFile ? `<button class="icon-button" data-action="play" aria-label="Прослушать запись" title="Прослушать">${icon('play')}</button>` : ''}<button class="icon-button" data-action="export" aria-label="Сохранить в файл: текст, Markdown или субтитры" title="Сохранить в файл">${icon('download')}</button><button class="icon-button" data-action="delete" aria-label="Удалить диктовку" title="Удалить"${locked}>${icon('trash')}</button>${copy}`;
 }
 function latestCard(entry) {
   const text = entryText(entry), count = wordCount(text), id = escapeHtml(entry.id);
@@ -563,7 +596,7 @@ function renderHistory() {
   for (const entry of entries) {
     const label = dayLabel(entry.createdAt), doubts = doubtsOf(entry), selected = entry.id === state.selected;
     if (label !== group) { group = label; html += `<div class="group-label">${escapeHtml(label)}</div>`; }
-    html += `<button class="history-row${selected ? ' selected' : ''}" data-select-entry="${escapeHtml(entry.id)}" aria-pressed="${selected}"><span class="tile">${icon(entry.meeting ? 'users' : isFileSource(entry) ? 'text' : 'mic')}</span><span class="row-text"><span class="row-title">${escapeHtml(entryText(entry).replace(/\s+/g, ' ').trim() || 'Пустая диктовка')}</span><span class="row-meta"><span class="mono">${timeLabel(entry.createdAt)}</span><span class="mono">${duration(entry.duration)}</span><span>${escapeHtml(modelNames[entry.model] || entry.model)}</span></span></span>${doubts ? `<span class="badge-warn">${doubts} проверить</span>` : '<span></span>'}</button>`;
+    html += `<button class="history-row${selected ? ' selected' : ''}" data-select-entry="${escapeHtml(entry.id)}" aria-pressed="${selected}"><span class="tile">${icon(entry.meeting ? 'users' : isFileSource(entry) ? 'text' : 'mic')}</span><span class="row-text"><span class="row-title">${escapeHtml(entryText(entry).replace(/\s+/g, ' ').trim() || 'Пустая диктовка')}</span><span class="row-meta"><span class="mono">${timeLabel(entry.createdAt)}</span><span class="mono">${duration(entry.duration)}</span>${entry.retranscribed ? `<span class="row-again">${escapeHtml(againLabel(entry))}</span>` : `<span>${escapeHtml(modelNames[entry.model] || entry.model)}</span>`}</span></span>${doubts ? `<span class="badge-warn">${doubts} проверить</span>` : '<span></span>'}</button>`;
   }
   $('#history-list').innerHTML = html || `<div class="list-empty"><strong>${query ? 'Ничего не нашлось' : 'Пока здесь тихо'}</strong><span>${query ? 'Попробуй другое слово или часть фразы.' : 'Начни с первой диктовки, и она появится здесь.'}</span></div>`;
   renderHistoryDetail();
@@ -576,10 +609,10 @@ function renderHistoryDetail() {
   }
   const text = entryText(entry), count = wordCount(text), id = escapeHtml(entry.id);
   $('#history-detail').innerHTML = `<div class="detail" data-entry="${id}">
-    <div class="detail-head"><h1>${escapeHtml(dateLabel(entry.createdAt))}</h1><span class="detail-source">${escapeHtml(entry.source)}</span>${tabsHtml('detail', entry)}</div>
+    <div class="detail-head"><h1>${escapeHtml(dateLabel(entry.createdAt))}</h1><span class="detail-source">${escapeHtml([againLabel(entry), entry.source].filter(Boolean).join(' · '))}</span>${tabsHtml('detail', entry)}</div>
     <div class="detail-body"><div class="detail-panel" data-detail-panel="text"><textarea class="history-editor" data-entry="${id}" aria-label="Текст диктовки" spellcheck="false">${escapeHtml(text)}</textarea>${replacementsHtml(entry)}${suggestionsSlot(entry)}</div>
-    <div class="detail-panel" data-detail-panel="raw" hidden><p class="history-raw">${rawHtml(entry)}</p><p class="review-note">${rawNote(entry)}</p></div><div class="audio-slot"></div>
-    <dl class="meta-list"><dt>Длительность</dt><dd class="mono">${duration(entry.duration)}</dd><dt>Текст</dt><dd>${count} ${pluralWords(count)}</dd><dt>Распознавание</dt><dd>${recognitionLabel(entry)}</dd>${entry.memoryPeak ? `<dt>Память</dt><dd>${memoryLabel(entry)}</dd>` : ''}<dt>Модель</dt><dd>${escapeHtml(modelNames[entry.model] || entry.model)}</dd><dt>Режим</dt><dd>${escapeHtml(modes[entry.mode] || '')}${entry.translated ? ' · перевод на английский' : ''}</dd><dt>Источник</dt><dd>${escapeHtml(entry.source)}</dd>${entry.app ? `<dt>Приложение</dt><dd>${escapeHtml(entry.app.name)}${entry.app.profile ? ' · свои настройки' : ''}</dd>` : ''}</dl></div>
+    <div class="detail-panel" data-detail-panel="raw" hidden><p class="history-raw">${rawHtml(entry)}</p><p class="review-note">${rawNote(entry)}</p></div><div class="audio-slot"></div>${retranscribeHtml(entry)}
+    <dl class="meta-list"><dt>Длительность</dt><dd class="mono">${duration(entry.duration)}</dd><dt>Текст</dt><dd>${count} ${pluralWords(count)}</dd><dt>Распознавание</dt><dd>${recognitionLabel(entry)}</dd>${entry.recognizedAt ? `<dt>Распознано заново</dt><dd>${escapeHtml(dateLabel(entry.recognizedAt))}</dd>` : ''}${entry.memoryPeak ? `<dt>Память</dt><dd>${memoryLabel(entry)}</dd>` : ''}<dt>Модель</dt><dd>${escapeHtml(modelNames[entry.model] || entry.model)}</dd><dt>Режим</dt><dd>${escapeHtml(modes[entry.mode] || '')}${entry.translated ? ' · перевод на английский' : ''}</dd><dt>Источник</dt><dd>${escapeHtml(entry.source)}</dd>${entry.app ? `<dt>Приложение</dt><dd>${escapeHtml(entry.app.name)}${entry.app.profile ? ' · свои настройки' : ''}</dd>` : ''}</dl></div>
     <div class="action-bar"><span class="action-note">${icon('edit')}Правки в тексте сохраняются сами</span><span class="spacer"></span>${entryActions(entry, true)}</div></div>`;
 }
 function selectEntry(id, focus = false) {
@@ -603,6 +636,25 @@ function markCopied(button) {
   clearTimeout(button.copyTimer);
   button.copyTimer = setTimeout(() => { button.classList.remove('copied'); button.querySelector('.copy-label').textContent = 'Скопировать'; }, 1600);
 }
+// The result goes right above the original and is selected; a cancel, by «Отменить» or a dictation, leaves history as it was.
+async function retranscribe(entry, model, language) {
+  const running = state.retranscribing = {entryId: entry.id, model};
+  state.retranscribeOpen = null; renderHistoryDetail();
+  try {
+    const result = await api.retranscribe(entry.id, model, language);
+    if (result.canceled) toast('Повторное распознавание отменено', 'muted');
+    else if (result.noSpeech) toast('Речь не обнаружена. Исходная запись не изменилась', 'muted');
+    else {
+      const history = state.history.filter(e => e.id !== result.entry.id), index = history.findIndex(e => e.id === entry.id);
+      history.splice(Math.max(0, index), 0, result.entry);
+      Object.assign(state, {history, selected: result.entry.id});
+      toast('Готово. Новая запись — над исходной');
+    }
+  } finally {
+    if (state.retranscribing === running) state.retranscribing = null;
+    renderResults();
+  }
+}
 async function entryAction(button) {
   const holder = button.closest('[data-entry]');
   const entry = state.history.find(e => e.id === holder?.dataset.entry);
@@ -612,6 +664,10 @@ async function entryAction(button) {
   if (action === 'copy') { await api.copy(text); markCopied(button); }
   if (action === 'export') { const name = await api.saveText(entry.id, text); if (name) toast(`Сохранено: ${name}`); }
   if (action === 'summary') { await api.copySummary(entry.id); toast('Скопировано с просьбой о резюме. Вставь в ChatGPT или Claude'); }
+  if (action === 'retranscribe') { Object.assign(state, {retranscribeOpen: entry.id, retranscribeChoice: null}); renderHistoryDetail(); }
+  if (action === 'retranscribe-close') { state.retranscribeOpen = null; renderHistoryDetail(); }
+  if (action === 'retranscribe-cancel') await api.cancelRetranscribe();
+  if (action === 'retranscribe-start') await retranscribe(entry, holder.querySelector('[data-retranscribe="model"]').value, holder.querySelector('[data-retranscribe="language"]').value);
   if (action === 'delete' && await api.deleteEntry(entry.id)) { state.history = state.history.filter(e => e.id !== entry.id); drafts.delete(entry.id); renderResults(); }
   if (action === 'play') {
     const existing = holder.querySelector('audio'); if (existing) { existing.paused ? await existing.play() : existing.pause(); return; }
@@ -801,6 +857,16 @@ document.addEventListener('click', event => {
 });
 document.addEventListener('change', event => {
   const target = event.target;
+  // Languages follow the chosen model (GigaAM is Russian only); the choice survives a redraw of the card.
+  if (target.matches('[data-retranscribe]')) {
+    const panel = target.closest('.retranscribe'), model = panel.querySelector('[data-retranscribe="model"]').value;
+    const languages = modelLanguages(model), language = panel.querySelector('[data-retranscribe="language"]');
+    for (const option of language.options) option.disabled = !languages.includes(option.value);
+    if (!languages.includes(language.value)) language.value = 'ru';
+    panel.querySelector('.retranscribe-note').textContent = retranscribeNote(languages);
+    state.retranscribeChoice = {model, language: language.value};
+    return;
+  }
   if (target.matches('.transcript-editor, .history-editor')) guard(async () => {
     const id = target.dataset.entry, text = target.value;
     const {entry, suggestions} = await api.updateEntry(id, text);
@@ -927,12 +993,18 @@ $('#dictionary-form').addEventListener('submit', async event => {
 api.onToggle(toggleRecording); api.onCancel(() => guard(cancelOperation));
 api.onEngine(({status, error}) => { state.engine = status || null; state.engineError = error; updateEngine(); if (error) showError(new Error(error)); });
 api.onSnapshot(snapshot => {
-  Object.assign(state, {history: snapshot.history, pendingRecordings: snapshot.pendingRecordings, meeting: snapshot.meeting, settings: snapshot.settings});
+  Object.assign(state, {history: snapshot.history, pendingRecordings: snapshot.pendingRecordings, meeting: snapshot.meeting, settings: snapshot.settings, retranscribing: snapshot.retranscribing});
   renderResults(); renderRecovery(); renderProfiles(); renderMeeting(); syncMeetingSettings();
 });
 api.onMeetingRecord(value => guard(() => recordMeeting(value)));
 api.onMeetingFinish(() => guard(finishMeetingRecording));
 api.onProgress(progress => {
+  // «Распознать заново» runs while the dictation page is idle; its progress belongs to the history card.
+  if (state.retranscribing && state.phase === 'idle') {
+    const bar = $('#retranscribe-progress');
+    if (bar && typeof progress.fraction === 'number') bar.value = progress.fraction; else bar?.removeAttribute('value');
+    return;
+  }
   if (state.phase === 'opening') { state.phase = 'transcribing'; refreshControls(); }
   if (state.phase === 'transcribing') {
     if (progress.message) $('#record-description').textContent = progress.message;
