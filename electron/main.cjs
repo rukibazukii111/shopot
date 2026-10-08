@@ -1,4 +1,4 @@
-const {app, BrowserWindow, ipcMain, dialog, clipboard, desktopCapturer, globalShortcut, session, shell, Tray, Menu, nativeImage, nativeTheme, powerSaveBlocker, screen, systemPreferences} = require('electron');
+const {app, BrowserWindow, ipcMain, dialog, clipboard, desktopCapturer, globalShortcut, session, shell, Tray, Menu, nativeImage, nativeTheme, powerMonitor, powerSaveBlocker, screen, systemPreferences} = require('electron');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -40,7 +40,7 @@ let widgetTimer, activeTranscription, downloading = false, job = 0, pruneTimer;
 const MEETINGS = process.platform === 'win32';
 const MEETING_CHUNK_MS = (Number(process.env.SHOPOT_MEETING_CHUNK_SECONDS) || 300) * 1000;
 const MIC_POLL_MS = Number(process.env.SHOPOT_MIC_POLL_MS) || 4000;
-// History past its retention period goes at start and then once a day (PRD 6.20).
+// History past its retention period goes at start, then once a day and after the computer wakes (PRD 6.20).
 const HISTORY_PRUNE_MS = Number(process.env.SHOPOT_HISTORY_PRUNE_MS) || 864e5;
 const WINDOW_GONE = 'Окно записи перезапустилось';
 let meeting = null, offer = null, offerTimer, meetingClock, micWatcher = null, meetingQueue = Promise.resolve();
@@ -122,17 +122,26 @@ function pruneHistory(trigger) {
   const days = store.data.settings.historyDays;
   if (!days) return 0;
   journal.pruneOlderThan(days);
+  // At start there is no window or engine yet: the window reads the history when it boots.
+  // A run that changed nothing does not redraw the window: a redraw stops the audio being played.
+  const refresh = () => { if (window && !window.isDestroyed()) send('snapshot', snapshot()); };
+  let removed;
   // An audio file another program holds stays, and so does its entry: the next run tries again.
-  const removed = store.pruneHistory(days, entry => {
-    const file = audioFor(entry);
-    if (!file) return true;
-    try { fs.rmSync(file, {force: true}); } catch {}
-    return !fs.existsSync(file);
-  });
+  try {
+    removed = store.pruneHistory(days, entry => {
+      const file = audioFor(entry);
+      if (!file) return true;
+      try { fs.rmSync(file, {force: true}); } catch {}
+      return !fs.existsSync(file);
+    });
+  } catch (error) {
+    // The window shows what is stored, as a period just saved before the failure.
+    refresh();
+    throw error;
+  }
   if (!removed.length) return 0;
   journal.write('history-prune', {trigger, days, removed: removed.length});
-  // At start there is no window or engine yet: the window reads the history when it boots.
-  if (window && !window.isDestroyed()) send('snapshot', snapshot());
+  refresh();
   return removed.length;
 }
 // The start and the daily run have no window to tell; a failure goes to the journal and the next run tries again.
@@ -476,6 +485,8 @@ else {
     if (JSON.stringify(store.data.pendingRecordings) !== previousPending) store.save();
     prunePeriodically('start');
     pruneTimer = setInterval(() => prunePeriodically('daily'), HISTORY_PRUNE_MS);
+    // The timer does not count the time the computer sleeps: a laptop that sleeps at night would run it every few days.
+    powerMonitor.on('resume', () => prunePeriodically('daily'));
     session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
       callback(contents === window?.webContents && contents.getURL() === uiUrl && permission === 'media' &&
         !details.mediaTypes?.includes('video'));

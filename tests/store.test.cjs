@@ -140,3 +140,17 @@ test('expired audio is deleted before its entry goes, unless a kept entry or a p
     assert.equal(store.data.pendingRecordings.length, 1);
   } finally { fs.rmSync(root, {recursive: true, force: true}); }
 });
+test('a failed save leaves the history as it is stored', () => {
+  const now = Date.parse('2026-10-08T12:00:00Z'), day = 864e5;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shopot-retention-save-'));
+  try {
+    const store = new Store(root);
+    store.data.history = [{id: 'fresh', createdAt: new Date(now - day).toISOString()}, {id: 'old', createdAt: new Date(now - 40 * day).toISOString()}];
+    store.save();
+    // A folder where store.json goes: the rename fails, as when another program holds the file.
+    store.file = path.join(root, 'held');
+    fs.mkdirSync(store.file);
+    assert.throws(() => store.pruneHistory(7, () => true, now));
+    assert.deepEqual(store.data.history.map(e => e.id), ['fresh', 'old']);
+  } finally { fs.rmSync(root, {recursive: true, force: true}); }
+});

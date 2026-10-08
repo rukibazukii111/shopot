@@ -155,8 +155,10 @@ class Store {
       .map(entry => entry.audioFile).filter(Boolean));
     const removed = new Set([...expired].filter(entry => !entry.audioFile || used.has(entry.audioFile) || removeAudio(entry)));
     if (!removed.size) return [];
-    this.data.history = this.data.history.filter(entry => !removed.has(entry));
-    this.save();
+    // A failed save keeps the stored history in memory too; an entry whose audio already went goes on the next run.
+    const stored = this.data.history;
+    this.data.history = stored.filter(entry => !removed.has(entry));
+    try { this.save(); } catch (error) { this.data.history = stored; throw error; }
     return [...removed];
   }
 }

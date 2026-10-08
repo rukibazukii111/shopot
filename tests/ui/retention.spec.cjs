@@ -168,3 +168,58 @@ test('an entry whose audio cannot be deleted stays until a later run; audio anot
     expect(data.journal()).not.toContain('занятым');
   } finally { await app.close(); }
 });
+
+test('history past its period goes when the computer wakes, before the daily timer', async () => {
+  const seeded = Date.now();
+  const data = seed('retention-resume', {days: 7, history: [{id: 'edge', age: 7 * DAY - 3000, text: 'Запись на краю срока'}]});
+  const app = await electron.launch({args: [path.join(root, 'tests/fixtures/harness.cjs')], env: {...env, SHOPOT_DATA_DIR: data.dataDir}});
+  try {
+    const page = await app.firstWindow();
+    await page.locator('[data-page="history"]').click();
+    await expect(page.locator('#history-list .history-row')).toHaveCount(1);
+    // The entry passes its period while the computer sleeps; the default timer is a day away.
+    await page.waitForTimeout(Math.max(0, seeded + 3500 - Date.now()));
+    expect(data.saved().history.map(e => e.id)).toEqual(['edge']);
+    await app.evaluate(({powerMonitor}) => powerMonitor.emit('resume'));
+    await expect(page.locator('#history-list .history-row')).toHaveCount(0);
+    expect(data.saved().history).toEqual([]);
+    expect(data.journal()).toMatch(/ history-prune trigger=daily days=7 removed=1$/m);
+  } finally { await app.close(); }
+});
+
+test('a failed removal after «Удалить» shows the stored period and history, and a later save keeps the period', async () => {
+  const midAudio = 'a1b2c3d4-0000-4000-8000-000000000021.webm';
+  const data = seed('retention-save-fails', {days: 30, history: [{id: 'fresh', age: 3600e3, text: 'Свежая запись'},
+    {id: 'mid', age: 10 * DAY, text: 'Запись недельной давности', audioFile: midAudio}]});
+  const app = await electron.launch({args: [path.join(root, 'tests/fixtures/harness.cjs')], env: {...env, SHOPOT_DATA_DIR: data.dataDir}});
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('#engine-label')).toHaveText('Локальный движок');
+    // The period is saved, then the save that removes the entry fails once, as when an antivirus holds store.json.
+    await app.evaluate(() => {
+      const fs = process.mainModule.require('node:fs'), rename = fs.renameSync;
+      let saves = 0;
+      fs.renameSync = (from, to) => {
+        if (String(to).endsWith('store.json') && ++saves === 2) throw Object.assign(new Error('busy'), {code: 'EBUSY'});
+        return rename(from, to);
+      };
+    });
+    await answer(app, 1);
+    await page.locator('[data-page="settings"]').click();
+    const select = page.locator('#history-days');
+    await select.selectOption('7');
+    await expect(page.locator('#error-text')).toHaveText('Не удалось удалить старые записи');
+    await expect(select).toHaveValue('7');
+    expect(data.saved().settings.historyDays).toBe(7);
+    expect(data.saved().history.map(e => e.id)).toEqual(['fresh', 'mid']);
+    expect(data.journal()).toMatch(/ ipc-error channel=settings .*code=EBUSY/m);
+    expect(data.journal()).not.toContain('недельной');
+    await page.locator('[data-page="history"]').click();
+    await expect(page.locator('#history-list .history-row')).toHaveCount(2);
+    // Another setting saved later keeps the period that is stored.
+    await page.locator('[data-page="settings"]').click();
+    await page.locator('#keep-audio').check();
+    await expect.poll(() => data.saved().settings.keepAudio).toBe(true);
+    expect(data.saved().settings.historyDays).toBe(7);
+  } finally { await app.close(); }
+});
