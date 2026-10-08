@@ -466,6 +466,8 @@ function entryText(entry) { return drafts.has(entry.id) ? drafts.get(entry.id) :
 function wordCount(text) { return text.trim().split(/\s+/u).filter(Boolean).length; }
 function doubtsOf(entry) { return (entry.words || []).filter(w => w.probability < 0.65).length; }
 function isFileSource(entry) { return !['Микрофон', 'Незавершённая запись'].includes(entry.source); }
+// Same rule as electron/summary.cjs: the sandboxed page cannot load it.
+function summaryAvailable(entry) { return Boolean(entry.meeting) || isFileSource(entry) || entry.duration > 120; }
 function rawHtml(entry) {
   // Whisper words carry their leading space; keep it outside the highlight.
   return (entry.words || []).length ? entry.words.map(w => {
@@ -526,8 +528,8 @@ function entryActions(entry, primary) {
   const copy = primary
     ? `<button class="button-primary copy-button" data-action="copy"><span class="copy-check">${icon('check')}</span><span class="copy-label">Скопировать</span><kbd>Enter</kbd></button>`
     : `<button class="button copy-button" data-action="copy"><span class="copy-icon">${icon('copy')}</span><span class="copy-check">${icon('check')}</span><span class="copy-label">Скопировать</span></button>`;
-  // A call transcript goes to a chat assistant for notes only when the user pastes it there.
-  const summary = entry.meeting ? `<button class="icon-button" data-action="summary" aria-label="Скопировать с просьбой сделать резюме" title="Скопировать для резюме в ChatGPT или Claude">${icon('sparkles')}</button>` : '';
+  // A transcript goes to a chat assistant for notes only when the user pastes it there.
+  const summary = summaryAvailable(entry) ? `<button class="icon-button" data-action="summary" aria-label="Скопировать с просьбой сделать резюме" title="Скопировать для резюме в ChatGPT или Claude">${icon('sparkles')}</button>` : '';
   return `${summary}${entry.audioFile ? `<button class="icon-button" data-action="play" aria-label="Прослушать запись" title="Прослушать">${icon('play')}</button>` : ''}<button class="icon-button" data-action="export" aria-label="Сохранить в файл: текст, Markdown или субтитры" title="Сохранить в файл">${icon('download')}</button><button class="icon-button" data-action="delete" aria-label="Удалить диктовку" title="Удалить">${icon('trash')}</button>${copy}`;
 }
 function latestCard(entry) {
