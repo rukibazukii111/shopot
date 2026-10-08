@@ -26,6 +26,8 @@ os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
+import gpu_runtime
+from gpu_runtime import file_sha256
 import llm
 import memory
 from text_processing import (apply_voice_commands, drop_final_period, expand_snippets, format_transcript,
@@ -570,14 +572,6 @@ def progress_class(request_id, model, message):
                       "message": message, "completed": self.n, "total": self.total, "unit": self.unit})
             return result
     return Progress
-
-
-def file_sha256(path):
-    digest = hashlib.sha256()
-    with open(path, "rb") as source:
-        while chunk := source.read(8 << 20):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def speech_windows(speech, max_samples, split_gap=None):
