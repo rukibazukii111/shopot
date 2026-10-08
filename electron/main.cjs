@@ -44,7 +44,7 @@ const MEETING_CHUNK_MS = (Number(process.env.SHOPOT_MEETING_CHUNK_SECONDS) || 30
 const MIC_POLL_MS = Number(process.env.SHOPOT_MIC_POLL_MS) || 4000;
 const WINDOW_GONE = 'Окно записи перезапустилось';
 const UPDATE_EVERY_MS = 24 * 3600 * 1000;
-let updater = null;
+let updater = null, installing = false;
 let meeting = null, offer = null, offerTimer, meetingClock, micWatcher = null, meetingQueue = Promise.resolve();
 let widgetState = {phase: 'requesting', shortcut: process.platform === 'darwin' ? '⌘⇧Space' : 'Ctrl⇧Space'};
 
@@ -699,12 +699,17 @@ else {
       if (busy || capture || meeting || downloading) throw new Error('Дождись конца записи, распознавания или загрузки модели');
       const file = updater.readyFile();
       if (!file) throw new Error('Скачай обновление ещё раз');
+      // A double click starts one installer: a second call while the first runs is ignored.
+      if (installing) return false;
+      installing = true;
       journal.write('update-install', {version: updater.ready.version});
-      if (await launchInstaller(file, process.platform, {spawn, openPath: target => shell.openPath(target)}) === 'opened') {
-        const answer = await dialog.showMessageBox(window, {type: 'info', message: 'Установщик открыт',
-          detail: 'Перетащи Шёпот в папку «Программы» и замени старую версию. Потом открой Шёпот снова.', buttons: ['Закрыть Шёпот', 'Позже'], defaultId: 0, cancelId: 1});
-        if (answer.response !== 0) return false;
-      }
+      try {
+        if (await launchInstaller(file, process.platform, {spawn, openPath: target => shell.openPath(target)}) === 'opened') {
+          const answer = await dialog.showMessageBox(window, {type: 'info', message: 'Установщик открыт',
+            detail: 'Перетащи Шёпот в папку «Программы» и замени старую версию. Потом открой Шёпот снова.', buttons: ['Закрыть Шёпот', 'Позже'], defaultId: 0, cancelId: 1});
+          if (answer.response !== 0) { installing = false; return false; }
+        }
+      } catch (error) { installing = false; throw error; }
       quitting = true; app.quit(); return true;
     });
     if (MEETINGS) {

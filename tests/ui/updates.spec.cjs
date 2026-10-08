@@ -137,14 +137,17 @@ test('a tampered download is refused; a verified one installs', async () => {
     await expect(page.locator('#update-install')).toHaveText(mac ? 'Открыть установщик' : 'Перезапустить и обновить');
     // The app's own quit is held back for this click, and given back so that the test can close the app.
     await app.evaluate(({app}) => { globalThis.__realQuit = app.quit; app.quit = () => { globalThis.__quit = true; }; });
-    await page.locator('#update-install').click();
+    // A double click starts one installer: the second call is ignored while the first is running.
+    const answers = await page.evaluate(() => Promise.all([window.shopot.installUpdate(), window.shopot.installUpdate()]));
     await expect.poll(() => app.evaluate(() => globalThis.__quit)).toBe(true);
     await app.evaluate(({app}) => { app.quit = globalThis.__realQuit; });
+    expect(answers).toEqual([true, false]);
     if (mac) {
       expect(await app.evaluate(() => globalThis.__opened)).toMatch(/\.dmg$/);
       expect((await app.evaluate(() => globalThis.__dialog)).message).toBe('Установщик открыт');
     } else {
-      const [run] = await app.evaluate(() => globalThis.__test.spawned);
+      const spawned = await app.evaluate(() => globalThis.__test.spawned), [run] = spawned;
+      expect(spawned).toHaveLength(1);
       expect(run.args).toEqual(['--updated', '/S', '--force-run']);
       expect(path.basename(run.file)).toBe(releaseRoutes(`v${bump()}`).name);
     }

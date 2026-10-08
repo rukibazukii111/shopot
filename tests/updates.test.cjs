@@ -141,6 +141,19 @@ test('a download that stops sending data fails as offline', async () => {
     assert.deepEqual(fs.readdirSync(dir), []);
   } finally { fs.rmSync(dir, {recursive: true, force: true}); }
 });
+test('a download that cannot be saved fails as a disk error, not as offline', async () => {
+  const dir = tempDir(), r = release('v1.0.1'), data = Buffer.from('installer');
+  const fetch = fakeFetch({[u.RELEASES_URL]: [r], [r.assets[2].browser_download_url]: `${sha(data)}  Shopot-1.0.1-win-x64.exe\n`, [r.assets[0].browser_download_url]: data});
+  const updater = new u.Updater({fetch, dir, current: '1.0.0', ...win});
+  // A folder where the partial file goes: the file system refuses the write, and the leftover cannot be removed either.
+  fs.mkdirSync(path.join(dir, 'Shopot-1.0.1-win-x64.exe.part'));
+  try {
+    await updater.check();
+    await assert.rejects(updater.download(), {kind: 'disk'});
+    assert.equal(updater.state.phase, 'available');
+    assert.match(updater.state.error, /на диск/);
+  } finally { fs.rmSync(dir, {recursive: true, force: true}); }
+});
 test('a missing sum line, no network and rate limits are update errors', async () => {
   const dir = tempDir(), r = release('v1.0.1');
   try {

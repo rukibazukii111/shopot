@@ -20,6 +20,7 @@ const MESSAGES = {
   format: 'GitHub ответил неожиданно. Попробуй позже.',
   checksum: 'Файл обновления не прошёл проверку и удалён. Попробуй скачать ещё раз.',
   open: 'Не удалось открыть установщик',
+  disk: 'Не удалось сохранить обновление на диск. Освободи место и попробуй ещё раз.',
 };
 class UpdateError extends Error {
   constructor(kind, code) { super(MESSAGES[kind]); this.kind = kind; if (code !== undefined) this.code = code; }
@@ -163,14 +164,20 @@ class Updater extends EventEmitter {
         if (progress !== shown) { shown = progress; this.set(this.offerState({phase: 'downloading', progress})); }
         done(null, chunk);
       }});
-      try { await pipeline(Readable.fromWeb(response.body), count, fs.createWriteStream(part), {signal: idle.signal}); }
-      catch (error) { throw new UpdateError('offline', error?.code); }
+      // A failed write (a full disk, a file held by an antivirus) is the disk's fault; anything else, an abort
+      // for an idle download included, the network's. Only a file system error carries a `syscall`.
+      const out = fs.createWriteStream(part);
+      let diskError = null;
+      out.on('error', error => { if (error?.syscall) diskError ??= error; });
+      try { await pipeline(Readable.fromWeb(response.body), count, out, {signal: idle.signal}); }
+      catch (error) { throw diskError ? new UpdateError('disk', diskError.code) : new UpdateError('offline', error?.code); }
       if (hash.digest('hex') !== expected) throw new UpdateError('checksum');
       fs.renameSync(part, file);
       this.ready = {version: offer.version, file};
       this.set(this.offerState());
     } catch (error) {
-      fs.rmSync(part, {force: true});
+      // A partial file that cannot be removed now goes with clean() at the next start.
+      try { fs.rmSync(part, {force: true}); } catch {}
       this.set(this.offerState({error: error.message}));
       throw error;
     } finally { clearTimeout(timer); }
