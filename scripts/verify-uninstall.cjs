@@ -1,6 +1,7 @@
 // Installs the built Windows installer silently, then checks that updating and
 // uninstalling keep the data folder, and that --delete-app-data removes it.
-// It uses the real %APPDATA%\Shopot, so it runs only on CI (GitHub sets CI=true).
+// It uses the real %APPDATA%\Shopot, so it runs only on CI (GitHub sets CI=true)
+// and is skipped elsewhere. Part of `npm run test:packaged`.
 const {spawnSync} = require('node:child_process');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -12,8 +13,8 @@ const output = path.resolve(process.argv[2] || path.join(root, 'release'));
 
 if (process.platform !== 'win32') { console.log('verify-uninstall: Windows only, skipped'); process.exit(0); }
 if (process.env.CI !== 'true') {
-  console.error('verify-uninstall uses the real %APPDATA%\\Shopot and runs only on CI (CI=true).');
-  process.exit(1);
+  console.log('verify-uninstall: uses the real %APPDATA%\\Shopot, runs only on CI (CI=true), skipped');
+  process.exit(0);
 }
 
 const installer = fs.readdirSync(output).filter(name => /^Shopot-.+-win-x64\.exe$/.test(name)).map(name => path.join(output, name))[0];

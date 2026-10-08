@@ -15,7 +15,7 @@
     "start": "node scripts/launch.cjs",
     "test": "node --test tests/*.test.cjs",
     "test:ui": "playwright test",
-    "test:packaged": "node scripts/smoke-packaged.cjs",
+    "test:packaged": "node scripts/smoke-packaged.cjs && node scripts/verify-uninstall.cjs",
     "setup": "node scripts/setup.cjs",
     "build:engine": "node scripts/build-engine.cjs",
     "pack": "npm run build:engine && electron-builder --dir",
