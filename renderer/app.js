@@ -201,6 +201,7 @@ function syncSettings() {
   $('#remove-fillers').checked = state.settings.removeFillers;
   $('#voice-commands').checked = state.settings.voiceCommands;
   $('#formatting-select').value = state.settings.formatting;
+  $('#history-days').value = String(state.settings.historyDays ?? 0);
   if (!contextDirty) $('#context-input').value = state.settings.context;
   updateContextCount();
   $('#accessibility-row').hidden = state.platform !== 'darwin';
@@ -861,6 +862,8 @@ $('#meeting-offers').addEventListener('change', event => guard(() => saveSetting
 $('#meeting-button').addEventListener('click', () => guard(async () => { state.meeting = await api.startMeeting(); renderMeeting(); }));
 $('#meeting-stop').addEventListener('click', () => guard(() => api.stopMeeting()));
 $('#keep-audio').addEventListener('change', event => guard(() => saveSettings({keepAudio: event.target.checked})));
+// A failed save shows the error and puts the list back to the period that is really kept.
+$('#history-days').addEventListener('change', event => guard(() => saveSettings({historyDays: Number(event.target.value)}).catch(error => { syncSettings(); throw error; })));
 $('#microphone-select').addEventListener('change', event => guard(() => saveSettings({microphoneId: event.target.value})));
 $('#save-context').addEventListener('click', () => guard(async () => {
   await saveSettings({context: $('#context-input').value.trim()});

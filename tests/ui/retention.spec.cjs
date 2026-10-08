@@ -1,0 +1,119 @@
+const {test, expect, _electron: electron} = require('@playwright/test');
+const fs = require('node:fs');
+const path = require('node:path');
+const {timestamp} = require('../../electron/log.cjs');
+const root = path.resolve(__dirname, '../..');
+const env = {...process.env}; delete env.ELECTRON_RUN_AS_NODE;
+const DAY = 864e5;
+
+// A data folder as an earlier run left it: history of the given ages, pending recordings and a journal line.
+function seed(name, {days, history, pending = [], logAge}) {
+  const dataDir = path.join(root, '.private', 'ui-test', `${name}-${Date.now()}`);
+  const audio = path.join(dataDir, 'audio'), logs = path.join(dataDir, 'logs');
+  fs.mkdirSync(audio, {recursive: true}); fs.mkdirSync(logs, {recursive: true});
+  const entry = ({id, age, text, audioFile = null}) => ({id, createdAt: new Date(Date.now() - age).toISOString(), source: 'Микрофон', text, rawText: text,
+    words: [], duration: 2, elapsed: .2, model: 'gigaam', mode: 'natural', replacements: [], audioFile});
+  for (const file of [...history, ...pending].map(e => e.audioFile).filter(Boolean)) fs.writeFileSync(path.join(audio, file), 'audio');
+  fs.writeFileSync(path.join(dataDir, 'store.json'), JSON.stringify({version: 1, settings: {historyDays: days}, dictionary: [], history: history.map(entry),
+    pendingRecordings: pending.map(({id, age, audioFile}) => ({id, audioFile, source: 'Незавершённая запись', createdAt: new Date(Date.now() - age).toISOString()}))}));
+  if (logAge) fs.writeFileSync(path.join(logs, 'shopot.log'), `${timestamp(new Date(Date.now() - logAge))} quit uptime=1\n`);
+  return {dataDir, audio, saved: () => JSON.parse(fs.readFileSync(path.join(dataDir, 'store.json'), 'utf8')),
+    journal: () => fs.readFileSync(path.join(logs, 'shopot.log'), 'utf8')};
+}
+// Answers the confirmation with «Оставить» (0) or «Удалить» (1) and keeps what it asked.
+const answer = (app, response) => app.evaluate(({dialog}, value) => {
+  globalThis.__asked ??= [];
+  dialog.showMessageBox = async (window, options) => { globalThis.__asked.push(options); return {response: value}; };
+}, response);
+const asked = app => app.evaluate(() => (globalThis.__asked || []).map(options => ({message: options.message, detail: options.detail, buttons: options.buttons})));
+
+test('history past its period goes with its audio at start, a shorter period asks first, pending recordings stay', async () => {
+  const oldAudio = 'a1b2c3d4-0000-4000-8000-000000000001.webm', pendingAudio = 'a1b2c3d4-0000-4000-8000-000000000002.webm';
+  const data = seed('retention', {days: 30, logAge: 40 * DAY,
+    history: [{id: 'fresh', age: 3600e3, text: 'Свежая запись'}, {id: 'mid', age: 10 * DAY, text: 'Запись недельной давности'},
+      {id: 'old', age: 40 * DAY, text: 'Старая запись', audioFile: oldAudio}],
+    pending: [{id: 'pending', age: 40 * DAY, audioFile: pendingAudio}]});
+  const app = await electron.launch({args: [path.join(root, 'tests/fixtures/harness.cjs')], env: {...env, SHOPOT_DATA_DIR: data.dataDir}});
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('#engine-label')).toHaveText('Локальный движок');
+    // At start: the 40-day entry and its audio are gone; the pending recording of the same age stays with its audio.
+    expect(data.saved().history.map(e => e.id)).toEqual(['fresh', 'mid']);
+    expect(fs.existsSync(path.join(data.audio, oldAudio))).toBe(false);
+    expect(fs.existsSync(path.join(data.audio, pendingAudio))).toBe(true);
+    await expect(page.locator('#recovery-banner')).toBeVisible();
+    // The journal follows the same period and says how many entries went, not which.
+    const journal = data.journal();
+    expect(journal).not.toContain('quit uptime=1');
+    expect(journal).toMatch(/ history-prune trigger=start days=30 removed=1$/m);
+    expect(journal).not.toContain('Старая запись');
+
+    await page.locator('[data-page="history"]').click();
+    await expect(page.locator('#history-list .history-row')).toHaveCount(2);
+    await page.locator('[data-select-entry="mid"]').click();
+    await expect(page.locator('#history-detail .history-editor')).toHaveValue('Запись недельной давности');
+
+    await page.locator('[data-page="settings"]').click();
+    const select = page.locator('#history-days');
+    await expect(select).toHaveValue('30');
+    await expect(page.locator('section[aria-label="Система"]')).toContainText('Записи старше срока удаляются сами вместе с аудио');
+
+    // «Оставить» keeps the old period and the entry.
+    await answer(app, 0);
+    await select.selectOption('7');
+    await expect.poll(() => asked(app)).toEqual([{message: 'Удалить 1 запись старше 7 дней?',
+      detail: 'Текст и сохранённое аудио будут удалены с этого компьютера. Незавершённые записи останутся.', buttons: ['Оставить', 'Удалить']}]);
+    await expect(select).toHaveValue('30');
+    expect(data.saved().settings.historyDays).toBe(30);
+    expect(data.saved().history.map(e => e.id)).toEqual(['fresh', 'mid']);
+
+    // «Удалить» removes it at once; the history shows the next entry instead, as after deleting one by hand.
+    await answer(app, 1);
+    await select.selectOption('7');
+    await expect.poll(() => data.saved().history.map(e => e.id)).toEqual(['fresh']);
+    await expect(select).toHaveValue('7');
+    expect(data.saved().settings.historyDays).toBe(7);
+    expect(data.journal()).toMatch(/ history-prune trigger=setting days=7 removed=1$/m);
+    await page.locator('[data-page="history"]').click();
+    await expect(page.locator('#history-list .history-row')).toHaveCount(1);
+    await expect(page.locator('#history-detail .history-editor')).toHaveValue('Свежая запись');
+    await expect(page.locator('#toast')).toBeHidden();
+
+    // A longer period, or none, never asks and removes nothing.
+    await page.locator('[data-page="settings"]').click();
+    await select.selectOption('30');
+    await expect(select).toHaveValue('30');
+    await select.selectOption('0');
+    await expect.poll(() => data.saved().settings.historyDays).toBe(0);
+    expect((await asked(app)).length).toBe(2);
+    expect(data.saved().history.map(e => e.id)).toEqual(['fresh']);
+  } finally { await app.close(); }
+});
+
+test('a running app removes history once it passes its period, without a restart', async () => {
+  const data = seed('retention-daily', {days: 7, history: [{id: 'edge', age: 7 * DAY - 3000, text: 'Запись на краю срока'}]});
+  const app = await electron.launch({args: [path.join(root, 'tests/fixtures/harness.cjs')], env: {...env, SHOPOT_DATA_DIR: data.dataDir, SHOPOT_HISTORY_PRUNE_MS: '500'}});
+  try {
+    const page = await app.firstWindow();
+    await page.locator('[data-page="history"]').click();
+    await expect(page.locator('#history-list .history-row')).toHaveCount(1);
+    await expect(page.locator('#history-list .history-row')).toHaveCount(0, {timeout: 10000});
+    expect(data.saved().history).toEqual([]);
+    expect(data.journal()).toMatch(/ history-prune trigger=daily days=7 removed=1$/m);
+  } finally { await app.close(); }
+});
+
+test('with «Всегда» nothing expires, neither history nor the journal', async () => {
+  const data = seed('retention-always', {days: 0, logAge: 400 * DAY, history: [{id: 'ancient', age: 400 * DAY, text: 'Очень старая запись'}]});
+  const app = await electron.launch({args: [path.join(root, 'tests/fixtures/harness.cjs')], env: {...env, SHOPOT_DATA_DIR: data.dataDir, SHOPOT_HISTORY_PRUNE_MS: '500'}});
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('#engine-label')).toHaveText('Локальный движок');
+    await page.waitForTimeout(1500);
+    expect(data.saved().history.map(e => e.id)).toEqual(['ancient']);
+    expect(data.journal()).toContain('quit uptime=1');
+    expect(data.journal()).not.toContain('history-prune');
+    await page.locator('[data-page="settings"]').click();
+    await expect(page.locator('#history-days')).toHaveValue('0');
+  } finally { await app.close(); }
+});
