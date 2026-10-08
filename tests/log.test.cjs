@@ -186,3 +186,12 @@ test('error fields carry the type and code, never the message or a path', () => 
   assert.deepEqual(errorFields(engine), {kind: 'UserError', expected: true, message: 'Аудиофайл пуст.'});
   assert.deepEqual(errorFields('строка'), {kind: 'string', expected: false});
 });
+
+test('a re-recognition is journaled with both models, and a dictation that canceled it', t => {
+  const f = fixture(t);
+  f.journal.write('retranscribe', {result: 'canceled', model: 'turbo', from: 'gigaam', language: 'auto', preempted: true});
+  f.journal.write('cancel', {phase: 'retranscribing'});
+  const [first, second] = f.read().trim().split('\n');
+  assert.match(first, / retranscribe result=canceled model=turbo language=auto from=gigaam preempted=true$/);
+  assert.match(second, / cancel phase=retranscribing$/);
+});

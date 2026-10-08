@@ -19,7 +19,7 @@ const oneOf = values => value => values.includes(value) ? value : undefined;
 const MESSAGE = Symbol('message');
 
 const ERROR = {kind: token, code: token, expected: bool, message: MESSAGE, at: token};
-const PHASE = oneOf(['requesting', 'recording', 'stopping', 'transcribing', 'download', 'idle']);
+const PHASE = oneOf(['requesting', 'recording', 'stopping', 'transcribing', 'retranscribing', 'download', 'idle']);
 const TRANSCRIPTION = {
   result: oneOf(['ok', 'no-speech', 'error', 'canceled']), trigger: oneOf(['hotkey', 'window']),
   model: oneOf(MODEL_IDS), device: token, language: oneOf(LANGUAGES), mode: oneOf(MODES),
@@ -37,6 +37,8 @@ const EVENTS = {
   'engine-offline': {cause: oneOf(['missing', 'spawn-error', 'exit', 'timeout']), exitCode: int, signal: token, errno: token},
   'engine-restart': {cause: oneOf(['window-gone', 'download-canceled'])},
   dictation: TRANSCRIPTION, file: TRANSCRIPTION, retry: TRANSCRIPTION,
+  // «Распознать заново» (PRD 6.20): `from` is the model of the entry it re-recognizes, `preempted` a dictation that canceled it.
+  retranscribe: {...TRANSCRIPTION, from: oneOf(MODEL_IDS), preempted: bool},
   cancel: {phase: PHASE},
   'capture-error': {phase: PHASE, kind: token},
   'meeting-start': {app: name, appId: token, trigger: oneOf(['offer', 'manual'])},

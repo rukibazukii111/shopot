@@ -15,6 +15,8 @@ contextBridge.exposeInMainWorld('shopot', {
   transcribe: (id, audio) => ipcRenderer.invoke('transcribe', {id, audio}),
   importAudio: () => ipcRenderer.invoke('import-audio'),
   retryRecording: id => ipcRenderer.invoke('retry-recording', id),
+  retranscribe: (id, model, language) => ipcRenderer.invoke('retranscribe', {id, model, language}),
+  cancelRetranscribe: () => ipcRenderer.invoke('retranscribe-cancel'),
   deleteRecording: id => ipcRenderer.invoke('delete-recording', id),
   cancel: () => ipcRenderer.invoke('cancel'),
   copy: text => ipcRenderer.invoke('copy', text),

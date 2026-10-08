@@ -4,7 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const {pathToFileURL} = require('node:url');
 const crypto = require('node:crypto');
-const {Store, MODEL_IDS, settingsFor, validateSettings, expiredHistory} = require('./store.cjs');
+const {Store, MODEL_IDS, MODES, settingsFor, validateSettings, expiredHistory} = require('./store.cjs');
 const {Worker} = require('./worker.cjs');
 const {PasteService, clipboardText} = require('./paste.cjs');
 const {createNativeBackend} = require('./native-input.cjs');
@@ -36,6 +36,8 @@ let nativeAvailable = false, nativeBackend = null;
 const HOLD_MS = 450;
 let hold = null;
 let widgetTimer, activeTranscription, downloading = false, job = 0, pruneTimer;
+// «Распознать заново» in progress: {entryId, model, canceled, preempted}.
+let retranscription = null;
 // Calls are recorded on Windows only for now: that is where Electron captures system audio (WASAPI loopback).
 const MEETINGS = process.platform === 'win32';
 const MEETING_CHUNK_MS = (Number(process.env.SHOPOT_MEETING_CHUNK_SECONDS) || 300) * 1000;
@@ -66,6 +68,14 @@ function journalCancel() {
   if (capture) capture.cancelJournaled = true;
   journal.write('cancel', {phase});
 }
+// Stops «Распознать заново»: by its own «Отменить», or by a dictation, which matters more (PRD 6.20).
+function cancelRetranscription(preempted = false) {
+  if (!retranscription) return false;
+  retranscription.canceled = true; retranscription.preempted = preempted;
+  if (!preempted) journal.write('cancel', {phase: 'retranscribing'});
+  ++job; worker.cancel(); setBusy(false);
+  return true;
+}
 // A failure outside any command: its type, system code and first frame in our code, never its message.
 function journalMainError(origin, error) { const {kind, code, at} = errorFields(error); journal.write('main-error', {origin, kind, code, at}); }
 function startEngine() { engineStartedAt = Date.now(); journal.write('engine-start'); worker.start(); }
@@ -92,7 +102,8 @@ function recordsLabel(count) {
 }
 function pastePermission() { return process.platform !== 'darwin' || systemPreferences.isTrustedAccessibilityClient(false); }
 function meetingState() { return meeting ? {app: meeting.app?.name ?? null, startedAt: meeting.startedAt, stopping: meeting.stopping} : null; }
-function snapshot() { return {...store.data, engine: worker.status, engineError, busy, hotkeyRegistered, nativeAvailable, pastePermission: pastePermission(), platform: process.platform, totalMemory: os.totalmem(), meeting: meetingState(), meetingsSupported: MEETINGS}; }
+function snapshot() { return {...store.data, engine: worker.status, engineError, busy, hotkeyRegistered, nativeAvailable, pastePermission: pastePermission(), platform: process.platform, totalMemory: os.totalmem(), meeting: meetingState(), meetingsSupported: MEETINGS,
+  retranscribing: retranscription ? {entryId: retranscription.entryId, model: retranscription.model} : null}; }
 function modelId(id) { if (!MODEL_IDS.includes(id)) throw new Error('Неизвестная модель'); return id; }
 function textValue(value) { if (typeof value !== 'string' || value.length > 200000) throw new Error('Недопустимый текст'); return value; }
 function entryFor(id) { const entry = store.data.history.find(e => e.id === id); if (!entry) throw new Error('Запись не найдена'); return entry; }
@@ -189,12 +200,14 @@ function finishCapture(value) {
   if (previous?.global) showWidget(value, value.phase === 'error');
 }
 function beginCapture(global = false) {
-  if (busy || capture) throw new Error('Дождись завершения текущей операции');
+  // A dictation cancels «Распознать заново» (PRD 6.20), but only once it is sure to start.
+  if (capture || (busy && !retranscription)) throw new Error('Дождись завершения текущей операции');
   if (!worker.status) throw new Error('Движок ещё запускается. Попробуй через несколько секунд.');
   if (!worker.status.models?.find(m => m.id === store.data.settings.model)?.installed) throw new Error('Сначала скачай модель в Шёпоте');
+  const preempted = cancelRetranscription(true);
   const target = global ? paste.capture() : null;
   // The app that had focus decides this dictation's text settings (its profile, if any).
-  capture = {id: crypto.randomUUID(), global, target, phase: 'requesting',
+  capture = {id: crypto.randomUUID(), global, target, phase: 'requesting', notice: preempted ? 'Повторное распознавание отменено' : '',
     settings: settingsFor(structuredClone(store.data.settings), store.data.profiles, target?.app),
     dictionary: structuredClone(store.data.dictionary), snippets: structuredClone(store.data.snippets),
     app: target?.app ? {id: target.app.id, name: target.app.name, profile: store.data.profiles.some(p => p.app === target.app.id)} : null};
@@ -202,7 +215,7 @@ function beginCapture(global = false) {
   worker.notify('preload', {model: capture.settings.model, formatting: capture.settings.formatting});
   if (blocker === undefined) blocker = powerSaveBlocker.start('prevent-app-suspension');
   globalShortcut.register('Escape', () => { journalCancel(); hideWidget(); send('cancel-recording'); });
-  if (global) showWidget({phase: 'requesting', elapsed: 0, level: 0, message: '', hint: '', holding: false});
+  if (global) showWidget({phase: 'requesting', elapsed: 0, level: 0, message: capture.notice, hint: '', holding: false});
   return {id: capture.id, settings: capture.settings};
 }
 function toggleGlobalRecording() {
@@ -439,6 +452,40 @@ async function runTranscription(filePath, source, recordingSession = null, retry
   }
 }
 
+// «Распознать заново» (PRD 6.20): the entry's own audio through another model. The result is a new entry right above
+// the original, with its date; nothing is pasted or copied, and the audio stays shared by both entries.
+async function retranscribe(original, settings) {
+  const currentJob = ++job, task = {canceled: false, preempted: false, entryId: original.id, model: settings.model};
+  activeTranscription = retranscription = task; setBusy(true); send('snapshot', snapshot());
+  const report = {result: 'error', model: settings.model, from: original.model, language: settings.language, mode: settings.mode,
+    formattingRequested: settings.formatting};
+  try {
+    const requested = performance.now();
+    const result = await worker.request('transcribe', {audioFile: original.audioFile, ...settings,
+      dictionary: structuredClone(store.data.dictionary), snippets: store.data.snippets.map(({trigger, text}) => ({trigger, text}))});
+    if (currentJob !== job) { report.result = 'canceled'; return {canceled: true}; }
+    Object.assign(report, resultFields(result, (performance.now() - requested) / 1000));
+    if (result.noSpeech) { report.result = 'no-speech'; return {noSpeech: true}; }
+    const {preloadElapsed, ...recognized} = result;
+    const entry = store.insertHistoryBefore(original.id, {id: crypto.randomUUID(), createdAt: original.createdAt,
+      recognizedAt: new Date().toISOString(), source: original.source, mode: settings.mode, ...recognized,
+      audioFile: original.audioFile, app: original.app ?? null, retranscribed: {from: original.id, model: settings.model}});
+    report.result = 'ok';
+    return {entry};
+  } catch (error) {
+    if (currentJob !== job) { report.result = 'canceled'; return {canceled: true}; }
+    Object.assign(report, errorFields(error));
+    if (error && typeof error === 'object') error.journaled = true;
+    throw error;
+  } finally {
+    journal.write('retranscribe', {...report, preempted: task.preempted});
+    if (activeTranscription === task) activeTranscription = null;
+    if (retranscription === task) retranscription = null;
+    if (currentJob === job) setBusy(false);
+    send('snapshot', snapshot());
+  }
+}
+
 if (!app.requestSingleInstanceLock()) { app.quit(); }
 else {
   // The same system version as in «Сообщить о проблеме»: on macOS os.release() is the Darwin kernel's.
@@ -527,7 +574,7 @@ else {
         capture.phase = value.phase;
         capture.record = Math.max(0, Math.min(900, Number(value.elapsed) || 0));
         if (value.phase === 'stopping') { releaseEscape(); hideWidget(); }
-        if (capture.global) showWidget({phase: value.phase, message: '', elapsed: Math.max(0, Math.min(900, Number(value.elapsed) || 0)), level: Math.max(0, Math.min(1, Number(value.level) || 0))}, value.phase === 'recording');
+        if (capture.global) showWidget({phase: value.phase, message: capture.notice && (Number(value.elapsed) || 0) < 3 ? capture.notice : '', elapsed: Math.max(0, Math.min(900, Number(value.elapsed) || 0)), level: Math.max(0, Math.min(1, Number(value.level) || 0))}, value.phase === 'recording');
         updateTray(value.phase === 'recording' ? 'Шёпот — идёт запись. Escape: отмена' : 'Шёпот — распознаю запись');
       }
     });
@@ -619,6 +666,17 @@ else {
       if (!file || !fs.existsSync(file)) throw new Error('Аудиозапись не найдена');
       return runTranscription(file, entry.source, null, true);
     });
+    ipc('retranscribe', value => {
+      if (busy || capture) throw new Error('Дождись завершения текущей операции');
+      const original = entryFor(value?.id), model = modelId(value?.model), file = audioFor(original);
+      if (!file || !fs.existsSync(file)) throw new Error('Аудиозапись не найдена');
+      if (!worker.status?.models?.find(m => m.id === model)?.installed) throw new Error('Сначала скачай эту модель в разделе «Модели»');
+      // The original's text mode, today's dictionary, snippets and layout; never a translation.
+      const settings = validateSettings({...store.data.settings, model, language: value?.language, translate: false,
+        mode: MODES.includes(original.mode) ? original.mode : store.data.settings.mode});
+      return retranscribe(original, settings);
+    });
+    ipc('retranscribe-cancel', () => cancelRetranscription());
     ipc('delete-recording', async id => {
       if (busy || capture) throw new Error('Дождись завершения текущей операции');
       const entry = pendingFor(id);
@@ -651,11 +709,15 @@ else {
     });
     ipc('delete-entry', async id => {
       const entry = entryFor(id);
+      if (retranscription?.entryId === id) throw new Error('Дождись конца повторного распознавания');
       const answer = await dialog.showMessageBox(window, {type: 'question', message: 'Удалить эту диктовку?',
         detail: 'Текст и сохранённая аудиозапись будут удалены с этого компьютера.', buttons: ['Оставить', 'Удалить'], defaultId: 0, cancelId: 0});
       if (answer.response !== 1) return false;
+      if (retranscription?.entryId === id) throw new Error('Дождись конца повторного распознавания');
       store.data.history = store.data.history.filter(e => e.id !== id); store.save();
-      const audio = audioFor(entry); if (audio && fs.existsSync(audio)) fs.unlinkSync(audio);
+      // A re-recognized entry shares its audio with the original: it goes with the last entry that uses it.
+      const shared = [...store.data.history, ...store.data.pendingRecordings].some(e => e.audioFile === entry.audioFile);
+      const audio = audioFor(entry); if (audio && !shared && fs.existsSync(audio)) fs.unlinkSync(audio);
       return true;
     });
     ipc('read-audio', id => { const file = audioFor(entryFor(id)); return file && fs.existsSync(file) ? fs.readFileSync(file) : null; });
