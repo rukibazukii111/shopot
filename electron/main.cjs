@@ -648,7 +648,7 @@ else {
       const result = await dialog.showSaveDialog(window, {defaultPath: path.join(app.getPath('downloads'), name), filters: [{name: 'Текст', extensions: ['txt']}]});
       if (result.canceled) return false;
       let text;
-      try { text = journal.read(); } catch (error) { throw fileError('Не удалось прочитать журнал', error); }
+      try { text = journal.read(); } catch (error) { throw fileError('Не удалось сохранить полный журнал. Попробуйте позже', error); }
       try { fs.writeFileSync(result.filePath, text, 'utf8'); } catch (error) { throw fileError('Не удалось сохранить журнал. Выбери другую папку', error); }
       return true;
     });

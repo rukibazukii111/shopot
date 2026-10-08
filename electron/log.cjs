@@ -75,11 +75,27 @@ function errorFields(error) {
 
 function createJournal({dir, home = os.homedir(), now = () => new Date(), platform = process.platform, maxBytes = 5 * 1024 * 1024, keep = 3}) {
   const files = Array.from({length: keep}, (_, index) => path.join(dir, index ? `shopot.${index}.log` : 'shopot.log'));
+  const aside = `${files[0]}.rotating`;
   // The user's home folder (often their real name) becomes ~, in either slash style; Windows paths ignore case.
   const escape = part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const homePattern = home && new RegExp(home.split(/[\\/]+/).filter(Boolean).map(escape).join('[\\\\/]+')
     .replace(/^/, home.startsWith('/') ? '/' : '') + '(?![\\p{L}\\p{N}])', platform === 'win32' ? 'giu' : 'gu');
   let size = null;
+
+  function stat(file) {
+    try { return fs.statSync(file); }
+    catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  }
+  // Each completed rename leaves a hole at its source. Resume at the first hole, so another
+  // crash cannot shift an already moved archive twice. A newer shopot.log is never replaced.
+  function recover() {
+    if (!stat(aside)) return;
+    let gap = 1;
+    while (gap < files.length - 1 && stat(files[gap])) gap++;
+    for (let index = gap; index > 1; index--) fs.renameSync(files[index - 1], files[index]);
+    fs.renameSync(aside, files[1]);
+    size = null;
+  }
 
   function message(value) {
     if (typeof value !== 'string') return undefined;
@@ -102,12 +118,9 @@ function createJournal({dir, home = os.homedir(), now = () => new Date(), platfo
   // shopot.log moves aside first: while another program holds it open (Windows), the rotation stops before
   // any older part is touched. A rename replaces its target, so the oldest part goes only when the next takes its place.
   function rotate() {
-    const aside = `${files[0]}.rotating`;
     fs.renameSync(files[0], aside);
-    try {
-      for (let index = files.length - 1; index > 1; index--) if (fs.existsSync(files[index - 1])) fs.renameSync(files[index - 1], files[index]);
-      fs.renameSync(aside, files[1]);
-    } catch (error) { fs.renameSync(aside, files[0]); throw error; }
+    // Keep the intermediate state on failure; the next operation can resume it safely.
+    recover();
     size = 0;
   }
   // Never throws: a full disk or a locked file must not stop a dictation.
@@ -115,7 +128,8 @@ function createJournal({dir, home = os.homedir(), now = () => new Date(), platfo
     try {
       if (!Object.hasOwn(EVENTS, event)) return false;
       const line = format(event, fields), bytes = Buffer.byteLength(line);
-      if (size === null) { fs.mkdirSync(dir, {recursive: true}); size = fs.existsSync(files[0]) ? fs.statSync(files[0]).size : 0; }
+      recover();
+      if (size === null) { fs.mkdirSync(dir, {recursive: true}); size = stat(files[0])?.size || 0; }
       if (size > 0 && size + bytes > maxBytes) rotate();
       fs.appendFileSync(files[0], line, 'utf8');
       size += bytes;
@@ -125,10 +139,12 @@ function createJournal({dir, home = os.homedir(), now = () => new Date(), platfo
   // Follows the history retention period: no line older than `days` days stays in any file.
   function pruneOlderThan(days) {
     if (!(typeof days === 'number' && Number.isFinite(days) && days > 0)) return;
+    // Do not prune around an unfinished move: those holes identify the recovery step.
+    try { recover(); } catch { size = null; return; }
     const cutoff = now().getTime() - days * 864e5;
     for (const file of files) {
       try {
-        if (!fs.existsSync(file)) continue;
+        if (!stat(file)) continue;
         const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean);
         const kept = lines.filter(line => Date.parse(line.slice(0, line.indexOf(' '))) >= cutoff);
         if (kept.length === lines.length) continue;
@@ -145,10 +161,12 @@ function createJournal({dir, home = os.homedir(), now = () => new Date(), platfo
   // The whole journal as one text, oldest line first: shopot.2.log, shopot.1.log, then shopot.log.
   // Synchronous on purpose, so no write or rotation lands between the parts. Unlike write, it throws.
   function read() {
+    recover();
     let text = '';
     for (const file of [...files].reverse()) {
-      if (!fs.existsSync(file)) continue;
-      const part = fs.readFileSync(file, 'utf8');
+      let part;
+      try { part = fs.readFileSync(file, 'utf8'); }
+      catch (error) { if (error.code === 'ENOENT') continue; throw error; }
       text += part && !part.endsWith('\n') ? `${part}\n` : part;
     }
     return text;

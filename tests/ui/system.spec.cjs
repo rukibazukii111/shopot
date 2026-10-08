@@ -1,6 +1,7 @@
 const {test, expect, _electron: electron} = require('@playwright/test');
 const fs = require('node:fs');
 const path = require('node:path');
+const {Store} = require('../../electron/store.cjs');
 const {ISSUES, systemName, issueUrl} = require('../../electron/report.cjs');
 const root = path.resolve(__dirname, '../..');
 const env = {...process.env}; delete env.ELECTRON_RUN_AS_NODE;
@@ -66,5 +67,54 @@ test('the System group opens the journal folder, saves the journal as one file a
     await page.locator('#report-problem').click();
     await expect(page.locator('#toast')).toContainText('Не удалось открыть браузер. Ссылка скопирована');
     expect(await app.evaluate(() => globalThis.__copied)).toBe(link);
+  } finally { await app.close(); }
+});
+
+test('a locked interrupted journal stays silent, allows dictation and exports only after full recovery', async () => {
+  const dataDir = path.join(root, '.private', 'ui-test', `system-recovery-${Date.now()}`);
+  const logs = path.join(dataDir, 'logs'), out = path.join(dataDir, 'exports');
+  fs.mkdirSync(logs, {recursive: true}); fs.mkdirSync(out);
+  for (const [name, uptime] of [['shopot.2.log', 1], ['shopot.1.log', 2], ['shopot.log.rotating', 3], ['shopot.log', 4]]) {
+    fs.writeFileSync(path.join(logs, name), `2026-10-05T12:00:00.000+00:00 quit uptime=${uptime}\n`);
+  }
+  const store = new Store(dataDir);
+  store.setSettings({...store.data.settings, autoCopy: false, autoPaste: false});
+  const app = await electron.launch({args: [path.join(root, 'tests/fixtures/harness.cjs'), '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'],
+    env: {...env, SHOPOT_DATA_DIR: dataDir, SHOPOT_TEST_JOURNAL_LOCK: '1'}});
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('#engine-label')).toHaveText('Локальный движок');
+    await expect(page.locator('#error-banner')).toBeHidden();
+    // Recording and its saved result still work while the journal cannot recover.
+    await app.evaluate(() => globalThis.__test.toggle());
+    await expect(page.locator('#record-time')).not.toHaveText('00:00');
+    await app.evaluate(() => globalThis.__test.toggle());
+    await expect.poll(() => app.evaluate(() => globalThis.__test.requests.length)).toBe(1);
+    await app.evaluate(() => globalThis.__test.finish());
+    await expect.poll(() => page.evaluate(() => window.shopot.boot().then(s => s.busy))).toBe(false);
+    const history = (await page.evaluate(() => window.shopot.boot())).history;
+    expect(history).toHaveLength(1);
+    expect(history[0].text).toBe('Видосы для GitHub готовы.');
+    await expect(page.locator('#error-banner')).toBeHidden();
+    await page.locator('[data-page="settings"]').click();
+    const saved = path.join(out, 'journal.txt'), existing = path.join(out, 'existing.txt');
+    fs.writeFileSync(existing, 'keep this file');
+    for (const file of [saved, existing]) {
+      await app.evaluate(({dialog}, target) => { dialog.showSaveDialog = async () => ({canceled: false, filePath: target}); }, file);
+      await page.locator('#journal-save').click();
+      await expect(page.locator('#error-text')).toHaveText('Не удалось сохранить полный журнал. Попробуйте позже');
+      expect(fs.existsSync(saved)).toBe(false);
+      expect(fs.readFileSync(existing, 'utf8')).toBe('keep this file');
+      await page.locator('#dismiss-error').click();
+    }
+    expect(fs.readFileSync(path.join(logs, 'shopot.log.rotating'), 'utf8')).toContain('uptime=3');
+    await app.evaluate(({dialog}, target) => {
+      globalThis.__test.unlockJournal();
+      dialog.showSaveDialog = async () => ({canceled: false, filePath: target});
+    }, saved);
+    await page.locator('#journal-save').click();
+    await expect(page.locator('#toast')).toContainText('Журнал сохранён');
+    expect([...fs.readFileSync(saved, 'utf8').matchAll(/ quit uptime=(\d+)\n/g)].map(match => Number(match[1]))).toEqual([2, 3, 4]);
+    expect(fs.readdirSync(logs).sort()).toEqual(['shopot.1.log', 'shopot.2.log', 'shopot.log']);
   } finally { await app.close(); }
 });

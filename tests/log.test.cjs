@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const {spawnSync} = require('node:child_process');
 const {createJournal, timestamp, errorFields} = require('../electron/log.cjs');
 const {MODEL_IDS, LANGUAGES, MODES, FORMATTING} = require('../electron/store.cjs');
 
@@ -82,6 +83,100 @@ test('rotation keeps three files and the newest line in shopot.log', t => {
   const again = createJournal({dir: path.join(f.root, 'logs'), maxBytes: 300});
   for (let i = 0; i < 10; i++) again.write('quit', {uptime: 100 + i});
   assert.ok(fs.statSync(path.join(f.root, 'logs', 'shopot.log')).size <= 300);
+});
+
+const logLine = (uptime, date = '2026-10-05') => `${date}T12:00:00.000+00:00 quit uptime=${uptime}\n`;
+function interruptedRotation(t, after) {
+  const f = fixture(t), dir = path.join(f.root, 'logs');
+  fs.mkdirSync(dir);
+  for (const [name, uptime] of [['shopot.2.log', 10], ['shopot.1.log', 20], ['shopot.log', 30]]) {
+    fs.writeFileSync(path.join(dir, name), logLine(uptime));
+  }
+  crashJournal(dir, 'write', after);
+  return {...f, dir};
+}
+function crashJournal(dir, operation, after) {
+  const child = spawnSync(process.execPath, [path.join(__dirname, 'fixtures/journal-crash.cjs'), dir, operation, String(after)], {encoding: 'utf8'});
+  assert.equal(child.status, 73, child.stderr || `rename ${after} was not reached`);
+}
+const uptimes = text => [...text.matchAll(/ quit uptime=(\d+)\n/g)].map(match => Number(match[1]));
+
+for (const after of [1, 2, 3]) {
+  for (const entry of ['read', 'write', 'prune']) {
+    for (const newActive of [false, true]) {
+      test(`${entry} recovers rotation interrupted after rename ${after}${newActive ? ', retaining a newer active file' : ''}`, t => {
+        const f = interruptedRotation(t, after);
+        if (newActive) fs.writeFileSync(path.join(f.dir, 'shopot.log'), logLine(40));
+        const restarted = createJournal({dir: f.dir, maxBytes: 300, now: () => new Date('2026-10-06T12:00:00Z')});
+        if (entry === 'write') assert.equal(restarted.write('app-start', {version: '0.3.0'}), true);
+        if (entry === 'prune') restarted.pruneOlderThan(7);
+        assert.deepEqual(uptimes(restarted.read()), newActive ? [20, 30, 40] : [20, 30]);
+        assert.ok(f.files().length <= 3);
+        assert.ok(!f.files().some(name => name.endsWith('.rotating')));
+        // Repeated reads/restarts neither repeat nor drop a recovered part.
+        assert.deepEqual(uptimes(createJournal({dir: f.dir}).read()), newActive ? [20, 30, 40] : [20, 30]);
+      });
+    }
+  }
+  test(`retention also removes expired rows from rotation interrupted after rename ${after}`, t => {
+    const f = interruptedRotation(t, after);
+    fs.writeFileSync(path.join(f.dir, 'shopot.log'), logLine(40, '2026-10-15'));
+    const restarted = createJournal({dir: f.dir, now: () => new Date('2026-10-15T12:00:00Z')});
+    restarted.pruneOlderThan(7);
+    assert.deepEqual(uptimes(restarted.read()), [40]);
+    assert.deepEqual(f.files(), ['shopot.log']);
+  });
+}
+
+for (const after of [1, 2]) {
+  test(`a second crash during recovery after rename ${after} preserves the remaining rows`, t => {
+    const f = interruptedRotation(t, 1);
+    fs.writeFileSync(path.join(f.dir, 'shopot.log'), logLine(40));
+    crashJournal(f.dir, 'read', after);
+    assert.deepEqual(uptimes(createJournal({dir: f.dir}).read()), [20, 30, 40]);
+    assert.deepEqual(f.files(), ['shopot.1.log', 'shopot.2.log', 'shopot.log']);
+  });
+}
+
+test('a locked recovery keeps its source, refuses incomplete reads and resumes once unlocked', t => {
+  const f = interruptedRotation(t, 1);
+  fs.writeFileSync(path.join(f.dir, 'shopot.log'), logLine(40));
+  const rename = fs.renameSync;
+  const locked = t.mock.method(fs, 'renameSync', (from, to) => {
+    if (from.endsWith('.rotating')) throw Object.assign(new Error('locked'), {code: 'EBUSY'});
+    return rename(from, to);
+  });
+  const restarted = createJournal({dir: f.dir});
+  assert.equal(restarted.write('quit', {uptime: 50}), false);
+  assert.throws(() => restarted.read(), {code: 'EBUSY'});
+  assert.doesNotThrow(() => restarted.pruneOlderThan(7));
+  assert.equal(f.read('shopot.log.rotating'), logLine(30));
+  assert.equal(f.read('shopot.log'), logLine(40));
+  assert.equal(f.read('shopot.2.log'), logLine(20));
+  locked.mock.restore();
+  assert.deepEqual(uptimes(restarted.read()), [20, 30, 40]);
+  assert.equal(restarted.write('quit', {uptime: 60}), true);
+  assert.deepEqual(uptimes(restarted.read()), [20, 30, 40, 60]);
+  assert.deepEqual(f.files(), ['shopot.1.log', 'shopot.2.log', 'shopot.log']);
+});
+
+test('an unreadable journal part is an error rather than an absent part', t => {
+  const f = fixture(t);
+  f.journal.write('quit', {uptime: 1});
+  fs.writeFileSync(path.join(f.root, 'logs', 'shopot.1.log'), logLine(0));
+  const stat = fs.statSync;
+  t.mock.method(fs, 'statSync', (file, ...args) => {
+    if (path.basename(file) === 'shopot.1.log') throw Object.assign(new Error('denied'), {code: 'EACCES'});
+    return stat(file, ...args);
+  });
+  const read = fs.readFileSync;
+  t.mock.method(fs, 'readFileSync', (file, ...args) => {
+    if (path.basename(file) === 'shopot.1.log') throw Object.assign(new Error('denied'), {code: 'EACCES'});
+    return read(file, ...args);
+  });
+  // existsSync alone cannot distinguish a missing optional archive from denied access.
+  t.mock.method(fs, 'existsSync', file => path.basename(file) === 'shopot.1.log' ? false : fs.statSync(file, {throwIfNoEntry: false}) !== undefined);
+  assert.throws(() => f.journal.read(), {code: 'EACCES'});
 });
 
 test('a shopot.log another program holds open stops the rotation before any older part is touched', t => {

@@ -8,6 +8,15 @@ if (process.env.SHOPOT_TEST_NO_ERROR_BOX === '1') dialog.showErrorBox = () => {}
 const {Worker} = require('../../electron/worker.cjs');
 const status = {formatter: {name: 'Qwen3-4B', size: '2,4 ГБ', supported: true, installed: false}, models: [{id: 'gigaam', installed: true, languages: ['ru'], revision: '322c3b294926a5c8'}, {id: 'turbo', installed: true, languages: ['ru', 'en', 'auto']}, {id: 'small', installed: true, languages: ['ru', 'en', 'auto'], translates: true}], device: 'cpu', computeType: 'int8'};
 globalThis.__test = {requests: [], notifications: [], nativeCalls: []};
+// Simulate Windows denying a pending journal rename before the app's first write.
+if (process.env.SHOPOT_TEST_JOURNAL_LOCK === '1') {
+  const fs = require('node:fs'), rename = fs.renameSync;
+  fs.renameSync = (from, to) => {
+    if (from.endsWith('shopot.log.rotating')) throw Object.assign(new Error('locked'), {code: 'EBUSY'});
+    return rename(from, to);
+  };
+  globalThis.__test.unlockJournal = () => { fs.renameSync = rename; };
+}
 globalThis.__test.status = status;
 const nativeModule = require('../../electron/native-input.cjs');
 const createNative = nativeModule.createNativeBackend;
