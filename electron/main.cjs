@@ -4,7 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const {pathToFileURL} = require('node:url');
 const crypto = require('node:crypto');
-const {Store, MODEL_IDS, settingsFor} = require('./store.cjs');
+const {Store, MODEL_IDS, settingsFor, validateSettings, expiredHistory} = require('./store.cjs');
 const {Worker} = require('./worker.cjs');
 const {PasteService, clipboardText} = require('./paste.cjs');
 const {createNativeBackend} = require('./native-input.cjs');
@@ -35,11 +35,13 @@ let nativeAvailable = false, nativeBackend = null;
 // Holding the hotkey longer than this makes it push-to-talk: letting go ends the recording.
 const HOLD_MS = 450;
 let hold = null;
-let widgetTimer, activeTranscription, downloading = false, job = 0;
+let widgetTimer, activeTranscription, downloading = false, job = 0, pruneTimer;
 // Calls are recorded on Windows only for now: that is where Electron captures system audio (WASAPI loopback).
 const MEETINGS = process.platform === 'win32';
 const MEETING_CHUNK_MS = (Number(process.env.SHOPOT_MEETING_CHUNK_SECONDS) || 300) * 1000;
 const MIC_POLL_MS = Number(process.env.SHOPOT_MIC_POLL_MS) || 4000;
+// History past its retention period goes at start and then once a day (PRD 6.20).
+const HISTORY_PRUNE_MS = Number(process.env.SHOPOT_HISTORY_PRUNE_MS) || 864e5;
 const WINDOW_GONE = 'Окно записи перезапустилось';
 let meeting = null, offer = null, offerTimer, meetingClock, micWatcher = null, meetingQueue = Promise.resolve();
 let widgetState = {phase: 'requesting', shortcut: process.platform === 'darwin' ? '⌘⇧Space' : 'Ctrl⇧Space'};
@@ -109,6 +111,30 @@ function pendingFor(id) {
 function forgetRecording(audioFile) {
   store.data.pendingRecordings = store.data.pendingRecordings.filter(e => e.audioFile !== audioFile);
   store.save();
+}
+// Removes history past its retention period with the audio no other entry keeps, and the journal's old lines.
+// Pending recordings are not history: they stay whatever their age (PRD 6.22).
+function pruneHistory(trigger) {
+  const days = store.data.settings.historyDays;
+  if (!days) return 0;
+  journal.pruneOlderThan(days);
+  const removed = store.pruneHistory(days);
+  const kept = new Set([...store.data.history, ...store.data.pendingRecordings].map(e => e.audioFile).filter(Boolean));
+  for (const entry of removed) {
+    const file = audioFor(entry);
+    // A file another program holds stays; the next start lists it as a pending recording the user can delete.
+    if (file && !kept.has(entry.audioFile)) try { fs.rmSync(file, {force: true}); } catch {}
+  }
+  if (!removed.length) return 0;
+  journal.write('history-prune', {trigger, days, removed: removed.length});
+  // At start there is no window or engine yet: the window reads the history when it boots.
+  if (window && !window.isDestroyed()) send('snapshot', snapshot());
+  return removed.length;
+}
+// The start and the daily run have no window to tell; a failure goes to the journal and the next run tries again.
+function prunePeriodically(trigger) {
+  try { pruneHistory(trigger); }
+  catch (error) { const {kind, code, at} = errorFields(error); journal.write('history-prune', {trigger, kind, code, at}); }
 }
 function setBusy(value) {
   busy = value;
@@ -444,6 +470,8 @@ else {
       }
     }
     if (JSON.stringify(store.data.pendingRecordings) !== previousPending) store.save();
+    prunePeriodically('start');
+    pruneTimer = setInterval(() => prunePeriodically('daily'), HISTORY_PRUNE_MS);
     session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
       callback(contents === window?.webContents && contents.getURL() === uiUrl && permission === 'media' &&
         !details.mediaTypes?.includes('video'));
@@ -680,5 +708,5 @@ else {
 }
 app.on('activate', () => { if (window) window.show(); });
 app.on('before-quit', () => { quitting = true; });
-app.on('will-quit', () => { journal.write('quit', {uptime: (Date.now() - launchedAt) / 1000}); clearTimeout(widgetTimer); micWatcher?.stop(); globalShortcut.unregisterAll(); worker?.stop(); if (capture?.target) paste?.release(capture.target); });
+app.on('will-quit', () => { journal.write('quit', {uptime: (Date.now() - launchedAt) / 1000}); clearTimeout(widgetTimer); clearInterval(pruneTimer); micWatcher?.stop(); globalShortcut.unregisterAll(); worker?.stop(); if (capture?.target) paste?.release(capture.target); });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
