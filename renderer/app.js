@@ -639,7 +639,7 @@ function markCopied(button) {
 // The result goes right above the original and is selected; a cancel, by «Отменить» or a dictation, leaves history as it was.
 async function retranscribe(entry, model, language) {
   const running = state.retranscribing = {entryId: entry.id, model};
-  state.retranscribeOpen = null; renderHistoryDetail();
+  state.retranscribeOpen = null; renderHistoryDetail(); refreshControls();
   try {
     const result = await api.retranscribe(entry.id, model, language);
     if (result.canceled) toast('Повторное распознавание отменено', 'muted');
@@ -652,7 +652,7 @@ async function retranscribe(entry, model, language) {
     }
   } finally {
     if (state.retranscribing === running) state.retranscribing = null;
-    renderResults();
+    renderResults(); refreshControls();
   }
 }
 async function entryAction(button) {
@@ -994,7 +994,8 @@ api.onToggle(toggleRecording); api.onCancel(() => guard(cancelOperation));
 api.onEngine(({status, error}) => { state.engine = status || null; state.engineError = error; updateEngine(); if (error) showError(new Error(error)); });
 api.onSnapshot(snapshot => {
   Object.assign(state, {history: snapshot.history, pendingRecordings: snapshot.pendingRecordings, meeting: snapshot.meeting, settings: snapshot.settings, retranscribing: snapshot.retranscribing});
-  renderResults(); renderRecovery(); renderProfiles(); renderMeeting(); syncMeetingSettings();
+  // refreshControls also redraws the recovery and call banners, and follows a re-recognition starting or ending.
+  renderResults(); refreshControls(); renderProfiles(); syncMeetingSettings();
 });
 api.onMeetingRecord(value => guard(() => recordMeeting(value)));
 api.onMeetingFinish(() => guard(finishMeetingRecording));
