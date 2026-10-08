@@ -117,3 +117,54 @@ test('with «Всегда» nothing expires, neither history nor the journal', a
     await expect(page.locator('#history-days')).toHaveValue('0');
   } finally { await app.close(); }
 });
+
+test('a setting saved while the confirmation is open survives «Удалить»', async () => {
+  const data = seed('retention-race', {days: 30, history: [{id: 'fresh', age: 3600e3, text: 'Свежая запись'}, {id: 'mid', age: 10 * DAY, text: 'Запись недельной давности'}]});
+  const app = await electron.launch({args: [path.join(root, 'tests/fixtures/harness.cjs')], env: {...env, SHOPOT_DATA_DIR: data.dataDir}});
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('#engine-label')).toHaveText('Локальный движок');
+    // The confirmation stays open until the test answers it.
+    await app.evaluate(({dialog}) => {
+      dialog.showMessageBox = () => new Promise(resolve => { globalThis.__answer = response => resolve({response}); });
+    });
+    await page.locator('[data-page="settings"]').click();
+    await page.locator('#history-days').selectOption('7');
+    await expect.poll(() => app.evaluate(() => typeof globalThis.__answer)).toBe('function');
+    // Another setting is saved meanwhile, as a finished model download or the widget's «Не предлагать» would.
+    await page.locator('#keep-audio').check();
+    await expect.poll(() => data.saved().settings.keepAudio).toBe(true);
+    await app.evaluate(() => globalThis.__answer(1));
+    await expect.poll(() => data.saved().history.map(e => e.id)).toEqual(['fresh']);
+    expect(data.saved().settings).toMatchObject({historyDays: 7, keepAudio: true});
+    await expect(page.locator('#history-days')).toHaveValue('7');
+    await expect(page.locator('#keep-audio')).toBeChecked();
+  } finally { await app.close(); }
+});
+
+test('an entry whose audio cannot be deleted stays until a later run; audio another entry keeps stays', async () => {
+  const locked = 'a1b2c3d4-0000-4000-8000-000000000011.webm', shared = 'a1b2c3d4-0000-4000-8000-000000000012.webm';
+  const data = seed('retention-locked', {days: 7, history: [{id: 'keeper', age: 3600e3, text: 'Свежая запись', audioFile: shared},
+    {id: 'twin', age: 40 * DAY, text: 'Старая копия', audioFile: shared}, {id: 'locked', age: 40 * DAY, text: 'Запись с занятым аудио'}]});
+  // A folder in place of the audio file: deleting it as a file fails, as for a file another program holds.
+  fs.mkdirSync(path.join(data.audio, locked));
+  const store = data.saved(); store.history[2].audioFile = locked;
+  fs.writeFileSync(path.join(data.dataDir, 'store.json'), JSON.stringify(store));
+  const app = await electron.launch({args: [path.join(root, 'tests/fixtures/harness.cjs')], env: {...env, SHOPOT_DATA_DIR: data.dataDir, SHOPOT_HISTORY_PRUNE_MS: '500'}});
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('#engine-label')).toHaveText('Локальный движок');
+    // The expired twin goes, but the audio the fresh entry still uses stays.
+    expect(data.saved().history.map(e => e.id)).toEqual(['keeper', 'locked']);
+    expect(fs.existsSync(path.join(data.audio, shared))).toBe(true);
+    await page.waitForTimeout(1200);
+    expect(data.saved().history.map(e => e.id)).toEqual(['keeper', 'locked']);
+    await expect(page.locator('#recovery-banner')).toBeHidden();
+    // Once the audio can go, the next run removes the entry.
+    fs.rmSync(path.join(data.audio, locked), {recursive: true});
+    await expect.poll(() => data.saved().history.map(e => e.id), {timeout: 10000}).toEqual(['keeper']);
+    expect(fs.existsSync(path.join(data.audio, shared))).toBe(true);
+    expect(data.journal()).toMatch(/ history-prune trigger=daily days=7 removed=1$/m);
+    expect(data.journal()).not.toContain('занятым');
+  } finally { await app.close(); }
+});

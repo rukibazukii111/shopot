@@ -122,13 +122,13 @@ function pruneHistory(trigger) {
   const days = store.data.settings.historyDays;
   if (!days) return 0;
   journal.pruneOlderThan(days);
-  const removed = store.pruneHistory(days);
-  const kept = new Set([...store.data.history, ...store.data.pendingRecordings].map(e => e.audioFile).filter(Boolean));
-  for (const entry of removed) {
+  // An audio file another program holds stays, and so does its entry: the next run tries again.
+  const removed = store.pruneHistory(days, entry => {
     const file = audioFor(entry);
-    // A file another program holds stays; the next start lists it as a pending recording the user can delete.
-    if (file && !kept.has(entry.audioFile)) try { fs.rmSync(file, {force: true}); } catch {}
-  }
+    if (!file) return true;
+    try { fs.rmSync(file, {force: true}); } catch {}
+    return !fs.existsSync(file);
+  });
   if (!removed.length) return 0;
   journal.write('history-prune', {trigger, days, removed: removed.length});
   // At start there is no window or engine yet: the window reads the history when it boots.
@@ -548,7 +548,8 @@ else {
           buttons: ['Оставить', 'Удалить'], defaultId: 0, cancelId: 0});
         if (answer.response !== 1) return store.data.settings;
       }
-      const saved = store.setSettings(next);
+      // Other settings may have been saved while the dialog was open: only the period comes from this request.
+      const saved = store.setSettings(count ? {...store.data.settings, historyDays: next.historyDays} : next);
       if (shorter) {
         try { pruneHistory('setting'); } catch (error) { throw fileError('Не удалось удалить старые записи', error); }
       }

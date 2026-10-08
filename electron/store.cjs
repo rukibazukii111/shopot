@@ -145,14 +145,20 @@ class Store {
   setSnippets(entries) { this.data.snippets = validateSnippets(entries); this.save(); return this.data.snippets; }
   setProfiles(entries) { this.data.profiles = validateProfiles(entries); this.save(); return this.data.profiles; }
   addHistory(entry) { this.data.history.unshift(entry); this.save(); return entry; }
-  // Removes the entries past the retention period and returns them, so their audio can go too.
-  pruneHistory(days, now = Date.now()) {
+  // Removes the entries past the retention period and returns them. `removeAudio(entry)` deletes an entry's audio first
+  // and says whether it is gone: an entry whose audio stays waits for the next run, so its audio never outlives it.
+  // Audio that a kept entry or a pending recording still uses is not deleted.
+  pruneHistory(days, removeAudio, now = Date.now()) {
     const expired = new Set(expiredHistory(this.data.history, days, now));
     if (!expired.size) return [];
-    this.data.history = this.data.history.filter(entry => !expired.has(entry));
+    const used = new Set([...this.data.history.filter(entry => !expired.has(entry)), ...this.data.pendingRecordings]
+      .map(entry => entry.audioFile).filter(Boolean));
+    const removed = new Set([...expired].filter(entry => !entry.audioFile || used.has(entry.audioFile) || removeAudio(entry)));
+    if (!removed.size) return [];
+    this.data.history = this.data.history.filter(entry => !removed.has(entry));
     this.save();
-    return [...expired];
+    return [...removed];
   }
 }
 
-module.exports = {Store, validateSettings, validateDictionary, validateSnippets, validateProfiles, settingsFor, expiredHistory, DEFAULT_SETTINGS, HISTORY_DAYS, MODEL_IDS, LANGUAGES, MODES, FORMATTING};
+module.exports = {Store, validateSettings, validateDictionary, validateSnippets, validateProfiles, settingsFor, expiredHistory, DEFAULT_SETTINGS, MODEL_IDS, LANGUAGES, MODES, FORMATTING};

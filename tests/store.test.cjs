@@ -111,10 +111,32 @@ test('entries older than the period expire; undated ones and pending recordings 
   try {
     const store = new Store(root);
     store.data.history = history; store.data.pendingRecordings = [{id: 'p', audioFile: 'a.webm', createdAt: at(40 * day)}]; store.save();
-    assert.deepEqual(store.pruneHistory(7, now).map(e => e.id), ['old']);
-    assert.deepEqual(store.pruneHistory(7, now), []);
+    assert.deepEqual(store.pruneHistory(7, () => true, now).map(e => e.id), ['old']);
+    assert.deepEqual(store.pruneHistory(7, () => true, now), []);
     const reopened = new Store(root);
     assert.deepEqual(reopened.data.history.map(e => e.id), ['fresh', 'edge', 'undated', 'broken']);
     assert.equal(reopened.data.pendingRecordings.length, 1);
+  } finally { fs.rmSync(root, {recursive: true, force: true}); }
+});
+test('expired audio is deleted before its entry goes, unless a kept entry or a pending recording still uses it', () => {
+  const now = Date.parse('2026-10-08T12:00:00Z'), day = 864e5;
+  const at = ago => new Date(now - ago).toISOString();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shopot-retention-audio-'));
+  try {
+    const store = new Store(root);
+    store.data.history = [{id: 'keeper', createdAt: at(day), audioFile: 'kept.webm'}, {id: 'twin', createdAt: at(40 * day), audioFile: 'kept.webm'},
+      {id: 'retried', createdAt: at(40 * day), audioFile: 'pending.webm'}, {id: 'locked', createdAt: at(40 * day), audioFile: 'locked.webm'},
+      {id: 'text', createdAt: at(40 * day), audioFile: null}];
+    store.data.pendingRecordings = [{id: 'p', audioFile: 'pending.webm', createdAt: at(40 * day)}];
+    const asked = [];
+    // The locked file cannot be deleted: its entry stays for the next run.
+    const removed = store.pruneHistory(7, entry => { asked.push(entry.audioFile); return entry.audioFile !== 'locked.webm'; }, now);
+    assert.deepEqual(asked, ['locked.webm']);
+    assert.deepEqual(removed.map(e => e.id), ['twin', 'retried', 'text']);
+    assert.deepEqual(new Store(root).data.history.map(e => e.id), ['keeper', 'locked']);
+    // Once the file can go, the next run removes the entry.
+    assert.deepEqual(store.pruneHistory(7, () => true, now).map(e => e.id), ['locked']);
+    assert.deepEqual(new Store(root).data.history.map(e => e.id), ['keeper']);
+    assert.equal(store.data.pendingRecordings.length, 1);
   } finally { fs.rmSync(root, {recursive: true, force: true}); }
 });
