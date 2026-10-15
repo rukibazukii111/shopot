@@ -241,7 +241,7 @@ class FormatterProcess:
         deadline = time.monotonic() + timeout
         while True:
             if should_stop():
-                self.close()
+                self.close(force=True)
                 raise TimeoutError("Оформление прервано")
             try:
                 line = self.answers.get(timeout=0.2)
@@ -269,10 +269,12 @@ class FormatterProcess:
             raise RuntimeError("Процесс оформления не принимает запросы") from error
         return self._answer(TAGS_TIMEOUT, should_stop)["tags"]
 
-    def close(self):
+    def close(self, force=False):
         process, self.process = self.process, None
         if process is None or process.poll() is not None:
             return
+        if force:
+            process.kill()
         try:
             _write(process.stdin, {"cmd": "close"})
             process.stdin.close()
@@ -282,6 +284,7 @@ class FormatterProcess:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             process.kill()
+            process.wait()
 
 
 class Formatter:

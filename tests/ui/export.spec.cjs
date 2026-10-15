@@ -12,7 +12,8 @@ test('a transcribed file saves as text, Markdown or subtitles', async () => {
   const store = new Store(dataDir);
   store.addHistory({id: 'interview', createdAt: '2026-09-26T09:00:00Z', source: 'интервью.m4a', text: 'Привет всем. Начинаем.\n• Первый пункт',
     rawText: 'Привет всем. Начинаем.', words: [], duration: 3, elapsed: .5, model: 'gigaam', mode: 'natural', replacements: [], audioFile: null,
-    cues: [{start: 0, end: 1.5, text: 'Привет всем.'}, {start: 1.6, end: 3, text: 'Начинаем.'}]});
+    cues: [{start: 0, end: 1.5, text: 'Привет всем.'}, {start: 1.6, end: 3, text: 'Начинаем.'},
+      {start: 3.2, end: 4, text: '00123.'}, {start: 4.2, end: 5, text: '120 000₽. 20%.'}]});
   const app = await electron.launch({args: [path.join(root, 'tests/fixtures/harness.cjs')], env: {...env, SHOPOT_DATA_DIR: dataDir}});
   const saveAs = file => app.evaluate(({dialog}, target) => {
     dialog.showSaveDialog = async (window, options) => { globalThis.__saveOptions = options; return {canceled: false, filePath: target}; };
@@ -25,7 +26,8 @@ test('a transcribed file saves as text, Markdown or subtitles', async () => {
     await saveAs(subtitles);
     await page.locator('#history-detail [data-action="export"]').click();
     await expect(page.locator('#toast')).toContainText('Сохранено: интервью.srt');
-    expect(fs.readFileSync(subtitles, 'utf8')).toBe('1\r\n00:00:00,000 --> 00:00:01,500\r\nПривет всем.\r\n\r\n2\r\n00:00:01,600 --> 00:00:03,000\r\nНачинаем.\r\n');
+    expect(fs.readFileSync(subtitles, 'utf8')).toBe('1\r\n00:00:00,000 --> 00:00:01,500\r\nПривет всем.\r\n\r\n2\r\n00:00:01,600 --> 00:00:03,000\r\nНачинаем.\r\n'
+      + '\r\n3\r\n00:00:03,200 --> 00:00:04,000\r\n00123.\r\n\r\n4\r\n00:00:04,200 --> 00:00:05,000\r\n120 000₽. 20%.\r\n');
     const options = await app.evaluate(() => globalThis.__saveOptions);
     expect(options.defaultPath).toBe('интервью.txt');
     expect(options.filters.map(f => f.extensions[0])).toEqual(['txt', 'md', 'srt']);

@@ -29,12 +29,14 @@ function similarity(a, b) {
   const other = shorter === left ? right : new Set(left);
   return shorter.filter(word => other.has(word)).length / shorter.length;
 }
-const overlaps = (a, b) => a.start < b.end + 1 && b.start < a.end + 1;
+const overlaps = (a, b) => a.start < b.end && b.start < a.end;
 
 // Cues of both channels (seconds from the start of the meeting) become speaker turns in time order.
 function meetingTurns(mine, theirs) {
   // Without headphones the microphone also hears the other side: such a cue repeats system audio.
-  const own = mine.filter(cue => !theirs.some(other => overlaps(cue, other) && similarity(cue.text, other.text) >= 0.5));
+  // One- and two-word answers are too ambiguous to identify as echo from text alone.
+  const own = mine.filter(cue => fold(cue.text).length < 3 || !theirs.some(other =>
+    fold(other.text).length >= 3 && overlaps(cue, other) && similarity(cue.text, other.text) >= 0.5));
   const cues = [...own.map(cue => ({...cue, speaker: 'me'})), ...theirs.map(cue => ({...cue, speaker: 'them'}))]
     .filter(cue => cue.text?.trim()).sort((a, b) => a.start - b.start);
   const turns = [];

@@ -48,6 +48,24 @@ test('the same words said by the user at another time are not echo', () => {
   assert.deepEqual(turns.map(t => t.speaker), ['them', 'me']);
 });
 
+test('short microphone answers remain even when they share words with the question', () => {
+  const question = {start: 0, end: 2, text: 'Нет возражений?'};
+  for (const [start, end, text] of [[2.1, 2.5, 'Нет.'], [1.8, 2.2, 'Нет.'], [1.8, 2.2, 'Нет возражений.']]) {
+    const turns = meetingTurns([{start, end, text}], [question]);
+    assert.deepEqual(turns.map(t => [t.speaker, t.text]), [['them', question.text], ['me', text]]);
+    assert.match(meetingText(turns), /Я: Нет/);
+  }
+});
+
+test('adjacent matching speech is retained but an overlapping repeated phrase is echo', () => {
+  const text = 'Сроки сдачи до пятницы.';
+  const theirs = [{start: 0, end: 2, text}];
+  for (const start of [2, 2.1]) {
+    assert.deepEqual(meetingTurns([{start, end: 3, text}], theirs).map(t => t.speaker), ['them', 'me']);
+  }
+  assert.deepEqual(meetingTurns([{start: 0.2, end: 2.1, text}], theirs).map(t => t.speaker), ['them']);
+});
+
 test('clock and summary prompt', () => {
   assert.equal(clock(65), '01:05');
   assert.equal(clock(3725), '1:02:05');

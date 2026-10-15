@@ -143,9 +143,10 @@ def strip_hesitations(text):
     kept = []
     for sentence in split_sentences(text):
         cleaned = re.sub(r"\s+", " ", HESITATION.sub(replace, sentence)).strip()
-        cleaned = re.sub(r"^[\s,;:…·-]+", "", cleaned)
+        cleaned = re.sub(r"^(?:[\s,;:…·]|-(?!\d))+", "", cleaned)
         cleaned = re.sub(r"\s+([,.;:!?…])", r"\1", cleaned)
-        if not re.search(r"[^\W\d_]", cleaned):
+        # A code, amount or number is substantive even when the sentence has no letters.
+        if not re.search(r"[^\W_]", cleaned):
             continue
         kept.append(_capitalize(cleaned) if sentence[:1].isupper() else cleaned)
     return " ".join(kept)
