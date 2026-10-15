@@ -34,7 +34,11 @@ test('a call is offered, recorded as two channels while it goes on and saved as 
         if (count > payloads.length) {
           const request = await app.evaluate((_, index) => globalThis.__test.requests[index], payloads.length);
           const n = payloads.push(request.payload);
-          const cues = request.payload.channel === 'left' ? [{start: 0.1, end: 0.5, text: `Моя реплика ${n}.`}] : [{start: 0.6, end: 1.0, text: `Ответ собеседника ${n}.`}];
+          const cues = n === 1 ? [{start: 0.5, end: 0.7, text: 'Нет.'}]
+            : n === 2 ? [{start: 0, end: 0.4, text: 'Нет возражений?'}]
+            : request.payload.channel === 'left' ? [{start: 0.1, end: 0.5, text: `Моя реплика ${n}.`},
+              {start: 0.6, end: 1.0, text: `Ответ собеседника ${n + 1}.`}] // Actual overlapping echo.
+            : [{start: 0.6, end: 1.0, text: `Ответ собеседника ${n}.`}];
           await app.evaluate((_, value) => globalThis.__test.resolve({text: 'x', rawText: 'x', cues: value, words: [], duration: 1.2, elapsed: .1, model: 'gigaam'}), cues);
         } else await new Promise(resolve => setTimeout(resolve, 50));
       }
@@ -57,7 +61,8 @@ test('a call is offered, recorded as two channels while it goes on and saved as 
     expect(payloads[0]).toMatchObject({mode: 'natural', formatting: 'off', voiceCommands: false, snippets: []});
     const entry = (await page.evaluate(() => window.shopot.boot())).history[0];
     expect(entry.source).toBe('Созвон · Discord');
-    expect(entry.text).toMatch(/^\[00:00\] Я: Моя реплика 1\.\n\n\[00:00\] Собеседники: Ответ собеседника 2\./);
+    expect(entry.text).toMatch(/^\[00:00\] Собеседники: Нет возражений\?\n\n\[00:00\] Я: Нет\./);
+    expect(entry.text.match(/Ответ собеседника 4\./g)).toHaveLength(1);
     expect(entry.meeting).toMatchObject({app: 'Discord', failedChunks: 0});
     expect(fs.readdirSync(path.join(dataDir, 'audio'))).toEqual([]);
     // The transcript goes to a chat assistant only when the user pastes it.

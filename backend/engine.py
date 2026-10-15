@@ -327,6 +327,8 @@ class Engine:
                 tags = self.load_formatter().tags(sentences, lambda: self.is_canceled(request_id))
                 return layout_text(text, pauses, tags), "llm"
             except Exception:
+                # A canceled/crashed worker may have closed itself. Never cache it for the next dictation.
+                self.unload_formatter()
                 self.check_canceled(request_id)
                 traceback.print_exc(file=sys.stderr)
         return layout_text(text, pauses), "rules"

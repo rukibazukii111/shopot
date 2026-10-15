@@ -375,6 +375,100 @@ def test_raw_mode_keeps_hesitations(tmp_path):
     assert engine.clean(spoken, 'natural', True) == 'Видосы готовы.'
 
 
+@pytest.mark.parametrize('spoken, expected', [
+    ('12345.', '12345.'), ('Код подтверждения. 12345.', 'Код подтверждения. 12345.'),
+    ('Ааа... 00123.', '00123.'), ('120 000₽. 20%. -15. 18.2.', '120 000₽. 20%. -15. 18.2.'),
+    ('Э-э, 42.', '42.'), ('Ммм. А-а...', ''),
+])
+def test_hesitation_cleanup_keeps_numeric_sentences(spoken, expected):
+    from text_processing import strip_hesitations
+    assert strip_hesitations(spoken) == expected
+
+
+def recognized_engine(tmp_path, monkeypatch, spoken, with_timings=False):
+    """Real decoding and processing of synthetic audio; only ASR/model loading are replaced."""
+    import wave
+    engine = installed_engine(tmp_path)
+    with wave.open(str(engine.audio_dir / 'a1b2.wav'), 'wb') as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(16000)
+        out.writeframes(b'\x00\x10' * 16000)
+    monkeypatch.setattr(engine, 'load', lambda key, request_id=None: 0.0)
+
+    def recognize(audio, duration, request_id):
+        segment = {'start': 0.0, 'end': 1.0, 'text': spoken, 'noSpeechProbability': 0.0}
+        if with_timings:
+            segment['words'] = [{'word': word, 'start': i * 0.2, 'end': i * 0.2 + 0.1}
+                                for i, word in enumerate(spoken.split())]
+        return [segment]
+
+    monkeypatch.setattr(engine, '_gigaam_segments', recognize)
+    return engine
+
+
+@pytest.mark.parametrize('with_timings', [False, True])
+def test_default_pipeline_and_subtitle_cues_keep_numeric_sentences(tmp_path, monkeypatch, with_timings):
+    spoken = 'Ааа... Код подтверждения. 00123. 120 000₽. 20%.'
+    engine = recognized_engine(tmp_path, monkeypatch, spoken, with_timings)
+    try:
+        result = engine.transcribe({'model': 'gigaam', 'audioFile': 'a1b2.wav'})
+        expected = 'Код подтверждения. 00123. 120 000₽. 20%.'
+        assert ' '.join(result['text'].split()) == expected
+        assert ' '.join(cue['text'] for cue in result['cues']) == expected
+        assert result['rawText'] == spoken
+    finally:
+        engine.cancel_idle_unload()
+
+
+def test_canceled_smart_formatting_recovers_on_next_dictation(tmp_path, monkeypatch):
+    import time
+    import llm
+    from engine import Canceled
+    engine = recognized_engine(tmp_path, monkeypatch, 'Обсудим первую важную мысль. Перейдём ко второй важной мысли.')
+    monkeypatch.setattr(engine, 'formatter_installed', lambda: True)
+    busy = tmp_path / 'formatter-busy'
+    commands = iter([
+        fake_worker("print(json.dumps({'ready': True}), flush=True)\nsys.stdin.readline()\n"
+                    f"open({str(busy)!r}, 'w').close()\ntime.sleep(30)\n"),
+        fake_worker("print(json.dumps({'ready': True}), flush=True)\n"
+                    "for line in sys.stdin:\n"
+                    "    request = json.loads(line)\n"
+                    "    if request.get('cmd') == 'close': break\n"
+                    "    print(json.dumps({'tags': ['new'] * len(request['sentences'])}), flush=True)\n"),
+    ])
+    monkeypatch.setattr(engine, 'formatter_command', lambda: next(commands))
+    original_tags = llm.FormatterProcess.tags
+    children = []
+
+    def cancel_first(formatter, sentences, should_stop=lambda: False):
+        children.append(formatter.process)
+
+        def stop_when_busy():
+            if len(children) == 1 and busy.exists():
+                engine.canceled_through = 1
+            return should_stop()
+
+        return original_tags(formatter, sentences, stop_when_busy)
+
+    monkeypatch.setattr(llm.FormatterProcess, 'tags', cancel_first)
+    request = {'id': 1, 'model': 'gigaam', 'audioFile': 'a1b2.wav', 'formatting': 'llm'}
+    try:
+        started = time.monotonic()
+        with pytest.raises(Canceled):
+            engine.transcribe(request)
+        children[0].wait(timeout=1)
+        result = engine.transcribe({**request, 'id': 2})
+        assert result['formatting'] == 'llm'
+        assert result['text'] == 'Обсудим первую важную мысль.\n\nПерейдём ко второй важной мысли.'
+        assert len(children) == 2 and children[1] is not children[0]
+        assert time.monotonic() - started < 4, 'Cancellation must not wait for the busy formatter'
+    finally:
+        engine.cancel_idle_unload()
+        engine.unload_formatter()
+    assert all(child.poll() is not None for child in children)
+
+
 SNIPPETS = [{'trigger': 'моя почта', 'text': 'ivan@example.com'},
             {'trigger': 'моя рабочая почта', 'text': 'ivan@work.example'},
             {'trigger': 'моя подпись', 'text': 'С уважением,\nИван Петров'},
